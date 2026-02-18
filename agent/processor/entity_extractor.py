@@ -8,6 +8,7 @@ from datetime import datetime
 
 from agent import metrics
 from agent.analysis.dga_detector import analyze_domain
+from agent.analysis.persistence_detector import check_persistence
 
 from agent.schema.graph_types import (
     DomainNode,
@@ -44,6 +45,7 @@ class ExtractedEntities:
         self.resolves_to_edges: list[dict] = []  # {domain_id, ip_id, timestamp}
         self.file_edges: list[dict] = []  # {process_id, file_id, operation, timestamp}
         self.registry_edges: list[dict] = []  # {process_id, registry_id, operation, timestamp}
+        self.risk_indicators: list[dict] = []  # persistence detections, DGA results, etc.
 
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,29 @@ def extract_entities(
         _extract_file_activity(event, event_id, entities, now)
     elif isinstance(event, RegistryActivity):
         _extract_registry_activity(event, event_id, entities, now)
+
+    # Run persistence detection on file and registry events
+    if isinstance(event, (FileActivity, RegistryActivity)):
+        persistence = check_persistence(event)
+        if persistence:
+            logger.warning(
+                "Persistence detected: %s (%s) - %s",
+                persistence.persistence_type,
+                persistence.mitre_technique,
+                persistence.path,
+            )
+            metrics.persistence_detections_total.labels(
+                persistence_type=persistence.persistence_type,
+            ).inc()
+            entities.risk_indicators.append({
+                "type": "persistence",
+                "persistence_type": persistence.persistence_type,
+                "platform": persistence.platform,
+                "severity": persistence.severity,
+                "mitre_technique": persistence.mitre_technique,
+                "description": persistence.description,
+                "path": persistence.path,
+            })
 
     return entities
 

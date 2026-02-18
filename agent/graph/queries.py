@@ -295,6 +295,13 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
                     f"DGA candidate: {domain['name']}"
                 )
 
+        # Populate risk indicators from persistence artifacts
+        for artifact in chain["persistence_artifacts"]:
+            chain["risk_indicators"].append(
+                f"Persistence: {artifact.get('registry_path', 'unknown')} "
+                f"(value: {artifact.get('value_data', 'N/A')})"
+            )
+
         elapsed = time.monotonic() - t0
         metrics.attack_chain_build_latency.observe(elapsed)
         return chain
