@@ -29,6 +29,18 @@ class Settings(BaseModel):
 
     file_read_tracking: bool = False  # Enable (:Process)-[:READ]->(:File) edges. High volume.
 
+    # DGA detection settings
+    dga_entropy_threshold: float = 3.5
+    dga_score_threshold: float = 0.6
+    dga_allowlist: list[str] = [
+        "googleapis.com",
+        "cloudflare.com",
+        "amazonaws.com",
+        "windows.net",
+        "office365.com",
+        "microsoftonline.com",
+    ]
+
     novel_edge_threshold: int = 5
     graph_context_limit: int = 20
 

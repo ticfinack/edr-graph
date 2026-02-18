@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 from datetime import datetime
+
+from agent import metrics
+from agent.analysis.dga_detector import analyze_domain
 
 from agent.schema.graph_types import (
     DomainNode,
@@ -42,7 +46,15 @@ class ExtractedEntities:
         self.registry_edges: list[dict] = []  # {process_id, registry_id, operation, timestamp}
 
 
-def extract_entities(event: OcsfEvent, event_id: int) -> ExtractedEntities:
+logger = logging.getLogger(__name__)
+
+
+def extract_entities(
+    event: OcsfEvent,
+    event_id: int,
+    dga_allowlist: set[str] | None = None,
+    dga_threshold: float = 0.6,
+) -> ExtractedEntities:
     """Extract nodes and edges from a normalized OCSF event."""
     entities = ExtractedEntities()
     now = event.time
@@ -54,7 +66,7 @@ def extract_entities(event: OcsfEvent, event_id: int) -> ExtractedEntities:
     elif isinstance(event, Authentication):
         _extract_authentication(event, event_id, entities, now)
     elif isinstance(event, DnsActivity):
-        _extract_dns_activity(event, event_id, entities, now)
+        _extract_dns_activity(event, event_id, entities, now, dga_allowlist, dga_threshold)
     elif isinstance(event, FileActivity):
         _extract_file_activity(event, event_id, entities, now)
     elif isinstance(event, RegistryActivity):
@@ -194,6 +206,8 @@ def _extract_dns_activity(
     event_id: int,
     entities: ExtractedEntities,
     now: datetime,
+    dga_allowlist: set[str] | None = None,
+    dga_threshold: float = 0.6,
 ) -> None:
     hostname = event.device.hostname
     proc_id = None
@@ -218,13 +232,29 @@ def _extract_dns_activity(
         domain_name = event.query_domain.lower().rstrip(".")
         tld = domain_name.rsplit(".", 1)[-1] if "." in domain_name else ""
 
+        # Run DGA detection
+        dga_result = analyze_domain(
+            domain_name,
+            threshold=dga_threshold,
+            allowlist=dga_allowlist,
+        )
+        is_dga = dga_result.is_dga_candidate
+        if is_dga:
+            logger.warning(
+                "DGA candidate detected: %s (score: %.2f, reasons: %s)",
+                domain_name,
+                dga_result.score,
+                ", ".join(dga_result.reasons),
+            )
+            metrics.dga_detections_total.inc()
+
         entities.domains.append(
             DomainNode(
                 id=domain_name,
                 name=domain_name,
                 first_seen=now,
                 last_seen=now,
-                is_dga_candidate=False,
+                is_dga_candidate=is_dga,
                 tld=tld,
             )
         )

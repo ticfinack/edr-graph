@@ -84,7 +84,12 @@ def processor_thread(
                     raw = RawEvent.from_dict(raw_data)
                     ocsf = normalize(raw)
                     if ocsf is not None:
-                        entities = extract_entities(ocsf, event_id)
+                        entities = extract_entities(
+                            ocsf,
+                            event_id,
+                            dga_allowlist=set(settings.dga_allowlist),
+                            dga_threshold=settings.dga_score_threshold,
+                        )
                         # Gate file READ edges behind config flag
                         if not settings.file_read_tracking:
                             entities.file_edges = [

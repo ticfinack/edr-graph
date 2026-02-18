@@ -288,6 +288,13 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
             "risk_indicators": [],
         }
 
+        # Populate risk indicators from DGA detections
+        for domain in chain["network_footprint"].get("domains", []):
+            if domain.get("is_dga_candidate"):
+                chain["risk_indicators"].append(
+                    f"DGA candidate: {domain['name']}"
+                )
+
         elapsed = time.monotonic() - t0
         metrics.attack_chain_build_latency.observe(elapsed)
         return chain

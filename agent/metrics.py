@@ -34,6 +34,17 @@ llm_verdicts = Counter(
     ["severity"],
 )
 
+dga_detections_total = Counter(
+    "edr_dga_detections_total",
+    "Total DGA candidate domain detections",
+)
+
+persistence_detections_total = Counter(
+    "edr_persistence_detections_total",
+    "Total persistence mechanism detections",
+    ["persistence_type"],
+)
+
 attack_chain_build_latency = Histogram(
     "edr_attack_chain_build_latency_seconds",
     "Time to build a full attack chain context",
