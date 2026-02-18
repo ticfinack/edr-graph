@@ -34,9 +34,16 @@ class Settings(BaseModel):
     analyzer_interval: float = 60.0  # seconds
     processor_batch_size: int = 500
 
-    dashboard_port: int = 8080
+    dashboard_port: int = 9200
     dashboard_refresh_interval: float = 5.0  # seconds
+    dashboard_auto_open: bool = True  # Open dashboard in browser on startup
     metrics_port: int = 9100
+
+    # Tray icon settings (macOS only)
+    tray_enabled: bool = True
+    tray_notification_cooldown: int = 60  # seconds
+    tray_notify_on_high: bool = True
+    tray_notify_on_critical: bool = True
 
     file_read_tracking: bool = False  # Enable (:Process)-[:READ]->(:File) edges. High volume.
 
@@ -126,6 +133,11 @@ _YAML_KEY_MAP: dict[tuple[str, ...], str] = {
     ("metrics", "enabled"): "_metrics_enabled",
     ("dashboard", "port"): "dashboard_port",
     ("dashboard", "refresh_interval"): "dashboard_refresh_interval",
+    ("dashboard", "auto_open_browser"): "dashboard_auto_open",
+    ("tray", "enabled"): "tray_enabled",
+    ("tray", "notification_cooldown_seconds"): "tray_notification_cooldown",
+    ("tray", "notify_on_high"): "tray_notify_on_high",
+    ("tray", "notify_on_critical"): "tray_notify_on_critical",
 }
 
 
@@ -253,6 +265,13 @@ metrics:
   port: 9100
 
 dashboard:
-  port: 8080
+  port: 9200
   refresh_interval: 5.0
+  auto_open_browser: true     # Open dashboard in browser on startup
+
+tray:
+  enabled: true               # macOS only, ignored on other platforms
+  notification_cooldown_seconds: 60
+  notify_on_high: true
+  notify_on_critical: true
 """

@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EDR Graph Agent</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0a0f;--card:#12121a;--border:#1e1e2e;--text:#e0e0e0;--dim:#6b7280;
+  --accent:#3b82f6;--critical:#ef4444;--high:#f97316;--medium:#eab308;--low:#22c55e;--info:#6b7280;
+}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display",system-ui,sans-serif;font-size:14px;min-width:1200px}
+.mono{font-family:"SF Mono",Menlo,Monaco,monospace;font-size:13px}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* Header */
+.header{display:flex;align-items:center;justify-content:space-between;padding:12px 24px;background:var(--card);border-bottom:1px solid var(--border)}
+.header-left{display:flex;align-items:center;gap:16px}
+.header-title{font-size:16px;font-weight:600;letter-spacing:-0.3px}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.status-dot.running{background:var(--low)}
+.status-dot.paused{background:var(--medium)}
+.status-dot.error{background:var(--critical)}
+.header-right{display:flex;align-items:center;gap:16px;color:var(--dim);font-size:13px}
+
+/* Tabs */
+.tab-bar{display:flex;gap:0;background:var(--card);border-bottom:1px solid var(--border)}
+.tab-btn{padding:10px 20px;background:none;border:none;color:var(--dim);cursor:pointer;font-size:13px;font-weight:500;border-bottom:2px solid transparent;transition:all .15s}
+.tab-btn:hover{color:var(--text)}
+.tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+
+/* Content */
+.content{padding:24px;max-width:1600px;margin:0 auto}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+
+/* Cards */
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px}
+.card-label{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px}
+.card-value{font-size:24px;font-weight:600}
+.card-sub{color:var(--dim);font-size:12px;margin-top:4px}
+
+/* Tables */
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:8px 12px;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border);font-weight:500}
+td{padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px}
+tr:hover{background:rgba(59,130,246,0.05)}
+.severity-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase}
+.severity-critical{background:rgba(239,68,68,0.15);color:var(--critical)}
+.severity-high{background:rgba(249,115,22,0.15);color:var(--high)}
+.severity-medium{background:rgba(234,179,8,0.15);color:var(--medium)}
+.severity-low{background:rgba(34,197,94,0.15);color:var(--low)}
+.severity-info{background:rgba(107,114,128,0.15);color:var(--info)}
+
+/* Detail panel */
+.detail-panel{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px;margin-top:16px}
+.detail-section{margin-top:16px}
+.detail-section h4{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border)}
+.detail-section pre{white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.5}
+.detail-grid{display:grid;grid-template-columns:120px 1fr;gap:4px 16px}
+.detail-grid dt{color:var(--dim)}
+.detail-grid dd{word-break:break-all}
+.btn{padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer;font-size:12px}
+.btn:hover{border-color:var(--accent)}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn-danger{background:var(--critical);border-color:var(--critical);color:#fff}
+
+/* Graph SVG */
+.graph-container{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;min-height:400px}
+.graph-controls{display:flex;gap:8px;margin-bottom:16px;align-items:center}
+.graph-controls input{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 12px;color:var(--text);font-size:13px;width:200px}
+svg text{fill:var(--text);font-size:12px;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display",sans-serif}
+svg .node-rect{fill:var(--card);stroke:var(--border);stroke-width:1;rx:4}
+svg .node-rect.highlight{stroke:var(--high);stroke-width:2}
+svg .edge-line{stroke:var(--dim);stroke-width:1}
+svg .edge-arrow{fill:var(--dim)}
+
+/* Events stream */
+.event-row{display:grid;grid-template-columns:100px 120px 1fr 80px 50px;gap:8px;padding:6px 12px;border-bottom:1px solid var(--border);font-size:13px;align-items:center}
+.event-row:hover{background:rgba(59,130,246,0.05)}
+.event-time{color:var(--dim);font-family:"SF Mono",Menlo,monospace;font-size:12px}
+.event-type{font-weight:500}
+.event-type.process{color:#818cf8}
+.event-type.dns{color:#34d399}
+.event-type.file{color:#fbbf24}
+.event-type.network{color:#f472b6}
+.event-source{color:var(--dim);font-size:11px;text-align:right;font-family:"SF Mono",Menlo,monospace}
+
+/* Collectors */
+.collector-list{display:flex;flex-wrap:wrap;gap:8px}
+.collector-chip{padding:4px 12px;border-radius:16px;font-size:12px;background:rgba(34,197,94,0.1);color:var(--low);border:1px solid rgba(34,197,94,0.2)}
+
+/* Settings */
+.settings-group{margin-bottom:24px}
+.settings-group h3{font-size:14px;color:var(--accent);margin-bottom:12px}
+.settings-row{display:grid;grid-template-columns:240px 1fr;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}
+.settings-key{color:var(--dim)}
+.settings-val{font-family:"SF Mono",Menlo,monospace;font-size:13px}
+
+.filter-bar{display:flex;gap:8px;margin-bottom:16px;align-items:center}
+.filter-bar select,.filter-bar input{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 12px;color:var(--text);font-size:13px}
+.empty-state{text-align:center;padding:48px;color:var(--dim)}
+.clickable{cursor:pointer}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <span class="header-title">EDR Graph Agent</span>
+    <span><span class="status-dot running" id="hdr-dot"></span> <span id="hdr-status">Running</span></span>
+  </div>
+  <div class="header-right">
+    <span id="hdr-eps">— evt/s</span>
+    <span id="hdr-uptime">—</span>
+  </div>
+</div>
+
+<div class="tab-bar" id="tab-bar">
+  <button class="tab-btn active" data-tab="overview">Overview</button>
+  <button class="tab-btn" data-tab="findings">Findings</button>
+  <button class="tab-btn" data-tab="graph">Graph</button>
+  <button class="tab-btn" data-tab="events">Events</button>
+  <button class="tab-btn" data-tab="audit">Audit</button>
+  <button class="tab-btn" data-tab="settings">Settings</button>
+</div>
+
+<div class="content">
+
+<!-- ── Overview ──────────────────────────────────────────────────── -->
+<div class="tab-panel active" id="panel-overview">
+  <div class="cards">
+    <div class="card"><div class="card-label">Agent</div><div class="card-value" id="ov-status">—</div><div class="card-sub" id="ov-uptime">—</div></div>
+    <div class="card"><div class="card-label">Events</div><div class="card-value" id="ov-events">—</div><div class="card-sub" id="ov-eps">—</div></div>
+    <div class="card"><div class="card-label">Findings</div><div class="card-value" id="ov-findings">—</div><div class="card-sub" id="ov-findings-sub">—</div></div>
+    <div class="card"><div class="card-label">Graph</div><div class="card-value" id="ov-nodes">—</div><div class="card-sub" id="ov-edges">—</div></div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-label">Active Collectors</div>
+    <div class="collector-list" id="ov-collectors"></div>
+  </div>
+  <div class="card">
+    <div class="card-label">Recent Findings</div>
+    <div id="ov-recent-findings"><div class="empty-state">No findings yet</div></div>
+  </div>
+</div>
+
+<!-- ── Findings ──────────────────────────────────────────────────── -->
+<div class="tab-panel" id="panel-findings">
+  <div class="filter-bar">
+    <select id="findings-severity"><option value="">All Severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option><option value="info">Info</option></select>
+    <input type="text" id="findings-search" placeholder="Search findings...">
+  </div>
+  <table><thead><tr><th>Severity</th><th>Time</th><th>Title</th><th>ATT&CK</th></tr></thead><tbody id="findings-tbody"></tbody></table>
+  <div id="findings-detail"></div>
+</div>
+
+<!-- ── Graph ─────────────────────────────────────────────────────── -->
+<div class="tab-panel" id="panel-graph">
+  <div class="graph-controls">
+    <input type="number" id="graph-pid" placeholder="Enter PID...">
+    <button class="btn btn-primary" onclick="loadGraph()">Load</button>
+    <span style="margin-left:16px;display:flex;gap:4px">
+      <button class="btn graph-mode-btn active" data-mode="tree" onclick="setGraphMode('tree')">Process Tree</button>
+      <button class="btn graph-mode-btn" data-mode="network" onclick="setGraphMode('network')">Network</button>
+      <button class="btn graph-mode-btn" data-mode="chain" onclick="setGraphMode('chain')">Attack Chain</button>
+    </span>
+  </div>
+  <div class="graph-container" id="graph-area"><div class="empty-state">Enter a PID to view its graph</div></div>
+</div>
+
+<!-- ── Events ────────────────────────────────────────────────────── -->
+<div class="tab-panel" id="panel-events">
+  <div class="filter-bar">
+    <select id="events-source"><option value="all">All Sources</option></select>
+    <button class="btn" id="events-pause-btn" onclick="toggleEventPause()">Pause</button>
+    <span style="color:var(--dim);margin-left:auto" id="events-count">—</span>
+  </div>
+  <div id="events-stream"></div>
+</div>
+
+<!-- ── Audit ─────────────────────────────────────────────────────── -->
+<div class="tab-panel" id="panel-audit">
+  <table><thead><tr><th>Time</th><th>Action</th><th>Target</th><th>Severity</th><th>Approved</th><th>Result</th><th></th></tr></thead><tbody id="audit-tbody"></tbody></table>
+</div>
+
+<!-- ── Settings ──────────────────────────────────────────────────── -->
+<div class="tab-panel" id="panel-settings">
+  <div id="settings-content"><div class="empty-state">Loading settings...</div></div>
+</div>
+
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────
+let currentTab = 'overview';
+let graphMode = 'tree';
+let eventsPaused = false;
+let selectedFinding = null;
+const API = '';
+
+// ── Tab Navigation ─────────────────────────────────────────────
+document.getElementById('tab-bar').addEventListener('click', e => {
+  if (!e.target.classList.contains('tab-btn')) return;
+  switchTab(e.target.dataset.tab);
+});
+
+function switchTab(tab) {
+  currentTab = tab;
+  location.hash = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + tab));
+  refreshTab(tab);
+}
+
+// Hash routing
+if (location.hash) switchTab(location.hash.slice(1));
+window.addEventListener('hashchange', () => { if (location.hash) switchTab(location.hash.slice(1)); });
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  const tabs = ['overview','findings','graph','events','audit','settings'];
+  if (e.key >= '1' && e.key <= '6') switchTab(tabs[parseInt(e.key)-1]);
+  if (e.key === 'r') refreshTab(currentTab);
+  if (e.key === 'p') toggleEventPause();
+});
+
+// ── Data Fetching ──────────────────────────────────────────────
+async function api(path) {
+  try {
+    const r = await fetch(API + path);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+function refreshTab(tab) {
+  if (tab === 'overview') refreshOverview();
+  else if (tab === 'findings') refreshFindings();
+  else if (tab === 'events') refreshEvents();
+  else if (tab === 'audit') refreshAudit();
+  else if (tab === 'settings') refreshSettings();
+}
+
+// ── Overview ───────────────────────────────────────────────────
+async function refreshOverview() {
+  const [status, findings, stats] = await Promise.all([
+    api('/api/status'), api('/api/findings?limit=5'), api('/api/graph/stats')
+  ]);
+
+  if (status) {
+    const dot = document.getElementById('hdr-dot');
+    const running = status.agent_status === 'running';
+    dot.className = 'status-dot ' + (running ? 'running' : 'paused');
+    document.getElementById('hdr-status').textContent = running ? 'Running' : 'Paused';
+    document.getElementById('hdr-eps').textContent = status.events_per_second + ' evt/s';
+    document.getElementById('hdr-uptime').textContent = fmtDuration(status.uptime_seconds);
+
+    document.getElementById('ov-status').innerHTML = '<span class="status-dot ' + (running?'running':'paused') + '"></span> ' + (running?'Running':'Paused');
+    document.getElementById('ov-uptime').textContent = 'Uptime: ' + fmtDuration(status.uptime_seconds) + ' | ' + status.events_dropped + ' dropped';
+    document.getElementById('ov-events').textContent = fmtNum(status.events_processed);
+    document.getElementById('ov-eps').textContent = status.events_per_second + '/sec | Queue: ' + status.queue_depth;
+
+    const cl = document.getElementById('ov-collectors');
+    cl.innerHTML = (status.collector_sources||[]).map(c => '<span class="collector-chip">' + esc(c) + '</span>').join('');
+  }
+
+  if (findings && findings.findings) {
+    const total = findings.total;
+    const hi = findings.findings.filter(f => f.severity === 'high' || f.severity === 'HIGH').length;
+    document.getElementById('ov-findings').textContent = total + ' total';
+    document.getElementById('ov-findings-sub').textContent = hi + ' high severity';
+
+    const el = document.getElementById('ov-recent-findings');
+    if (findings.findings.length === 0) {
+      el.innerHTML = '<div class="empty-state">No findings yet</div>';
+    } else {
+      el.innerHTML = findings.findings.map(f => {
+        const sev = f.severity.toLowerCase();
+        const ago = fmtAgo(f.timestamp);
+        return '<div class="clickable" style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px" onclick="switchTab(\'findings\')">' +
+          '<span class="severity-badge severity-' + sev + '">' + sev + '</span>' +
+          '<span style="flex:1">' + esc(f.title) + '</span>' +
+          '<span style="color:var(--dim);font-size:12px">' + ago + '</span></div>';
+      }).join('');
+    }
+  }
+
+  if (stats) {
+    document.getElementById('ov-nodes').textContent = fmtNum(stats.total_nodes) + ' nodes';
+    document.getElementById('ov-edges').textContent = fmtNum(stats.total_edges) + ' edges | ' + (stats.nodes.File||0) + ' files';
+  }
+}
+
+// ── Findings ───────────────────────────────────────────────────
+async function refreshFindings() {
+  const sev = document.getElementById('findings-severity').value;
+  const q = sev ? '?severity=' + sev + '&limit=100' : '?limit=100';
+  const data = await api('/api/findings' + q);
+  if (!data) return;
+
+  const search = document.getElementById('findings-search').value.toLowerCase();
+  let items = data.findings;
+  if (search) items = items.filter(f => f.title.toLowerCase().includes(search) || (f.description||'').toLowerCase().includes(search));
+
+  const tbody = document.getElementById('findings-tbody');
+  tbody.innerHTML = items.map(f => {
+    const sev = f.severity.toLowerCase();
+    const time = new Date(f.timestamp).toLocaleTimeString();
+    const tech = (f.description||'').match(/T\d{4}(\.\d{3})?/)?.[0] || '—';
+    return '<tr class="clickable" onclick="showFindingDetail(\'' + f.id + '\')">' +
+      '<td><span class="severity-badge severity-' + sev + '">' + sev + '</span></td>' +
+      '<td class="mono">' + time + '</td>' +
+      '<td>' + esc(f.title) + '</td>' +
+      '<td class="mono">' + tech + '</td></tr>';
+  }).join('');
+}
+
+async function showFindingDetail(id) {
+  const f = await api('/api/findings/' + id);
+  if (!f) return;
+  const sev = f.severity.toLowerCase();
+  const el = document.getElementById('findings-detail');
+  el.innerHTML = '<div class="detail-panel">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center">' +
+      '<span class="severity-badge severity-' + sev + '" style="font-size:14px;padding:4px 12px">' + sev.toUpperCase() + '</span>' +
+      '<button class="btn" onclick="document.getElementById(\'findings-detail\').innerHTML=\'\'">&times; Close</button></div>' +
+    '<h3 style="margin-top:12px;font-size:16px">' + esc(f.title) + '</h3>' +
+    '<div class="detail-grid" style="margin-top:12px">' +
+      '<dt>Time</dt><dd class="mono">' + new Date(f.timestamp).toLocaleString() + '</dd>' +
+      '<dt>Entities</dt><dd>' + (f.affected_entities||[]).join(', ') + '</dd>' +
+      '<dt>Evidence IDs</dt><dd class="mono">' + (f.evidence_event_ids||[]).join(', ') + '</dd>' +
+    '</div>' +
+    '<div class="detail-section"><h4>Description</h4><pre>' + esc(f.description||'') + '</pre></div>' +
+    (f.recommendation ? '<div class="detail-section"><h4>Recommendation</h4><pre>' + esc(f.recommendation) + '</pre></div>' : '') +
+    '<div style="margin-top:16px;display:flex;gap:8px">' +
+      '<button class="btn" onclick="loadGraphForPid(\'tree\')">View Process Tree</button>' +
+      '<button class="btn" onclick="loadGraphForPid(\'network\')">View Network</button>' +
+      '<button class="btn" onclick="loadGraphForPid(\'chain\')">View Attack Chain</button>' +
+    '</div></div>';
+}
+
+document.getElementById('findings-severity').addEventListener('change', refreshFindings);
+document.getElementById('findings-search').addEventListener('input', refreshFindings);
+
+// ── Graph ──────────────────────────────────────────────────────
+function setGraphMode(mode) {
+  graphMode = mode;
+  document.querySelectorAll('.graph-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  loadGraph();
+}
+
+async function loadGraph() {
+  const pid = parseInt(document.getElementById('graph-pid').value);
+  if (!pid || isNaN(pid)) return;
+  const area = document.getElementById('graph-area');
+  area.innerHTML = '<div class="empty-state">Loading...</div>';
+
+  if (graphMode === 'tree') {
+    const data = await api('/api/graph/process-tree/' + pid);
+    if (data) renderTree(area, data.root, pid);
+    else area.innerHTML = '<div class="empty-state">No data for PID ' + pid + '</div>';
+  } else if (graphMode === 'network') {
+    const data = await api('/api/graph/network/' + pid);
+    if (data) renderNetwork(area, data);
+    else area.innerHTML = '<div class="empty-state">No data</div>';
+  } else {
+    const data = await api('/api/graph/attack-chain/' + pid);
+    if (data) renderChain(area, data);
+    else area.innerHTML = '<div class="empty-state">No data</div>';
+  }
+}
+
+function loadGraphForPid(mode) {
+  graphMode = mode;
+  document.querySelectorAll('.graph-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  switchTab('graph');
+  loadGraph();
+}
+
+function renderTree(area, chain, pid) {
+  if (!chain || chain.length === 0) { area.innerHTML = '<div class="empty-state">No process tree data</div>'; return; }
+  const w = area.clientWidth - 32, h = Math.max(300, chain.length * 60 + 40);
+  let svg = '<svg width="' + w + '" height="' + h + '" xmlns="http://www.w3.org/2000/svg">';
+  const x = 40, boxW = 300, boxH = 36;
+  chain.forEach((node, i) => {
+    const y = 20 + i * 56;
+    const isTarget = node.pid === pid;
+    svg += '<rect x="' + x + '" y="' + y + '" width="' + boxW + '" height="' + boxH + '" class="node-rect' + (isTarget?' highlight':'') + '"/>';
+    const label = (node.type === 'user' ? 'User: ' : 'PID ' + (node.pid||'?') + ' ') + (node.name||'?');
+    svg += '<text x="' + (x+12) + '" y="' + (y+22) + '" font-size="13">' + esc(label) + '</text>';
+    if (i > 0) {
+      const py = 20 + (i-1) * 56 + boxH;
+      svg += '<line x1="' + (x+boxW/2) + '" y1="' + py + '" x2="' + (x+boxW/2) + '" y2="' + y + '" class="edge-line"/>';
+      svg += '<polygon points="' + (x+boxW/2-4) + ',' + (y-2) + ' ' + (x+boxW/2+4) + ',' + (y-2) + ' ' + (x+boxW/2) + ',' + (y+2) + '" class="edge-arrow"/>';
+    }
+  });
+  svg += '</svg>';
+  area.innerHTML = svg;
+}
+
+function renderNetwork(area, data) {
+  const proc = data.process || {};
+  const domains = data.domains || [];
+  const ips = data.ips || [];
+  if (!proc.name && domains.length === 0 && ips.length === 0) { area.innerHTML = '<div class="empty-state">No network data</div>'; return; }
+  const w = area.clientWidth - 32;
+  const rows = Math.max(domains.length, ips.length, 1);
+  const h = Math.max(300, rows * 50 + 60);
+  let svg = '<svg width="' + w + '" height="' + h + '">';
+  const pX = 40, pY = h/2 - 18, bW = 180, bH = 36;
+  svg += '<rect x="' + pX + '" y="' + pY + '" width="' + bW + '" height="' + bH + '" class="node-rect highlight"/>';
+  svg += '<text x="' + (pX+8) + '" y="' + (pY+22) + '" font-size="13">' + esc(proc.name||'?') + ' (PID ' + (proc.pid||'?') + ')</text>';
+  const dX = w/2 - 90;
+  domains.forEach((d, i) => {
+    const dY = 20 + i * 48;
+    const cls = d.is_dga_candidate ? 'highlight' : '';
+    svg += '<rect x="' + dX + '" y="' + dY + '" width="' + bW + '" height="' + bH + '" class="node-rect ' + cls + '"/>';
+    svg += '<text x="' + (dX+8) + '" y="' + (dY+22) + '" font-size="12">' + esc(d.name) + (d.is_dga_candidate?' [DGA]':'') + '</text>';
+    svg += '<line x1="' + (pX+bW) + '" y1="' + (pY+bH/2) + '" x2="' + dX + '" y2="' + (dY+bH/2) + '" class="edge-line"/>';
+  });
+  const iX = w - 220;
+  ips.forEach((ip, i) => {
+    const iY = 20 + i * 48;
+    svg += '<rect x="' + iX + '" y="' + iY + '" width="' + bW + '" height="' + bH + '" class="node-rect"/>';
+    svg += '<text x="' + (iX+8) + '" y="' + (iY+22) + '" font-size="12">' + esc(ip.address) + ':' + (ip.port||'?') + '</text>';
+    svg += '<line x1="' + (pX+bW) + '" y1="' + (pY+bH/2) + '" x2="' + iX + '" y2="' + (iY+bH/2) + '" class="edge-line" stroke-dasharray="4,4"/>';
+  });
+  svg += '</svg>';
+  area.innerHTML = svg;
+}
+
+function renderChain(area, data) {
+  const parts = [];
+  if (data.target_process && data.target_process.name) {
+    parts.push({title:'Target Process', content:'<dl class="detail-grid"><dt>Name</dt><dd>' + esc(data.target_process.name) + '</dd><dt>PID</dt><dd class="mono">' + (data.target_process.pid||'?') + '</dd><dt>Command</dt><dd class="mono">' + esc(data.target_process.command_line||'—') + '</dd><dt>User</dt><dd>' + esc(data.target_process.user||'—') + '</dd></dl>'});
+  }
+  if (data.process_chain && data.process_chain.length > 0) {
+    parts.push({title:'Process Chain', content: data.process_chain.map(p => '<span style="padding:2px 8px;background:var(--bg);border-radius:4px;margin:2px">' + esc(p.name||p.type||'?') + '</span>').join(' &rarr; ')});
+  }
+  const net = data.network_footprint || {};
+  if ((net.domains||[]).length > 0) {
+    parts.push({title:'DNS Queries', content: net.domains.map(d => '<div>' + esc(d.name) + (d.is_dga_candidate ? ' <span class="severity-badge severity-high">DGA</span>' : '') + '</div>').join('')});
+  }
+  if ((net.ips||[]).length > 0) {
+    parts.push({title:'Connections', content: '<table><tr><th>IP</th><th>Port</th></tr>' + net.ips.map(i => '<tr><td class="mono">' + esc(i.address) + '</td><td class="mono">' + (i.port||'?') + '</td></tr>').join('') + '</table>'});
+  }
+  if ((data.file_activity||[]).length > 0) {
+    parts.push({title:'File Activity', content: '<table><tr><th>Operation</th><th>Path</th></tr>' + data.file_activity.map(f => '<tr><td>' + esc(f.operation) + '</td><td class="mono">' + esc(f.file_path) + '</td></tr>').join('') + '</table>'});
+  }
+  if ((data.risk_indicators||[]).length > 0) {
+    parts.push({title:'Risk Indicators', content: data.risk_indicators.map(r => '<div class="severity-badge severity-high" style="margin:2px">' + esc(String(r)) + '</div>').join(' ')});
+  }
+  if (parts.length === 0) { area.innerHTML = '<div class="empty-state">No attack chain data</div>'; return; }
+  area.innerHTML = parts.map(p => '<div class="card" style="margin-bottom:12px"><div class="card-label">' + p.title + '</div><div style="margin-top:8px">' + p.content + '</div></div>').join('');
+}
+
+// ── Events ─────────────────────────────────────────────────────
+function toggleEventPause() {
+  eventsPaused = !eventsPaused;
+  document.getElementById('events-pause-btn').textContent = eventsPaused ? 'Resume' : 'Pause';
+}
+
+async function refreshEvents() {
+  if (eventsPaused) return;
+  const src = document.getElementById('events-source').value;
+  const q = src !== 'all' ? '?source=' + src + '&limit=200' : '?limit=200';
+  const data = await api('/api/events/recent' + q);
+  if (!data) return;
+
+  document.getElementById('events-count').textContent = data.total + ' events in buffer';
+  const el = document.getElementById('events-stream');
+  el.innerHTML = data.events.slice(0, 100).map(e => {
+    const t = e.timestamp ? new Date(e.timestamp).toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit',fractionalSecondDigits:3}) : '—';
+    const src = e.source || '?';
+    const msg = (e.message || '').substring(0, 120);
+    const fields = e.fields || {};
+    const pid = fields.pid || '';
+    const srcMap = {unified_log:'ul',unified_log_dns:'dns',psutil_process:'psu',psutil_network:'net',file_create:'fse',file_modify:'fse',file_delete:'fse',file_rename:'fse'};
+    const srcShort = srcMap[src] || src.substring(0,3);
+    let typeClass = 'process';
+    if (src.includes('dns')) typeClass = 'dns';
+    else if (src.includes('file')) typeClass = 'file';
+    else if (src.includes('network') || src.includes('net')) typeClass = 'network';
+    return '<div class="event-row"><span class="event-time">' + t + '</span><span class="event-type ' + typeClass + '">' + esc(src) + '</span><span class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(msg) + '</span><span class="mono" style="color:var(--dim)">' + (pid ? 'PID:'+pid : '') + '</span><span class="event-source">' + srcShort + '</span></div>';
+  }).join('');
+}
+
+// ── Audit ──────────────────────────────────────────────────────
+async function refreshAudit() {
+  const data = await api('/api/audit-trail?limit=100');
+  if (!data) return;
+  const tbody = document.getElementById('audit-tbody');
+  tbody.innerHTML = (data.trail||[]).map(r => {
+    const time = r.timestamp || '—';
+    const target = r.target_pid ? 'PID ' + r.target_pid : (r.target_path || '—');
+    const sev = (r.llm_severity||'').toLowerCase();
+    const isPending = r.approval_status === 'pending';
+    return '<tr' + (r.reverted ? ' style="text-decoration:line-through;opacity:0.5"' : '') + '>' +
+      '<td class="mono">' + esc(String(time).substring(0,19)) + '</td>' +
+      '<td>' + esc(r.action_taken) + '</td>' +
+      '<td class="mono">' + esc(String(target).substring(0,60)) + '</td>' +
+      '<td><span class="severity-badge severity-' + sev + '">' + esc(r.llm_severity||'') + '</span></td>' +
+      '<td>' + esc(r.approval_status) + '</td>' +
+      '<td>' + esc(r.result) + '</td>' +
+      '<td>' + (isPending ? '<button class="btn" onclick="approveAction(\'' + r.response_id + '\',\'approve\')">Approve</button> <button class="btn btn-danger" onclick="approveAction(\'' + r.response_id + '\',\'deny\')">Deny</button>' : '') + '</td></tr>';
+  }).join('');
+}
+
+async function approveAction(id, action) {
+  await fetch(API + '/api/response/approve/' + id, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({action})
+  });
+  refreshAudit();
+}
+
+// ── Settings ───────────────────────────────────────────────────
+async function refreshSettings() {
+  const data = await api('/api/settings');
+  if (!data || Object.keys(data).length === 0) { document.getElementById('settings-content').innerHTML = '<div class="empty-state">Settings not available</div>'; return; }
+  const groups = {
+    'Collection': ['collector_poll_interval','processor_poll_interval','processor_batch_size'],
+    'Analysis': ['analyzer_interval','dga_entropy_threshold','dga_score_threshold','dga_allowlist'],
+    'Response': ['auto_respond','auto_terminate'],
+    'Infrastructure': ['data_dir','dashboard_port','metrics_port','watchdog_enabled','tamper_check_enabled'],
+  };
+  let html = '';
+  for (const [group, keys] of Object.entries(groups)) {
+    html += '<div class="settings-group"><h3>' + group + '</h3>';
+    for (const k of keys) {
+      if (data[k] !== undefined) {
+        const v = Array.isArray(data[k]) ? data[k].join(', ') : String(data[k]);
+        html += '<div class="settings-row"><span class="settings-key">' + k + '</span><span class="settings-val">' + esc(v) + '</span></div>';
+      }
+    }
+    html += '</div>';
+  }
+  document.getElementById('settings-content').innerHTML = html;
+}
+
+// ── Helpers ────────────────────────────────────────────────────
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function fmtNum(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'k' : String(n); }
+function fmtDuration(s) {
+  if (s < 60) return Math.floor(s) + 's';
+  if (s < 3600) return Math.floor(s/60) + 'm';
+  return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'm';
+}
+function fmtAgo(ts) {
+  const d = (Date.now() - new Date(ts).getTime()) / 1000;
+  if (d < 60) return Math.floor(d) + 's ago';
+  if (d < 3600) return Math.floor(d/60) + 'm ago';
+  return Math.floor(d/3600) + 'h ago';
+}
+
+// ── Auto-refresh ───────────────────────────────────────────────
+setInterval(() => { if (currentTab === 'overview') refreshOverview(); }, 5000);
+setInterval(() => { if (currentTab === 'events') refreshEvents(); }, 2000);
+setInterval(() => { if (currentTab === 'findings') refreshFindings(); }, 10000);
+
+// Initial load
+refreshOverview();
+</script>
+</body>
+</html>

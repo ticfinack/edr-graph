@@ -159,7 +159,7 @@ class TestGenerateDefaultConfig:
         config_str = generate_default_config()
         data = yaml.safe_load(config_str)
         assert data["metrics"]["port"] == 9100
-        assert data["dashboard"]["port"] == 8080
+        assert data["dashboard"]["port"] == 9200
         assert data["response"]["auto_respond"] is False
         assert data["persistence"]["watchdog_enabled"] is True
 
@@ -170,7 +170,7 @@ class TestSettingsDefaults:
         assert s.collector_poll_interval == 5.0
         assert s.processor_poll_interval == 2.0
         assert s.analyzer_interval == 60.0
-        assert s.dashboard_port == 8080
+        assert s.dashboard_port == 9200
         assert s.metrics_port == 9100
         assert s.watchdog_enabled is True
         assert s.tamper_check_enabled is True

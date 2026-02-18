@@ -1,4 +1,4 @@
-"""Entry point: CLI, starts pipeline threads + dashboard."""
+"""Entry point: CLI, starts pipeline threads + dashboard + tray icon."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import signal
 import sys
 import threading
 import time
+import webbrowser
 
 import kuzu
 
@@ -45,6 +46,9 @@ logger = logging.getLogger("agent")
 
 _shutdown = threading.Event()
 
+# Tray icon instance (set in main() if tray is enabled)
+_tray_app = None
+
 
 def collector_thread(
     settings: Settings,
@@ -54,7 +58,15 @@ def collector_thread(
     collectors = get_collectors()
     for c in collectors:
         c.start()
+    collector_names = [type(c).__name__ for c in collectors]
     logger.info("Started collector thread with %d collectors", len(collectors))
+
+    # Update dashboard state with collector names
+    try:
+        from agent.dashboard import server as dashboard_server
+        dashboard_server._state["collector_names"] = collector_names
+    except Exception:
+        pass
 
     try:
         while not _shutdown.is_set():
@@ -83,6 +95,11 @@ def processor_thread(
     logger.info("Started processor thread")
 
     while not _shutdown.is_set():
+        # Check if agent is paused
+        if _is_paused():
+            _shutdown.wait(timeout=settings.processor_poll_interval)
+            continue
+
         try:
             batch = queue.pop_batch(settings.processor_batch_size)
             if not batch:
@@ -117,6 +134,9 @@ def processor_thread(
                             source=raw.source,
                             event_type=type(ocsf).__name__,
                         ).inc()
+
+                        # Push to dashboard recent events buffer
+                        _push_recent_event(raw_data, raw.source)
                     else:
                         metrics.events_dropped_total.labels(
                             source=raw.source,
@@ -160,6 +180,10 @@ def analyzer_thread(
         if _shutdown.is_set():
             break
 
+        # Skip analysis when paused
+        if _is_paused():
+            continue
+
         try:
             # Get recently processed events
             recent = queue.get_processed_since(last_analyzed_id, limit=100)
@@ -187,6 +211,9 @@ def analyzer_thread(
                 findings = analyzer.analyze_batch(novel_events)
                 for finding in findings:
                     queue.store_finding(finding)
+
+                    # Push finding to tray notification queue
+                    _push_finding_notification(finding)
 
                     # Trigger response engine for each finding
                     if response_engine:
@@ -263,7 +290,61 @@ def _trigger_response(
             )
 
 
+def _is_paused() -> bool:
+    """Check if the agent is paused (via tray icon or dashboard API)."""
+    try:
+        from agent.dashboard import server as dashboard_server
+        return dashboard_server._state.get("paused", False)
+    except Exception:
+        return False
+
+
+def _push_recent_event(raw_data: dict, source: str) -> None:
+    """Push a processed event to the dashboard's recent events buffer."""
+    try:
+        from agent.dashboard.server import append_recent_event
+        append_recent_event({
+            "timestamp": raw_data.get("timestamp", ""),
+            "source": source,
+            "event_type": raw_data.get("event_type", raw_data.get("source", "")),
+            "name": raw_data.get("name", ""),
+            "pid": raw_data.get("pid", ""),
+            "fields": {
+                k: v for k, v in raw_data.items()
+                if k not in ("timestamp", "source", "event_type", "name", "pid", "hostname")
+            },
+        })
+    except Exception:
+        pass
+
+
+def _push_finding_notification(finding) -> None:
+    """Push a finding to both the dashboard and tray notification queues."""
+    global _tray_app
+
+    # Push to dashboard notification queue
+    try:
+        from agent.dashboard.server import notification_queue
+        notification_queue.appendleft({
+            "severity": finding.severity,
+            "title": finding.title,
+            "id": finding.id,
+            "timestamp": time.time(),
+        })
+    except Exception:
+        pass
+
+    # Push to tray icon notification queue
+    if _tray_app is not None:
+        try:
+            _tray_app.push_finding(finding)
+        except Exception:
+            pass
+
+
 def main() -> None:
+    global _tray_app
+
     parser = argparse.ArgumentParser(
         description="edr-graph: Local EDR with Graph-Based Event Correlation"
     )
@@ -275,7 +356,11 @@ def main() -> None:
         "--data-dir", type=str, default=None, help="Data directory path"
     )
     parser.add_argument(
-        "--port", type=int, default=None, help="Dashboard port (default: 8080)"
+        "--dashboard-port", type=int, default=None,
+        help="Dashboard port (default: 9200)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=None, help="Alias for --dashboard-port"
     )
     parser.add_argument(
         "--log-level",
@@ -307,6 +392,11 @@ def main() -> None:
         "--no-dashboard",
         action="store_true",
         help="Run without the web dashboard",
+    )
+    parser.add_argument(
+        "--no-tray",
+        action="store_true",
+        help="Disable the menu bar tray icon (run headless)",
     )
     parser.add_argument(
         "--no-watchdog",
@@ -341,7 +431,9 @@ def main() -> None:
     # CLI overrides (highest priority)
     if args.data_dir:
         settings.data_dir = Path(args.data_dir)
-    if args.port:
+    if args.dashboard_port:
+        settings.dashboard_port = args.dashboard_port
+    elif args.port:
         settings.dashboard_port = args.port
     if args.metrics_port:
         settings.metrics_port = args.metrics_port
@@ -351,155 +443,261 @@ def main() -> None:
         settings.watchdog_enabled = False
     if args.no_tamper_check:
         settings.tamper_check_enabled = False
+    if args.no_tray:
+        settings.tray_enabled = False
     settings.ensure_dirs()
 
-    # NiceGUI re-spawns the process — use an env var to detect the original
-    is_main = os.environ.get("_EDR_NICEGUI_CHILD") != "1"
-
-    if is_main:
-        logger.info("Starting edr-graph, data dir: %s", settings.data_dir)
+    logger.info("Starting edr-graph, data dir: %s", settings.data_dir)
 
     # Initialize SQLite queue
     queue = SqliteQueue(settings.db_path)
 
     # Start health/metrics server
-    if is_main:
-        start_health_server(
-            port=settings.metrics_port,
-            queue_depth_fn=queue.count_unprocessed,
+    start_health_server(
+        port=settings.metrics_port,
+        queue_depth_fn=queue.count_unprocessed,
+    )
+
+    # Initialize Kuzu graph
+    kuzu_db = kuzu.Database(str(settings.graph_path))
+    init_conn = kuzu.Connection(kuzu_db)
+    init_graph_schema(init_conn)
+    logger.info("Graph schema initialized")
+
+    # Initialize response engine
+    import sqlite3
+
+    response_conn = sqlite3.connect(str(settings.db_path))
+    response_conn.row_factory = sqlite3.Row
+    response_conn.execute("PRAGMA journal_mode=WAL")
+    response_conn.execute("PRAGMA busy_timeout=5000")
+    from agent.schema.queue_schema import init_queue_db
+
+    init_queue_db(response_conn)
+
+    policy = ResponsePolicy(
+        auto_respond=settings.auto_respond,
+        auto_terminate=settings.auto_terminate,
+    )
+    audit_log = ResponseAuditLog(response_conn)
+    response_engine = ResponseEngine(
+        policy=policy,
+        audit_log=audit_log,
+        quarantine_dir=settings.quarantine_dir,
+    )
+    logger.info(
+        "Response engine initialized (auto_respond=%s, auto_terminate=%s)",
+        settings.auto_respond,
+        settings.auto_terminate,
+    )
+
+    # Start self-protection: tamper detection
+    tamper_checker = None
+    if settings.tamper_check_enabled:
+        agent_dir = Path(__file__).resolve().parent
+        tamper_checker = TamperChecker(
+            agent_dir=agent_dir,
+            check_interval=settings.tamper_check_interval,
         )
+        tamper_checker.start()
+        logger.info("Tamper detection started (%d files baselined)", len(tamper_checker.baseline))
 
-    if is_main:
-        # Initialize Kuzu graph
-        kuzu_db = kuzu.Database(str(settings.graph_path))
-        init_conn = kuzu.Connection(kuzu_db)
-        init_graph_schema(init_conn)
-        logger.info("Graph schema initialized")
-
-        # Initialize response engine
-        import sqlite3
-
-        response_conn = sqlite3.connect(str(settings.db_path))
-        response_conn.row_factory = sqlite3.Row
-        response_conn.execute("PRAGMA journal_mode=WAL")
-        response_conn.execute("PRAGMA busy_timeout=5000")
-        from agent.schema.queue_schema import init_queue_db
-
-        init_queue_db(response_conn)
-
-        policy = ResponsePolicy(
-            auto_respond=settings.auto_respond,
-            auto_terminate=settings.auto_terminate,
-        )
-        audit_log = ResponseAuditLog(response_conn)
-        response_engine = ResponseEngine(
-            policy=policy,
-            audit_log=audit_log,
-            quarantine_dir=settings.quarantine_dir,
-        )
-        logger.info(
-            "Response engine initialized (auto_respond=%s, auto_terminate=%s)",
-            settings.auto_respond,
-            settings.auto_terminate,
-        )
-
-        # Start self-protection: tamper detection
-        tamper_checker = None
-        if settings.tamper_check_enabled:
-            agent_dir = Path(__file__).resolve().parent
-            tamper_checker = TamperChecker(
-                agent_dir=agent_dir,
-                check_interval=settings.tamper_check_interval,
-            )
-            tamper_checker.start()
-            logger.info("Tamper detection started (%d files baselined)", len(tamper_checker.baseline))
-
-        # Handle shutdown signals
-        def on_signal(signum, frame):
-            logger.info("Received signal %d, shutting down...", signum)
-            _shutdown.set()
-
-        signal.signal(signal.SIGINT, on_signal)
-        signal.signal(signal.SIGTERM, on_signal)
-
-        # Start pipeline threads
-        threads = []
-
-        # Heartbeat thread — writes agent heartbeat for watchdog monitoring
-        if settings.watchdog_enabled:
-            def heartbeat_loop():
-                while not _shutdown.is_set():
-                    try:
-                        write_heartbeat(settings.heartbeat_dir)
-                    except Exception:
-                        logger.debug("Heartbeat write failed", exc_info=True)
-                    _shutdown.wait(timeout=settings.heartbeat_interval)
-
-            t = threading.Thread(
-                target=heartbeat_loop, daemon=True, name="heartbeat"
-            )
-            t.start()
-            threads.append(t)
-            logger.info("Heartbeat thread started (dir=%s, interval=%.0fs)",
-                        settings.heartbeat_dir, settings.heartbeat_interval)
-
-        t = threading.Thread(
-            target=collector_thread, args=(settings, queue), daemon=True, name="collector"
-        )
-        t.start()
-        threads.append(t)
-
-        t = threading.Thread(
-            target=processor_thread,
-            args=(settings, queue, kuzu_db),
-            daemon=True,
-            name="processor",
-        )
-        t.start()
-        threads.append(t)
-
-        t = threading.Thread(
-            target=analyzer_thread,
-            args=(settings, queue, kuzu_db, response_engine),
-            daemon=True,
-            name="analyzer",
-        )
-        t.start()
-        threads.append(t)
-
-        logger.info("All pipeline threads started")
-
-    # Run dashboard on main thread (blocking), or wait for shutdown
-    if args.no_dashboard:
-        logger.info("Running without dashboard (Ctrl+C to stop)")
-        try:
-            while not _shutdown.is_set():
-                _shutdown.wait(timeout=1.0)
-        except KeyboardInterrupt:
-            pass
-    else:
-        from agent.dashboard.app import run_dashboard
-
-        # Mark env so NiceGUI's spawned child skips pipeline startup
-        os.environ["_EDR_NICEGUI_CHILD"] = "1"
-        logger.info("Starting dashboard on port %d", settings.dashboard_port)
-        run_dashboard(
-            queue,
-            port=settings.dashboard_port,
-            refresh_interval=settings.dashboard_refresh_interval,
-        )
-
-    # Shutdown (only main process manages threads)
-    if is_main:
+    # Handle shutdown signals
+    def on_signal(signum, frame):
+        logger.info("Received signal %d, shutting down...", signum)
         _shutdown.set()
-        if tamper_checker:
-            tamper_checker.stop()
-        logger.info("Waiting for threads to stop...")
-        for t in threads:
-            t.join(timeout=5.0)
+
+    signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGTERM, on_signal)
+
+    # Start pipeline threads
+    threads = []
+
+    # Heartbeat thread
+    if settings.watchdog_enabled:
+        def heartbeat_loop():
+            while not _shutdown.is_set():
+                try:
+                    write_heartbeat(settings.heartbeat_dir)
+                except Exception:
+                    logger.debug("Heartbeat write failed", exc_info=True)
+                _shutdown.wait(timeout=settings.heartbeat_interval)
+
+        t = threading.Thread(
+            target=heartbeat_loop, daemon=True, name="heartbeat"
+        )
+        t.start()
+        threads.append(t)
+        logger.info("Heartbeat thread started (dir=%s, interval=%.0fs)",
+                    settings.heartbeat_dir, settings.heartbeat_interval)
+
+    t = threading.Thread(
+        target=collector_thread, args=(settings, queue), daemon=True, name="collector"
+    )
+    t.start()
+    threads.append(t)
+
+    t = threading.Thread(
+        target=processor_thread,
+        args=(settings, queue, kuzu_db),
+        daemon=True,
+        name="processor",
+    )
+    t.start()
+    threads.append(t)
+
+    t = threading.Thread(
+        target=analyzer_thread,
+        args=(settings, queue, kuzu_db, response_engine),
+        daemon=True,
+        name="analyzer",
+    )
+    t.start()
+    threads.append(t)
+
+    logger.info("All pipeline threads started")
+
+    # Start FastAPI dashboard server (daemon thread)
+    if not args.no_dashboard:
+        try:
+            from agent.dashboard.server import (
+                init_dashboard,
+                start_dashboard_server,
+            )
+
+            collector_names = []
+            try:
+                collectors = get_collectors()
+                collector_names = [type(c).__name__ for c in collectors]
+            except Exception:
+                pass
+
+            init_dashboard(
+                queue=queue,
+                kuzu_db=kuzu_db,
+                settings=settings,
+                collector_names=collector_names,
+            )
+            start_dashboard_server(port=settings.dashboard_port)
+            logger.info("Dashboard server started on http://127.0.0.1:%d", settings.dashboard_port)
+
+            # Auto-open browser after a short delay
+            if settings.dashboard_auto_open:
+                def _open_browser():
+                    time.sleep(2)
+                    webbrowser.open(f"http://127.0.0.1:{settings.dashboard_port}")
+
+                threading.Thread(target=_open_browser, daemon=True, name="browser-open").start()
+
+        except Exception:
+            logger.warning("Failed to start dashboard server", exc_info=True)
+
+    # Main thread: tray icon (macOS) or signal wait
+    use_tray = (
+        sys.platform == "darwin"
+        and settings.tray_enabled
+        and not args.no_tray
+    )
+
+    if use_tray:
+        try:
+            from agent.tray.macos_tray import EDRTrayApp
+
+            def _get_status():
+                """Gather status for the tray icon from in-process state."""
+                uptime = time.time() - metrics.agent_uptime._value._value  # noqa: SLF001
+                events_processed = 0
+                for metric in metrics.events_processed_total.collect():
+                    for sample in metric.samples:
+                        if sample.name == "edr_events_processed_total":
+                            events_processed += int(sample.value)
+
+                return {
+                    "agent_status": "paused" if _is_paused() else "running",
+                    "uptime_seconds": time.time() - _state_start_time,
+                    "events_processed": events_processed,
+                    "events_per_second": round(events_processed / max(time.time() - _state_start_time, 1), 1),
+                    "collector_sources": settings._collector_names if hasattr(settings, "_collector_names") else [],
+                }
+
+            def _on_pause(paused: bool):
+                from agent.dashboard import server as dashboard_server
+                dashboard_server._state["paused"] = paused
+
+            def _on_shutdown():
+                _shutdown.set()
+
+            _tray_app = EDRTrayApp(
+                dashboard_port=settings.dashboard_port,
+                notification_cooldown=settings.tray_notification_cooldown,
+                notify_on_high=settings.tray_notify_on_high,
+                notify_on_critical=settings.tray_notify_on_critical,
+                shutdown_callback=_on_shutdown,
+                pause_callback=_on_pause,
+                status_callback=_get_tray_status(settings, queue),
+            )
+            logger.info("Starting macOS tray icon (main thread)")
+            _tray_app.run()  # Blocks until quit
+
+        except ImportError:
+            logger.warning("rumps not available, running without tray icon")
+            _wait_for_shutdown()
+        except Exception:
+            logger.warning("Tray icon failed to start, running headless", exc_info=True)
+            _wait_for_shutdown()
+    else:
+        _wait_for_shutdown()
+
+    # Shutdown sequence
+    _shutdown.set()
+    if tamper_checker:
+        tamper_checker.stop()
+    logger.info("Waiting for threads to stop...")
+    for t in threads:
+        t.join(timeout=5.0)
     queue.close()
-    if is_main:
-        logger.info("edr-graph stopped")
+    logger.info("edr-graph stopped")
+
+
+def _get_tray_status(settings: Settings, queue: SqliteQueue):
+    """Return a closure that gathers status for the tray icon."""
+    start_time = time.time()
+
+    def _status() -> dict:
+        uptime = time.time() - start_time
+        events_processed = 0
+        for metric in metrics.events_processed_total.collect():
+            for sample in metric.samples:
+                if sample.name == "edr_events_processed_total":
+                    events_processed += int(sample.value)
+
+        collector_names = []
+        try:
+            from agent.dashboard import server as dashboard_server
+            collector_names = dashboard_server._state.get("collector_names", [])
+        except Exception:
+            pass
+
+        return {
+            "agent_status": "paused" if _is_paused() else "running",
+            "uptime_seconds": uptime,
+            "events_processed": events_processed,
+            "events_per_second": round(events_processed / max(uptime, 1), 1),
+            "collector_sources": collector_names,
+            "queue_depth": queue.count_unprocessed(),
+        }
+
+    return _status
+
+
+def _wait_for_shutdown() -> None:
+    """Block until shutdown signal received."""
+    logger.info("Running headless (Ctrl+C to stop)")
+    try:
+        while not _shutdown.is_set():
+            _shutdown.wait(timeout=1.0)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":
