@@ -26,9 +26,11 @@ from agent.normalizer import normalize
 from agent.processor.entity_extractor import extract_entities
 from agent.processor.graph_builder import GraphBuilder
 from agent.queue.sqlite_queue import SqliteQueue
+from agent.platform.tamper_detection import TamperChecker
 from agent.response.actions import ResponsePolicy
 from agent.response.engine import ResponseAuditLog, ResponseEngine
 from agent.schema.kuzu_schema import init_graph_schema
+from agent.watchdog import write_heartbeat
 
 logger = logging.getLogger("agent")
 
@@ -349,6 +351,17 @@ def main() -> None:
             settings.auto_terminate,
         )
 
+        # Start self-protection: tamper detection
+        tamper_checker = None
+        if settings.tamper_check_enabled:
+            agent_dir = Path(__file__).resolve().parent
+            tamper_checker = TamperChecker(
+                agent_dir=agent_dir,
+                check_interval=settings.tamper_check_interval,
+            )
+            tamper_checker.start()
+            logger.info("Tamper detection started (%d files baselined)", len(tamper_checker.baseline))
+
         # Handle shutdown signals
         def on_signal(signum, frame):
             logger.info("Received signal %d, shutting down...", signum)
@@ -359,6 +372,24 @@ def main() -> None:
 
         # Start pipeline threads
         threads = []
+
+        # Heartbeat thread — writes agent heartbeat for watchdog monitoring
+        if settings.watchdog_enabled:
+            def heartbeat_loop():
+                while not _shutdown.is_set():
+                    try:
+                        write_heartbeat(settings.heartbeat_dir)
+                    except Exception:
+                        logger.debug("Heartbeat write failed", exc_info=True)
+                    _shutdown.wait(timeout=settings.heartbeat_interval)
+
+            t = threading.Thread(
+                target=heartbeat_loop, daemon=True, name="heartbeat"
+            )
+            t.start()
+            threads.append(t)
+            logger.info("Heartbeat thread started (dir=%s, interval=%.0fs)",
+                        settings.heartbeat_dir, settings.heartbeat_interval)
 
         t = threading.Thread(
             target=collector_thread, args=(settings, queue), daemon=True, name="collector"
@@ -409,6 +440,8 @@ def main() -> None:
     # Shutdown (only main process manages threads)
     if is_main:
         _shutdown.set()
+        if tamper_checker:
+            tamper_checker.stop()
         logger.info("Waiting for threads to stop...")
         for t in threads:
             t.join(timeout=5.0)

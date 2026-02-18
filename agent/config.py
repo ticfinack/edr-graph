@@ -55,6 +55,17 @@ class Settings(BaseModel):
         )
     )
 
+    # Self-protection settings
+    watchdog_enabled: bool = True
+    heartbeat_interval: float = 10.0  # seconds
+    heartbeat_dir: Path = Field(
+        default_factory=lambda: Path(
+            os.environ.get("EDR_HEARTBEAT_DIR", "/tmp/edr-heartbeats")
+        )
+    )
+    tamper_check_enabled: bool = True
+    tamper_check_interval: float = 60.0  # seconds
+
     novel_edge_threshold: int = 5
     graph_context_limit: int = 20
 

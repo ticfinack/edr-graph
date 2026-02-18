@@ -57,6 +57,17 @@ response_actions_total = Counter(
     ["action", "result"],
 )
 
+tamper_checks_total = Counter(
+    "edr_tamper_checks_total",
+    "Total tamper detection checks performed",
+)
+
+tamper_detections_total = Counter(
+    "edr_tamper_detections_total",
+    "Total tamper events detected",
+    ["event_type"],
+)
+
 agent_uptime = Gauge(
     "edr_agent_uptime_seconds",
     "Agent uptime in seconds",
