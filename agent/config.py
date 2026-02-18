@@ -41,6 +41,20 @@ class Settings(BaseModel):
         "microsoftonline.com",
     ]
 
+    # Response engine settings
+    auto_respond: bool = False  # Auto-execute response actions for CRITICAL severity
+    auto_terminate: bool = False  # Allow process termination without human approval
+    quarantine_dir: Path = Field(
+        default_factory=lambda: Path(
+            os.environ.get(
+                "EDR_QUARANTINE_DIR",
+                "C:\\ProgramData\\edr-graph\\quarantine"
+                if os.name == "nt"
+                else "/var/edr-graph/quarantine",
+            )
+        )
+    )
+
     novel_edge_threshold: int = 5
     graph_context_limit: int = 20
 
