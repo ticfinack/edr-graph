@@ -39,10 +39,11 @@ logger = logging.getLogger(__name__)
 class LlmAnalyzer:
     """Performs batch security analysis using Gemma3-27B via DeepInfra."""
 
-    def __init__(self, settings: Settings, kuzu_db: kuzu.Database, queue=None) -> None:
+    def __init__(self, settings: Settings, kuzu_db: kuzu.Database, queue=None, ioc_db=None) -> None:
         self._settings = settings
         self._kuzu_db = kuzu_db
         self._queue = queue
+        self._ioc_db = ioc_db
 
         # Build active tools list
         if settings.tool_use_enabled:
@@ -369,16 +370,51 @@ class LlmAnalyzer:
                 lines.append("")
             sections.append("\n".join(lines))
 
+        # --- 4. IOC feed intelligence ---
+        ioc_matches_found = 0
+        if self._ioc_db is not None:
+            ioc_lines = ["## Pre-enrichment: IOC feed intelligence\n"]
+            has_match = False
+
+            for ip in sorted(public_ips):
+                match = self._ioc_db.check_ip(ip)
+                if match:
+                    ioc_lines.append(
+                        f"IOC FEED MATCH: {ip} — {match.feed_name}: {match.description}"
+                    )
+                    has_match = True
+                    ioc_matches_found += 1
+
+            # Check domains from DnsActivity events
+            dns_domains: set[str] = set()
+            for _, event in events:
+                if isinstance(event, DnsActivity) and event.query_domain:
+                    dns_domains.add(event.query_domain)
+
+            for domain in sorted(dns_domains):
+                match = self._ioc_db.check_domain(domain)
+                if match:
+                    ioc_lines.append(
+                        f"IOC FEED MATCH: {domain} — {match.feed_name}: {match.description}"
+                    )
+                    has_match = True
+                    ioc_matches_found += 1
+
+            if has_match:
+                ioc_lines.append("")
+                sections.append("\n".join(ioc_lines))
+
         if not sections:
             return ""
 
         enrichment = "\n\n".join(sections)
         logger.info(
             "Pre-enriched %d IP(s), %d process(es), %d user(s), "
-            "cache: {entries: %d}",
+            "%d IOC feed match(es), cache: {entries: %d}",
             len(public_ips),
             len(process_names),
             len(users),
+            ioc_matches_found,
             cache.size,
         )
         return enrichment

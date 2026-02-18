@@ -104,6 +104,7 @@ svg .edge-arrow{fill:var(--dim)}
 .filter-bar select,.filter-bar input{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 12px;color:var(--text);font-size:13px}
 .empty-state{text-align:center;padding:48px;color:var(--dim)}
 .clickable{cursor:pointer}
+.feed-match-badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;background:rgba(239,68,68,0.2);color:var(--critical);margin-left:6px;text-transform:uppercase}
 </style>
 </head>
 <body>
@@ -139,9 +140,15 @@ svg .edge-arrow{fill:var(--dim)}
     <div class="card"><div class="card-label">Findings</div><div class="card-value" id="ov-findings">—</div><div class="card-sub" id="ov-findings-sub">—</div></div>
     <div class="card"><div class="card-label">Graph</div><div class="card-value" id="ov-nodes">—</div><div class="card-sub" id="ov-edges">—</div></div>
   </div>
-  <div class="card" style="margin-bottom:16px">
-    <div class="card-label">Active Collectors</div>
-    <div class="collector-list" id="ov-collectors"></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+    <div class="card">
+      <div class="card-label">Active Collectors</div>
+      <div class="collector-list" id="ov-collectors"></div>
+    </div>
+    <div class="card">
+      <div class="card-label">Threat Intel Feeds</div>
+      <div id="ov-ioc-stats"><span style="color:var(--dim)">Loading...</span></div>
+    </div>
   </div>
   <div class="card">
     <div class="card-label">Recent Findings</div>
@@ -305,8 +312,10 @@ async function refreshOverview() {
       el.innerHTML = findings.findings.map(f => {
         const sev = f.severity.toLowerCase();
         const ago = fmtAgo(f.timestamp);
+        const isFeedMatch = f.title && (f.title.startsWith('Known Botnet') || f.title.startsWith('Known Malicious') || f.title.startsWith('Known Malware'));
+        const feedBadge = isFeedMatch ? '<span class="feed-match-badge">Feed Match</span>' : '';
         return '<div class="clickable" style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px" onclick="switchTab(\'findings\')">' +
-          '<span class="severity-badge severity-' + sev + '">' + sev + '</span>' +
+          '<span class="severity-badge severity-' + sev + '">' + sev + '</span>' + feedBadge +
           '<span style="flex:1">' + esc(f.title) + '</span>' +
           '<span style="color:var(--dim);font-size:12px">' + ago + '</span></div>';
       }).join('');
@@ -316,6 +325,22 @@ async function refreshOverview() {
   if (stats) {
     document.getElementById('ov-nodes').textContent = fmtNum(stats.total_nodes) + ' nodes';
     document.getElementById('ov-edges').textContent = fmtNum(stats.total_edges) + ' edges | ' + (stats.nodes.File||0) + ' files';
+  }
+
+  // IOC feed stats
+  const iocStats = await api('/api/intel/ioc-stats');
+  const iocEl = document.getElementById('ov-ioc-stats');
+  if (iocStats && iocStats.enabled) {
+    const refreshAgo = iocStats.last_refresh ? fmtAgo(iocStats.last_refresh) : 'never';
+    iocEl.innerHTML =
+      '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:8px">' +
+      '<div><div style="font-size:20px;font-weight:600">' + fmtNum(iocStats.ip_count||0) + '</div><div style="color:var(--dim);font-size:11px">IPs</div></div>' +
+      '<div><div style="font-size:20px;font-weight:600">' + fmtNum(iocStats.domain_count||0) + '</div><div style="color:var(--dim);font-size:11px">Domains</div></div>' +
+      '<div><div style="font-size:20px;font-weight:600">' + fmtNum(iocStats.hash_count||0) + '</div><div style="color:var(--dim);font-size:11px">Hashes</div></div>' +
+      '</div>' +
+      '<div style="color:var(--dim);font-size:11px;margin-top:8px">Last refresh: ' + refreshAgo + '</div>';
+  } else {
+    iocEl.innerHTML = '<span style="color:var(--dim)">IOC feeds disabled</span>';
   }
 }
 
@@ -335,8 +360,10 @@ async function refreshFindings() {
     const sev = f.severity.toLowerCase();
     const time = new Date(f.timestamp).toLocaleTimeString();
     const tech = (f.description||'').match(/T\d{4}(\.\d{3})?/)?.[0] || '—';
+    const isFeedMatch = f.title && (f.title.startsWith('Known Botnet') || f.title.startsWith('Known Malicious') || f.title.startsWith('Known Malware'));
+    const feedBadge = isFeedMatch ? '<span class="feed-match-badge">Feed Match</span>' : '';
     return '<tr class="clickable" onclick="showFindingDetail(\'' + f.id + '\')">' +
-      '<td><span class="severity-badge severity-' + sev + '">' + sev + '</span></td>' +
+      '<td><span class="severity-badge severity-' + sev + '">' + sev + '</span>' + feedBadge + '</td>' +
       '<td class="mono">' + time + '</td>' +
       '<td>' + esc(f.title) + '</td>' +
       '<td class="mono">' + tech + '</td></tr>';

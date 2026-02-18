@@ -48,6 +48,7 @@ def build_intel_prompt(tools: list[dict] | None = None) -> str:
     if tools:
         sections.append(_format_tool_instructions(tools))
 
+    sections.append(_IOC_FEED_SECTION)
     sections.append(_OUTPUT_FORMAT_SECTION)
 
     return "\n\n".join(sections)
@@ -176,6 +177,51 @@ port)."""
 def _format_tool_instructions(tools: list[dict]) -> str:
     tool_names = [t["function"]["name"] for t in tools]
     tool_list = ", ".join(f"`{n}`" for n in tool_names)
+
+    # Build Tier 4 investigation guidance if those tools are present
+    tier4_section = ""
+    tier4_names = {"file_info", "list_directory", "process_info", "netstat_query", "file_hash"}
+    active_tier4 = [n for n in tool_names if n in tier4_names]
+    if active_tier4:
+        tier4_section = (
+            "\n\n### Local Investigation Tools\n"
+            "You also have safe, read-only tools for inspecting the local host:\n"
+        )
+        if "file_info" in active_tier4:
+            tier4_section += (
+                "- `file_info`: Get metadata about suspicious files — permissions, owner, "
+                "timestamps, and code signature (macOS). Use this when events reference "
+                "a file path you want to verify.\n"
+            )
+        if "list_directory" in active_tier4:
+            tier4_section += (
+                "- `list_directory`: Understand what a suspicious process is writing or "
+                "reading by listing its working directory or drop locations.\n"
+            )
+        if "process_info" in active_tier4:
+            tier4_section += (
+                "- `process_info`: Get live process details — exe path, command line, "
+                "network connections, open files, child processes. Use this to verify "
+                "if a suspicious process is still running and what it's doing.\n"
+            )
+        if "netstat_query" in active_tier4:
+            tier4_section += (
+                "- `netstat_query`: Verify if suspicious connections are still active. "
+                "Filter by PID or port to find related network activity.\n"
+            )
+        if "file_hash" in active_tier4:
+            tier4_section += (
+                "- `file_hash`: Compute MD5/SHA1/SHA256 for a file, then chain the "
+                "SHA256 result to `virustotal_lookup(indicator=sha256, indicator_type='files')` "
+                "to check file reputation.\n"
+            )
+        tier4_section += (
+            "\n**Key rule: Don't just recommend investigation — DO IT with these tools.** "
+            "If you see a suspicious file path, call `file_info` on it. If you see a "
+            "suspicious PID, call `process_info` on it. If you want to check a binary's "
+            "reputation, call `file_hash` then `virustotal_lookup`."
+        )
+
     return (
         "## INVESTIGATION TOOLS — YOU MUST USE THESE\n\n"
         f"You have access to the following tools: {tool_list}.\n\n"
@@ -194,6 +240,8 @@ def _format_tool_instructions(tools: list[dict]) -> str:
         "   - Call `mitre_attack_lookup` to map suspicious behaviors to ATT&CK "
         "technique IDs (e.g., T1059.004 for shell execution).\n"
         "   - Call `whois_lookup` on suspicious domains.\n"
+        "   - Use `process_info` and `file_info` to inspect suspicious local entities.\n"
+        "   - Use `file_hash` → `virustotal_lookup` to check file reputation.\n"
         "3. **Finally**, after reviewing tool results, produce your findings JSON "
         "with enriched descriptions that include concrete data from your lookups "
         "(ISP names, countries, abuse scores, MITRE technique IDs).\n\n"
@@ -204,8 +252,26 @@ def _format_tool_instructions(tools: list[dict]) -> str:
         "- You have up to 5 rounds of tool calls. Use them.\n"
         "- A finding that says 'investigate this IP' without having called "
         "`ip_geolocation` on it is INCOMPLETE. Do the investigation yourself."
+        + tier4_section
     )
 
+
+_IOC_FEED_SECTION = """\
+## IOC FEED MATCHING
+
+Events matching known-bad IOC feeds (Feodo Tracker, ThreatFox, URLhaus, MalBazaar) \
+are flagged as CRITICAL automatically by the processor pipeline. These matches appear \
+as findings with titles starting with "Known Botnet C2 IP Detected", "Known Malicious \
+Domain Detected", or "Known Malware Hash Detected".
+
+When you see pre-enrichment data showing "IOC FEED MATCH", this means the indicator \
+was found in a threat intelligence feed. Provide additional behavioral context:
+- What process initiated the connection?
+- Is the process expected to make such connections?
+- Are there other related indicators in this batch?
+- What MITRE ATT&CK techniques does this activity map to?
+
+Do NOT duplicate the IOC feed finding — instead reference it and add behavioral analysis."""
 
 _OUTPUT_FORMAT_SECTION = """\
 ## ANALYSIS INSTRUCTIONS

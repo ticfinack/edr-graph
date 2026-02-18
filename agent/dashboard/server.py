@@ -543,6 +543,17 @@ async def get_settings_info():
     }
 
 
+@app.get("/api/intel/ioc-stats")
+async def get_ioc_stats():
+    """IOC feed database statistics."""
+    ioc_db = _state.get("ioc_db")
+    if ioc_db is None:
+        return {"enabled": False}
+    stats = ioc_db.stats()
+    stats["enabled"] = True
+    return stats
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 
@@ -585,6 +596,7 @@ def init_dashboard(
     kuzu_db: kuzu.Database,
     settings,
     collector_names: list[str],
+    ioc_db=None,
 ) -> None:
     """Initialize dashboard state. Called once from main.py."""
     _state["queue"] = queue
@@ -592,6 +604,7 @@ def init_dashboard(
     _state["settings"] = settings
     _state["start_time"] = time.time()
     _state["collector_names"] = collector_names
+    _state["ioc_db"] = ioc_db
 
 
 def start_dashboard_server(port: int = 9200) -> threading.Thread:

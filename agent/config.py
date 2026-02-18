@@ -104,6 +104,13 @@ class Settings(BaseModel):
     connection_metadata_compute_ja3: bool = True
     connection_metadata_retention_hours: int = 24
 
+    # IOC feed settings
+    ioc_feeds_enabled: bool = True
+    ioc_feeds_refresh_hours: int = 4
+
+    # Investigation tools (Tier 4 — safe, read-only local host inspection)
+    investigation_tools_enabled: bool = True
+
     # Tool-use settings
     tool_use_enabled: bool = True
     tool_use_max_iterations: int = 5

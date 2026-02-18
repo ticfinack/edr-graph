@@ -89,6 +89,7 @@ def processor_thread(
     settings: Settings,
     queue: SqliteQueue,
     kuzu_db: kuzu.Database,
+    ioc_db=None,
 ) -> None:
     """Process queued events: normalize, extract entities, write to graph."""
     builder = GraphBuilder(kuzu_db)
@@ -128,6 +129,14 @@ def processor_thread(
                     raw = RawEvent.from_dict(raw_data)
                     ocsf = normalize(raw)
                     if ocsf is not None:
+                        # Real-time IOC feed matching (instant, no LLM wait)
+                        if ioc_db is not None:
+                            ioc_db.refresh_if_stale()
+                            ioc_matches = _check_ioc_matches(ioc_db, ocsf, event_id)
+                            for finding in ioc_matches:
+                                queue.store_finding(finding)
+                                _push_finding_notification(finding)
+
                         entities = extract_entities(
                             ocsf,
                             event_id,
@@ -180,9 +189,10 @@ def analyzer_thread(
     queue: SqliteQueue,
     kuzu_db: kuzu.Database,
     response_engine: ResponseEngine | None = None,
+    ioc_db=None,
 ) -> None:
     """Periodically analyze novel events with the LLM."""
-    analyzer = LlmAnalyzer(settings, kuzu_db, queue)
+    analyzer = LlmAnalyzer(settings, kuzu_db, queue, ioc_db=ioc_db)
     conn = kuzu.Connection(kuzu_db)
     last_analyzed_id = 0
     logger.info("Started analyzer thread")
@@ -300,6 +310,128 @@ def _trigger_response(
                 rec.result,
                 rec.result_detail,
             )
+
+
+def _check_ioc_matches(ioc_db, ocsf, event_id: int) -> list:
+    """Check an OCSF event against the IOC feed database.
+
+    Returns a list of SecurityFinding objects for any matches (usually 0-1).
+    """
+    from agent.schema.ocsf_types import (
+        Authentication,
+        DnsActivity,
+        FileActivity,
+        NetworkActivity,
+    )
+    from agent.schema.graph_types import ChainStep, SecurityFinding
+
+    matches = []
+
+    def _make_finding(match, entity_type: str, entity_value: str, process_name: str = "", pid: int = 0):
+        import uuid
+        from datetime import datetime as _dt
+
+        title_map = {
+            "ip": "Known Botnet C2 IP Detected",
+            "domain": "Known Malicious Domain Detected",
+            "sha256": "Known Malware Hash Detected",
+        }
+        title = f"{title_map.get(match.ioc_type, 'Known Threat IOC Detected')}: {entity_value}"
+        chain = []
+        if process_name:
+            chain.append(ChainStep(
+                entity_type="process",
+                entity_id=process_name,
+                entity_name=process_name,
+                pid=pid if pid > 0 else None,
+            ))
+        chain.append(ChainStep(
+            entity_type=entity_type,
+            entity_id=entity_value,
+            entity_name=entity_value,
+        ))
+
+        iocs: dict = {}
+        if match.ioc_type == "ip":
+            iocs["ips"] = [entity_value]
+        elif match.ioc_type == "domain":
+            iocs["domains"] = [entity_value]
+        elif match.ioc_type == "sha256":
+            iocs["files"] = [entity_value]
+
+        return SecurityFinding(
+            id=str(uuid.uuid4()),
+            timestamp=_dt.now(),
+            severity="critical",
+            title=title,
+            description=(
+                f"IOC feed match ({match.feed_name}): {entity_value} — "
+                f"{match.description}. This indicator was found in a threat "
+                f"intelligence feed with {match.confidence} confidence."
+            ),
+            affected_entities=[entity_value],
+            evidence_event_ids=[event_id],
+            recommendation=(
+                "Investigate the associated process immediately. Consider "
+                "isolating the endpoint and blocking the indicator."
+            ),
+            chain=chain,
+            affected_pids=[pid] if pid > 0 else [],
+            iocs=iocs,
+        )
+
+    # Extract observables and check each
+    ips_to_check: list[str] = []
+    domains_to_check: list[str] = []
+    hashes_to_check: list[str] = []
+    process_name = ""
+    pid = 0
+
+    if isinstance(ocsf, NetworkActivity):
+        if ocsf.process:
+            process_name = ocsf.process.name
+            pid = ocsf.process.pid
+        if ocsf.dst_endpoint and ocsf.dst_endpoint.ip:
+            ips_to_check.append(ocsf.dst_endpoint.ip)
+        if ocsf.src_endpoint and ocsf.src_endpoint.ip:
+            ips_to_check.append(ocsf.src_endpoint.ip)
+
+    elif isinstance(ocsf, Authentication):
+        if ocsf.src_endpoint and ocsf.src_endpoint.ip:
+            ips_to_check.append(ocsf.src_endpoint.ip)
+
+    elif isinstance(ocsf, DnsActivity):
+        if ocsf.process:
+            process_name = ocsf.process.name
+            pid = ocsf.process.pid
+        if ocsf.query_domain:
+            domains_to_check.append(ocsf.query_domain)
+        for ip in (ocsf.resolved_ips or []):
+            ips_to_check.append(ip)
+
+    elif isinstance(ocsf, FileActivity):
+        if ocsf.process:
+            process_name = ocsf.process.name
+            pid = ocsf.process.pid
+        if ocsf.file_hash_sha256:
+            hashes_to_check.append(ocsf.file_hash_sha256)
+
+    for ip in ips_to_check:
+        match = ioc_db.check_ip(ip)
+        if match:
+            matches.append(_make_finding(match, "ip", ip, process_name, pid))
+
+    for domain in domains_to_check:
+        match = ioc_db.check_domain(domain)
+        if match:
+            matches.append(_make_finding(match, "domain", domain, process_name, pid))
+
+    for h in hashes_to_check:
+        match = ioc_db.check_hash(h)
+        if match:
+            matches.append(_make_finding(match, "file", h, process_name, pid))
+
+    return matches
 
 
 def _is_paused() -> bool:
@@ -545,6 +677,19 @@ def main() -> None:
         tamper_checker.start()
         logger.info("Tamper detection started (%d files baselined)", len(tamper_checker.baseline))
 
+    # Initialize IOC feed database
+    ioc_db = None
+    if settings.ioc_feeds_enabled:
+        try:
+            from agent.intel.ioc_database import IocDatabase
+
+            ioc_db = IocDatabase(
+                refresh_interval_hours=settings.ioc_feeds_refresh_hours,
+            )
+            ioc_db.download_feeds()
+        except Exception:
+            logger.warning("Failed to initialize IOC feed database", exc_info=True)
+
     # Handle shutdown signals
     def on_signal(signum, frame):
         logger.info("Received signal %d, shutting down...", signum)
@@ -582,7 +727,7 @@ def main() -> None:
 
     t = threading.Thread(
         target=processor_thread,
-        args=(settings, queue, kuzu_db),
+        args=(settings, queue, kuzu_db, ioc_db),
         daemon=True,
         name="processor",
     )
@@ -591,7 +736,7 @@ def main() -> None:
 
     t = threading.Thread(
         target=analyzer_thread,
-        args=(settings, queue, kuzu_db, response_engine),
+        args=(settings, queue, kuzu_db, response_engine, ioc_db),
         daemon=True,
         name="analyzer",
     )
@@ -620,6 +765,7 @@ def main() -> None:
                 kuzu_db=kuzu_db,
                 settings=settings,
                 collector_names=collector_names,
+                ioc_db=ioc_db,
             )
             start_dashboard_server(port=settings.dashboard_port)
             logger.info("Dashboard server started on http://127.0.0.1:%d", settings.dashboard_port)
