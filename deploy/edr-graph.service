@@ -1,0 +1,60 @@
+[Unit]
+Description=EDR Graph Agent — Local EDR with Graph-Based Event Correlation & AI Analysis
+Documentation=https://github.com/edr-graph/edr-graph
+After=network.target auditd.service
+Wants=network.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/edr-graph --no-dashboard --log-format json
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Run as dedicated user with required capabilities
+User=edr-graph
+Group=edr-graph
+
+# Capabilities for:
+#   CAP_NET_ADMIN   — iptables/pf network isolation rules
+#   CAP_SYS_PTRACE  — process suspension/termination via ptrace
+#   CAP_AUDIT_READ  — reading from auditd netlink socket
+#   CAP_KILL        — sending signals to other processes
+AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_PTRACE CAP_AUDIT_READ CAP_KILL
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_PTRACE CAP_AUDIT_READ CAP_KILL
+
+# Auto-restart on any failure
+Restart=always
+RestartSec=1
+
+# Watchdog: systemd kills and restarts if no heartbeat within 30s
+WatchdogSec=30
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Working directory and data paths
+WorkingDirectory=/opt/edr-graph
+Environment=EDR_DATA_DIR=/var/lib/edr-graph
+Environment=EDR_QUARANTINE_DIR=/var/edr-graph/quarantine
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/edr-graph /var/edr-graph/quarantine /var/log/edr-graph
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edr-graph
+
+[Install]
+WantedBy=multi-user.target
