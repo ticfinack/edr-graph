@@ -48,6 +48,7 @@ _NORMALIZERS["etw_registry"] = normalize_registry
 
 # DNS sources
 _NORMALIZERS["dns_resolve"] = normalize_dns
+_NORMALIZERS["unified_log_dns"] = normalize_dns
 
 # File activity sources
 _NORMALIZERS["file_create"] = normalize_file

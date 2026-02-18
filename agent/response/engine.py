@@ -49,53 +49,90 @@ class ResponseRecord:
 
 
 class ResponseAuditLog:
-    """Append-only audit trail for response actions in SQLite."""
+    """Append-only audit trail for response actions in SQLite.
+
+    Thread-safe: creates a new connection per operation to avoid
+    SQLite's same-thread restriction.
+    """
 
     def __init__(self, db_conn: sqlite3.Connection) -> None:
         self._conn = db_conn
+        # Store the database path for cross-thread access
+        self._db_path: str | None = None
+        try:
+            row = db_conn.execute("PRAGMA database_list").fetchone()
+            if row:
+                self._db_path = row[2]  # file path is the 3rd column
+        except Exception:
+            pass
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """Get a SQLite connection safe for the current thread."""
+        if self._db_path:
+            conn = sqlite3.connect(self._db_path)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            return conn
+        return self._conn
 
     def record(self, rec: ResponseRecord) -> None:
         """Insert a response record. Append-only — no updates or deletes."""
-        self._conn.execute(
-            "INSERT INTO response_audit "
-            "(response_id, event_id, timestamp, action_taken, target_pid, "
-            "target_path, llm_severity, llm_confidence, approved_by, "
-            "approval_status, result, result_detail, reverted, revert_timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                rec.response_id,
-                rec.event_id,
-                _ts_to_iso(rec.timestamp),
-                rec.action_taken,
-                rec.target_pid,
-                rec.target_path,
-                rec.llm_severity,
-                rec.llm_confidence,
-                rec.approved_by,
-                rec.approval_status,
-                rec.result,
-                rec.result_detail,
-                1 if rec.reverted else 0,
-                _ts_to_iso(rec.revert_timestamp) if rec.revert_timestamp else None,
-            ),
-        )
-        self._conn.commit()
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO response_audit "
+                "(response_id, event_id, timestamp, action_taken, target_pid, "
+                "target_path, llm_severity, llm_confidence, approved_by, "
+                "approval_status, result, result_detail, reverted, revert_timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    rec.response_id,
+                    rec.event_id,
+                    _ts_to_iso(rec.timestamp),
+                    rec.action_taken,
+                    rec.target_pid,
+                    rec.target_path,
+                    rec.llm_severity,
+                    rec.llm_confidence,
+                    rec.approved_by,
+                    rec.approval_status,
+                    rec.result,
+                    rec.result_detail,
+                    1 if rec.reverted else 0,
+                    _ts_to_iso(rec.revert_timestamp) if rec.revert_timestamp else None,
+                ),
+            )
+            conn.commit()
+        finally:
+            if conn is not self._conn:
+                conn.close()
 
     def get_recent(self, limit: int = 50) -> list[dict]:
         """Get recent audit records."""
-        rows = self._conn.execute(
-            "SELECT * FROM response_audit ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return [dict(row) for row in rows]
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM response_audit ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            if conn is not self._conn:
+                conn.close()
 
     def get_by_event(self, event_id: int) -> list[dict]:
         """Get all response records for a given event."""
-        rows = self._conn.execute(
-            "SELECT * FROM response_audit WHERE event_id = ? ORDER BY timestamp",
-            (event_id,),
-        ).fetchall()
-        return [dict(row) for row in rows]
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM response_audit WHERE event_id = ? ORDER BY timestamp",
+                (event_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            if conn is not self._conn:
+                conn.close()
 
 
 class ResponseEngine:

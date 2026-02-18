@@ -206,6 +206,7 @@ def test_persistence() -> None:
             "ProgramArguments": ["/usr/bin/true"],
             "RunAtLoad": True,
         }
+        os.makedirs(os.path.dirname(plist_path), exist_ok=True)
         with open(plist_path, "wb") as f:
             plistlib.dump(plist_data, f)
         print_step(f"Created test LaunchAgent: {plist_path}")
@@ -474,6 +475,7 @@ def test_kill_chain() -> None:
                 "ProgramArguments": ["/usr/bin/true"],
                 "RunAtLoad": True,
             }
+            os.makedirs(os.path.dirname(plist_path), exist_ok=True)
             with open(plist_path, "wb") as f:
                 plistlib.dump(plist_data, f)
             persistence_cleanup = lambda: os.remove(plist_path)

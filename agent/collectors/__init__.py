@@ -29,6 +29,11 @@ def get_collectors() -> list[Collector]:
     elif system == "Darwin":
         from .macos import MacOSCollector
         collectors.append(MacOSCollector())
+        try:
+            from .macos_dns import MacOSDnsCollector
+            collectors.append(MacOSDnsCollector())
+        except Exception:
+            logger.debug("macOS DNS collector not available", exc_info=True)
     elif system == "Windows":
         from .windows import WindowsCollector
         collectors.append(WindowsCollector())
