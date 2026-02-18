@@ -17,11 +17,15 @@ from agent import metrics
 from agent.config import Settings
 from agent.intel.prompt_builder import build_intel_prompt
 from agent.schema.graph_types import ChainStep, SecurityFinding
+from agent.graph.queries import build_attack_chain, serialize_attack_chain
 from agent.schema.ocsf_types import (
     Authentication,
+    DnsActivity,
+    FileActivity,
     NetworkActivity,
     OcsfEvent,
     ProcessActivity,
+    RegistryActivity,
 )
 
 from .tool_cache import ToolCache
@@ -329,7 +333,7 @@ class LlmAnalyzer:
         return enrichment
 
     def _build_batch_context(self, events: list[tuple[int, OcsfEvent]]) -> str:
-        """Build the context string for the LLM, including graph context."""
+        """Build the context string for the LLM, including attack chain context."""
         lines = ["## Events in this batch\n"]
 
         for event_id, event in events:
@@ -355,15 +359,64 @@ class LlmAnalyzer:
                 lines.append(f"Status: {'Success' if event.status_id == 1 else 'Failure'}")
                 if event.src_endpoint:
                     lines.append(f"Source IP: {event.src_endpoint.ip}")
+            elif isinstance(event, DnsActivity):
+                if event.process:
+                    lines.append(f"Process: {event.process.name}")
+                lines.append(f"DNS query: {event.query_domain}")
+                if event.resolved_ips:
+                    lines.append(f"Resolved to: {', '.join(event.resolved_ips)}")
+            elif isinstance(event, FileActivity):
+                if event.process:
+                    lines.append(f"Process: {event.process.name}")
+                op_names = {1: "Create", 2: "Read", 3: "Modify", 4: "Delete"}
+                lines.append(f"File {op_names.get(event.activity_id, 'Op')}: {event.file_path}")
+            elif isinstance(event, RegistryActivity):
+                if event.process:
+                    lines.append(f"Process: {event.process.name}")
+                op_names = {1: "Create", 3: "Modify", 4: "Delete"}
+                lines.append(
+                    f"Registry {op_names.get(event.activity_id, 'Op')}: {event.reg_path}"
+                )
+                if event.reg_value_name:
+                    lines.append(f"Value: {event.reg_value_name} = {event.reg_value_data}")
             lines.append("")
 
-        # Add bounded graph context
+        # Build attack chain context for processes in this batch
+        attack_chains = self._build_attack_chain_context(events)
+        if attack_chains:
+            lines.append("## Attack chain context\n")
+            lines.append(attack_chains)
+
+        # Add bounded graph context (legacy, for user/process history)
         graph_context = self._get_graph_context(events)
         if graph_context:
             lines.append("## Recent graph context (last 20 per entity)\n")
             lines.append(graph_context)
 
         return "\n".join(lines)
+
+    def _build_attack_chain_context(self, events: list[tuple[int, OcsfEvent]]) -> str:
+        """Build attack chain context for processes in this batch."""
+        conn = kuzu.Connection(self._kuzu_db)
+        seen_pids: set[int] = set()
+        sections: list[str] = []
+
+        for _, event in events:
+            pid = None
+            if isinstance(event, ProcessActivity):
+                pid = event.process.pid
+            elif isinstance(event, (NetworkActivity, DnsActivity, FileActivity, RegistryActivity)):
+                if event.process:
+                    pid = event.process.pid
+
+            if pid and pid not in seen_pids:
+                seen_pids.add(pid)
+                chain = build_attack_chain(conn, pid)
+                serialized = serialize_attack_chain(chain)
+                if serialized.strip():
+                    sections.append(f"### PID {pid}\n{serialized}")
+
+        return "\n\n".join(sections)
 
     def _get_graph_context(self, events: list[tuple[int, OcsfEvent]]) -> str:
         """Query Kuzu for bounded graph context. LIMIT 20 per entity."""

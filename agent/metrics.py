@@ -34,6 +34,12 @@ llm_verdicts = Counter(
     ["severity"],
 )
 
+attack_chain_build_latency = Histogram(
+    "edr_attack_chain_build_latency_seconds",
+    "Time to build a full attack chain context",
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
+)
+
 agent_uptime = Gauge(
     "edr_agent_uptime_seconds",
     "Agent uptime in seconds",
