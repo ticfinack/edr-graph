@@ -498,6 +498,10 @@ def main() -> None:
     init_graph_schema(init_conn)
     logger.info("Graph schema initialized")
 
+    # Backfill parent_pid for existing processes using psutil
+    from agent.processor.graph_builder import backfill_parent_pids
+    backfill_parent_pids(kuzu_db)
+
     # Initialize response engine
     import sqlite3
 

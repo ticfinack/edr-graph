@@ -40,8 +40,38 @@ def _ensure_identity_import():
         except ImportError:
             _get_process_identity = False  # Mark as unavailable
 
+_ppid_cache: dict[int, int] = {}  # pid -> parent_pid, populated once per PID
+
 def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
-    """Enrich a ProcessNode with identity information if available."""
+    """Enrich a ProcessNode with identity and parent_pid via psutil if available."""
+    # Fill in parent_pid from psutil when not already set
+    if pid > 0 and not proc_node.parent_pid:
+        if pid in _ppid_cache:
+            proc_node.parent_pid = _ppid_cache[pid]
+        else:
+            try:
+                import psutil
+                p = psutil.Process(pid)
+                ppid = p.ppid()
+                if ppid and ppid > 0:
+                    proc_node.parent_pid = ppid
+                    _ppid_cache[pid] = ppid
+                # Also fill in cmd_line and exe_path if missing
+                if not proc_node.cmd_line:
+                    try:
+                        cmdline = p.cmdline()
+                        if cmdline:
+                            proc_node.cmd_line = " ".join(cmdline)
+                    except (psutil.AccessDenied, psutil.ZombieProcess):
+                        pass
+                if not proc_node.exe_path:
+                    try:
+                        proc_node.exe_path = p.exe()
+                    except (psutil.AccessDenied, psutil.ZombieProcess):
+                        pass
+            except Exception:
+                _ppid_cache[pid] = 0  # Don't retry for dead processes
+
     _ensure_identity_import()
     if not _get_process_identity or not proc_node.exe_path:
         return
@@ -310,17 +340,17 @@ def _extract_dns_activity(
         proc = event.process
         start_time = proc.created_time or now
         proc_id = f"{hostname}:{proc.pid}:{int(start_time.timestamp())}"
-        entities.processes.append(
-            ProcessNode(
-                id=proc_id,
-                name=proc.name,
-                pid=proc.pid,
-                cmd_line=proc.cmd_line or None,
-                exe_path=proc.exe_path or None,
-                hostname=hostname,
-                start_time=start_time,
-            )
+        proc_node = ProcessNode(
+            id=proc_id,
+            name=proc.name,
+            pid=proc.pid,
+            cmd_line=proc.cmd_line or None,
+            exe_path=proc.exe_path or None,
+            hostname=hostname,
+            start_time=start_time,
         )
+        _enrich_process_node(proc_node, proc.pid)
+        entities.processes.append(proc_node)
 
     if event.query_domain:
         domain_name = event.query_domain.lower().rstrip(".")
@@ -400,17 +430,17 @@ def _extract_file_activity(
         proc = event.process
         start_time = proc.created_time or now
         proc_id = f"{hostname}:{proc.pid}:{int(start_time.timestamp())}"
-        entities.processes.append(
-            ProcessNode(
-                id=proc_id,
-                name=proc.name,
-                pid=proc.pid,
-                cmd_line=proc.cmd_line or None,
-                exe_path=proc.exe_path or None,
-                hostname=hostname,
-                start_time=start_time,
-            )
+        proc_node = ProcessNode(
+            id=proc_id,
+            name=proc.name,
+            pid=proc.pid,
+            cmd_line=proc.cmd_line or None,
+            exe_path=proc.exe_path or None,
+            hostname=hostname,
+            start_time=start_time,
         )
+        _enrich_process_node(proc_node, proc.pid)
+        entities.processes.append(proc_node)
 
     if event.file_path:
         file_id = event.file_path

@@ -414,6 +414,155 @@ class GraphBuilder:
         self._conn = None
 
 
+def backfill_parent_pids(db: kuzu.Database) -> int:
+    """One-time pass: fill parent_pid and create missing ancestor nodes.
+
+    For each process with parent_pid=0, queries psutil for the real parent.
+    Then walks the parent chain upward, creating stub Process nodes for any
+    ancestors not already in the graph (e.g., shell processes that never
+    generated events). This ensures the chain walker can build a full tree.
+
+    Returns the number of processes updated or created.
+    """
+    import socket
+    import psutil
+
+    conn = kuzu.Connection(db)
+    hostname = socket.gethostname()
+    updated = 0
+
+    # Collect PIDs already in the graph
+    existing_pids: set[int] = set()
+    try:
+        r = conn.execute("MATCH (p:Process) RETURN p.pid")
+        while r.has_next():
+            existing_pids.add(r.get_next()[0])
+    except Exception:
+        pass
+
+    # Phase 1: Fix processes with parent_pid=0
+    try:
+        result = conn.execute(
+            "MATCH (p:Process) WHERE p.parent_pid = 0 AND p.pid > 0 "
+            "RETURN p.id, p.pid"
+        )
+        rows = []
+        while result.has_next():
+            rows.append(result.get_next())
+    except Exception:
+        logger.debug("Failed to query processes for backfill", exc_info=True)
+        return 0
+
+    def _ensure_ancestor_chain(pid: int, depth: int = 0) -> None:
+        """Recursively ensure parent processes exist in the graph (max 10 deep)."""
+        nonlocal updated
+        if depth > 10 or pid <= 1:
+            return
+        try:
+            p = psutil.Process(pid)
+            ppid = p.ppid()
+            if not ppid or ppid <= 0:
+                return
+            if ppid not in existing_pids:
+                # Create stub node for the parent
+                try:
+                    parent_proc = psutil.Process(ppid)
+                    name = parent_proc.name()
+                    try:
+                        cmdline = " ".join(parent_proc.cmdline())
+                    except (psutil.AccessDenied, psutil.ZombieProcess):
+                        cmdline = ""
+                    try:
+                        exe = parent_proc.exe()
+                    except (psutil.AccessDenied, psutil.ZombieProcess):
+                        exe = ""
+                    try:
+                        create_time = datetime.fromtimestamp(parent_proc.create_time())
+                    except (psutil.AccessDenied, psutil.ZombieProcess):
+                        create_time = datetime.now()
+                    parent_ppid = parent_proc.ppid() or 0
+
+                    ts = _ts_lit(create_time)
+                    node_id = f"{hostname}:{ppid}:{int(create_time.timestamp())}"
+                    conn.execute(
+                        f"MERGE (p:Process {{id: $id}}) "
+                        f"ON CREATE SET p.name = $name, p.pid = $pid, "
+                        f"p.cmd_line = $cmd_line, p.exe_path = $exe_path, "
+                        f"p.hostname = $hostname, p.start_time = timestamp('{ts}'), "
+                        f"p.parent_pid = $parent_pid",
+                        {
+                            "id": node_id,
+                            "name": name,
+                            "pid": ppid,
+                            "cmd_line": cmdline,
+                            "exe_path": exe,
+                            "hostname": hostname,
+                            "parent_pid": parent_ppid,
+                        },
+                    )
+                    existing_pids.add(ppid)
+                    updated += 1
+                    logger.debug("Created stub process node: %s (PID %d)", name, ppid)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    return
+            # Continue walking upward
+            _ensure_ancestor_chain(ppid, depth + 1)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            return
+
+    for node_id, pid in rows:
+        try:
+            p = psutil.Process(pid)
+            ppid = p.ppid()
+            if ppid and ppid > 0:
+                conn.execute(
+                    "MATCH (p:Process {id: $id}) SET p.parent_pid = $ppid",
+                    {"id": node_id, "ppid": ppid},
+                )
+                # Also backfill cmd_line if empty
+                try:
+                    cmdline = p.cmdline()
+                    if cmdline:
+                        cmd_str = " ".join(cmdline)
+                        conn.execute(
+                            "MATCH (p:Process {id: $id}) "
+                            "SET p.cmd_line = CASE WHEN p.cmd_line = '' THEN $cmd ELSE p.cmd_line END",
+                            {"id": node_id, "cmd": cmd_str},
+                        )
+                except (psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+                updated += 1
+                # Create missing ancestor nodes
+                _ensure_ancestor_chain(pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        except Exception:
+            logger.debug("Failed to backfill parent_pid for %s", node_id, exc_info=True)
+
+    # Phase 2: Create ancestor stubs for processes whose parent_pid > 0
+    # but the parent PID is not in the graph
+    try:
+        result2 = conn.execute(
+            "MATCH (p:Process) WHERE p.parent_pid > 0 AND p.pid > 0 "
+            "RETURN p.pid, p.parent_pid"
+        )
+        orphans = []
+        while result2.has_next():
+            row = result2.get_next()
+            child_pid, parent_pid = row[0], row[1]
+            if parent_pid not in existing_pids:
+                orphans.append(child_pid)
+    except Exception:
+        orphans = []
+
+    for pid in orphans:
+        _ensure_ancestor_chain(pid)
+
+    if updated:
+        logger.info("Backfilled parent_pid for %d processes (including new ancestors)", updated)
+    return updated
+
+
 def _ts_lit(dt: datetime | None) -> str:
     """Convert datetime to a Kuzu timestamp literal string for use in timestamp() function."""
     if dt is None:
