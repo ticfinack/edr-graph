@@ -110,8 +110,8 @@ class SqliteQueue:
         conn.execute(
             "INSERT OR REPLACE INTO findings "
             "(id, timestamp, severity, title, description, "
-            "affected_entities, evidence_event_ids, recommendation, chain) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "affected_entities, evidence_event_ids, recommendation, chain, affected_pids) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 finding.id,
                 finding.timestamp.isoformat(),
@@ -122,6 +122,7 @@ class SqliteQueue:
                 json.dumps(finding.evidence_event_ids),
                 finding.recommendation,
                 json.dumps([step.model_dump(mode="json") for step in finding.chain]),
+                json.dumps(finding.affected_pids),
             ),
         )
         conn.commit()
@@ -161,6 +162,12 @@ class SqliteQueue:
     def _row_to_finding(row: sqlite3.Row) -> SecurityFinding:
         from agent.schema.graph_types import ChainStep
 
+        # Handle affected_pids gracefully for old rows without the column
+        try:
+            affected_pids = json.loads(row["affected_pids"])
+        except (KeyError, IndexError):
+            affected_pids = []
+
         return SecurityFinding(
             id=row["id"],
             timestamp=datetime.fromisoformat(row["timestamp"]),
@@ -171,7 +178,72 @@ class SqliteQueue:
             evidence_event_ids=json.loads(row["evidence_event_ids"]),
             recommendation=row["recommendation"],
             chain=[ChainStep(**s) for s in json.loads(row["chain"])],
+            affected_pids=affected_pids,
         )
+
+    def get_findings_for_pids(self, pids: list[int]) -> list[SecurityFinding]:
+        """Get findings whose affected_pids overlap with the given PID list."""
+        if not pids:
+            return []
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM findings WHERE affected_pids != '[]' "
+            "ORDER BY timestamp DESC LIMIT 100",
+        ).fetchall()
+
+        pid_set = set(pids)
+        results = []
+        for row in rows:
+            try:
+                row_pids = json.loads(row["affected_pids"])
+            except (KeyError, json.JSONDecodeError):
+                continue
+            if pid_set.intersection(row_pids):
+                results.append(self._row_to_finding(row))
+        return results
+
+    def update_finding(
+        self,
+        finding_id: str,
+        new_evidence_ids: list[int] | None = None,
+        new_description: str | None = None,
+        new_severity: str | None = None,
+    ) -> bool:
+        """Update an existing finding: merge evidence IDs, update description/severity.
+
+        Returns True if the finding was found and updated.
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM findings WHERE id = ?", (finding_id,)
+        ).fetchone()
+        if not row:
+            return False
+
+        # Merge evidence_event_ids (union, no duplicates)
+        existing_ids = json.loads(row["evidence_event_ids"])
+        if new_evidence_ids:
+            merged = list(dict.fromkeys(existing_ids + new_evidence_ids))
+        else:
+            merged = existing_ids
+
+        description = new_description if new_description else row["description"]
+
+        # Only escalate severity (never downgrade)
+        severity_order = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+        current_sev = row["severity"]
+        if new_severity and severity_order.get(new_severity, 0) > severity_order.get(current_sev, 0):
+            severity = new_severity
+        else:
+            severity = current_sev
+
+        conn.execute(
+            "UPDATE findings SET evidence_event_ids = ?, description = ?, severity = ? "
+            "WHERE id = ?",
+            (json.dumps(merged), description, severity, finding_id),
+        )
+        conn.commit()
+        return True
 
     def count_unprocessed(self) -> int:
         conn = self._get_conn()

@@ -146,6 +146,7 @@ def _extract_process_activity(
         exe_path=proc.exe_path or None,
         hostname=hostname,
         start_time=start_time,
+        parent_pid=proc.parent_pid,
     )
     _enrich_process_node(proc_node, proc.pid)
     entities.processes.append(proc_node)

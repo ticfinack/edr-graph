@@ -185,6 +185,18 @@ IMPORTANT: Routine system behavior (launchd spawning services, expected daemons,
 WebKit making HTTPS connections) is NORMAL — do NOT flag it. Only flag deviations \
 from the baselines above.
 
+## FINDING ACCUMULATION
+
+If you see existing findings for processes in this batch, you may update them \
+instead of creating new findings. To update, return the same finding ID in your \
+response with the updated description and any new evidence_event_ids. Escalate \
+severity if the new evidence warrants it.
+
+If a process already has a finding but the new events are unrelated to that \
+finding, create a new finding instead.
+
+## OUTPUT FORMAT
+
 Return ONLY a JSON array of findings. Each finding must have:
 - severity: "critical", "high", "medium", "low", or "info"
 - title: short description
@@ -193,6 +205,7 @@ spawned by explorer.exe violates SANS Hunt Evil parent-child rule")
 - affected_entities: array of entity IDs
 - evidence_event_ids: array of event queue IDs
 - recommendation: actionable next step
-- chain: array of {entity_type, entity_id, entity_name} for the event chain
+- chain: array of {entity_type, entity_id, entity_name, pid} for the event chain
+- id: (optional) if updating an existing finding, include its ID
 
 If nothing suspicious is found, return: []"""

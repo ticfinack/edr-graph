@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections import deque
 
 import kuzu
 
@@ -13,60 +14,226 @@ from agent import metrics
 logger = logging.getLogger(__name__)
 
 
-def get_process_chain(conn: kuzu.Connection, pid: int) -> list[dict]:
-    """Walk SPAWNED edges upward to build the full parent process chain.
+def _query_process_fields(conn: kuzu.Connection, pid: int) -> dict | None:
+    """Fetch full fields for a process by PID."""
+    result = conn.execute(
+        "MATCH (p:Process {pid: $pid}) "
+        "RETURN p.id, p.name, p.pid, p.cmd_line, p.exe_path, p.hostname, "
+        "p.parent_pid, p.bundle_id, p.code_signed, p.signing_authority",
+        {"pid": pid},
+    )
+    if not result.has_next():
+        return None
+    row = result.get_next()
+    return {
+        "id": row[0],
+        "name": row[1],
+        "pid": row[2],
+        "cmd_line": row[3],
+        "exe_path": row[4],
+        "hostname": row[5],
+        "parent_pid": row[6],
+        "bundle_id": row[7],
+        "code_signed": row[8],
+        "signing_authority": row[9],
+    }
 
-    Returns list from root ancestor down to the given PID.
-    Example: [systemd, bash, python, malware.py]
+
+def get_process_chain(conn: kuzu.Connection, pid: int) -> list[dict]:
+    """Walk parent_pid upward iteratively to build the full ancestor chain.
+
+    Returns list from root ancestor down to the given PID (max 20 hops).
+    Prepends User from SPAWNED edge if found on the root process.
     """
     try:
-        # Find the process node by pid, then walk SPAWNED edges upward
-        result = conn.execute(
-            "MATCH (p:Process {pid: $pid}) "
-            "RETURN p.id, p.name, p.pid, p.cmd_line, p.exe_path, p.hostname",
-            {"pid": pid},
-        )
-        if not result.has_next():
+        current = _query_process_fields(conn, pid)
+        if current is None:
             return []
 
-        row = result.get_next()
-        chain = [
-            {
+        chain = [current]
+        visited = {pid}
+
+        # Walk upward via parent_pid
+        for _ in range(20):
+            ppid = current.get("parent_pid")
+            if not ppid or ppid == 0 or ppid in visited:
+                break
+            visited.add(ppid)
+            parent = _query_process_fields(conn, ppid)
+            if parent is None:
+                break
+            chain.insert(0, parent)
+            current = parent
+
+        # Prepend User from SPAWNED edge on the root process
+        root_id = chain[0].get("id", "")
+        if root_id:
+            user_result = conn.execute(
+                "MATCH (u:User)-[:SPAWNED]->(p:Process {id: $id}) "
+                "RETURN u.id, u.name",
+                {"id": root_id},
+            )
+            if user_result.has_next():
+                user_row = user_result.get_next()
+                chain.insert(0, {
+                    "type": "user",
+                    "id": user_row[0],
+                    "name": user_row[1],
+                })
+
+        return chain
+    except Exception:
+        logger.debug("Failed to get process chain for pid %d", pid, exc_info=True)
+        return []
+
+
+def get_process_children(conn: kuzu.Connection, pid: int) -> list[dict]:
+    """Get direct child processes via parent_pid."""
+    try:
+        result = conn.execute(
+            "MATCH (p:Process {parent_pid: $pid}) "
+            "RETURN p.id, p.name, p.pid, p.cmd_line, p.exe_path, p.hostname, "
+            "p.parent_pid, p.bundle_id, p.code_signed, p.signing_authority",
+            {"pid": pid},
+        )
+        children = []
+        while result.has_next():
+            row = result.get_next()
+            children.append({
                 "id": row[0],
                 "name": row[1],
                 "pid": row[2],
                 "cmd_line": row[3],
                 "exe_path": row[4],
                 "hostname": row[5],
-            }
-        ]
-
-        # Walk upward through SPAWNED edges (User->Process)
-        # to find parent processes via parent_pid relationships
-        visited = {pid}
-        current_id = row[0]
-
-        # Walk SPAWNED edges: find the user that spawned this process,
-        # then find other processes spawned by the same user
-        # This is a simplified walk - in practice, parent_pid tracking
-        # would give a more accurate tree
-        result = conn.execute(
-            "MATCH (u:User)-[:SPAWNED]->(p:Process {id: $id}) "
-            "RETURN u.id, u.name",
-            {"id": current_id},
-        )
-        if result.has_next():
-            user_row = result.get_next()
-            chain.insert(0, {
-                "type": "user",
-                "id": user_row[0],
-                "name": user_row[1],
+                "parent_pid": row[6],
+                "bundle_id": row[7],
+                "code_signed": row[8],
+                "signing_authority": row[9],
             })
-
-        return chain
+        return children
     except Exception:
-        logger.debug("Failed to get process chain for pid %d", pid, exc_info=True)
+        logger.debug("Failed to get children for pid %d", pid, exc_info=True)
         return []
+
+
+def _get_pid_network(conn: kuzu.Connection, proc_id: str) -> list[dict]:
+    """Compact network info for a process node ID."""
+    items = []
+    try:
+        result = conn.execute(
+            "MATCH (p:Process {id: $id})-[c:CONNECTED_TO]->(ip:IP) "
+            "RETURN ip.address, c.dst_port, c.protocol",
+            {"id": proc_id},
+        )
+        seen = set()
+        while result.has_next():
+            row = result.get_next()
+            key = (row[0], row[1])
+            if key not in seen:
+                seen.add(key)
+                items.append({"address": row[0], "port": row[1], "protocol": row[2]})
+
+        # DNS
+        dns_result = conn.execute(
+            "MATCH (p:Process {id: $id})-[:RESOLVED]->(d:Domain) "
+            "RETURN d.name, d.is_dga_candidate",
+            {"id": proc_id},
+        )
+        while dns_result.has_next():
+            row = dns_result.get_next()
+            items.append({"domain": row[0], "is_dga": row[1]})
+    except Exception:
+        pass
+    return items
+
+
+def _get_pid_files(conn: kuzu.Connection, proc_id: str) -> list[dict]:
+    """Compact file activity for a process node ID."""
+    items = []
+    try:
+        for rel_type, operation in [
+            ("CREATED_FILE", "CREATED"),
+            ("MODIFIED_FILE", "MODIFIED"),
+            ("DELETED_FILE", "DELETED"),
+            ("READ_FILE", "READ"),
+        ]:
+            result = conn.execute(
+                f"MATCH (p:Process {{id: $id}})-[r:{rel_type}]->(f:File) "
+                f"RETURN f.path, r.timestamp ORDER BY r.timestamp DESC LIMIT 5",
+                {"id": proc_id},
+            )
+            while result.has_next():
+                row = result.get_next()
+                items.append({
+                    "file_path": row[0],
+                    "operation": operation,
+                    "timestamp": str(row[1]) if row[1] else None,
+                })
+    except Exception:
+        pass
+    return items
+
+
+def get_process_tree(conn: kuzu.Connection, pid: int) -> dict | None:
+    """Build a full process tree: target + ancestors + descendants.
+
+    BFS descendants (max depth 5). For each process, attaches network and file activity.
+    """
+    try:
+        target = _query_process_fields(conn, pid)
+        if target is None:
+            return None
+
+        # Ancestors
+        ancestors = []
+        visited = {pid}
+        current = target
+        for _ in range(20):
+            ppid = current.get("parent_pid")
+            if not ppid or ppid == 0 or ppid in visited:
+                break
+            visited.add(ppid)
+            parent = _query_process_fields(conn, ppid)
+            if parent is None:
+                break
+            ancestors.insert(0, parent)
+            current = parent
+
+        # BFS descendants
+        def _build_subtree(root_pid: int, depth: int) -> list[dict]:
+            if depth <= 0:
+                return []
+            children = get_process_children(conn, root_pid)
+            result = []
+            for child in children:
+                cpid = child["pid"]
+                if cpid in visited:
+                    continue
+                visited.add(cpid)
+                child["network"] = _get_pid_network(conn, child["id"])
+                child["files"] = _get_pid_files(conn, child["id"])
+                child["children"] = _build_subtree(cpid, depth - 1)
+                result.append(child)
+            return result
+
+        # Attach activity to target
+        target["network"] = _get_pid_network(conn, target["id"])
+        target["files"] = _get_pid_files(conn, target["id"])
+        target["children"] = _build_subtree(pid, 5)
+
+        # Attach activity to ancestors
+        for anc in ancestors:
+            anc["network"] = _get_pid_network(conn, anc["id"])
+            anc["files"] = _get_pid_files(conn, anc["id"])
+
+        return {
+            "target": target,
+            "ancestors": ancestors,
+        }
+    except Exception:
+        logger.debug("Failed to build process tree for pid %d", pid, exc_info=True)
+        return None
 
 
 def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
@@ -268,44 +435,102 @@ def get_persistence_artifacts(conn: kuzu.Connection, pid: int) -> list[dict]:
 def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
     """Comprehensive context object for LLM consumption.
 
-    Combines all query helpers into a single structured dict.
+    Uses get_process_tree() for full hierarchy. Returns target_process,
+    process_chain (ancestors), child_processes, network_footprint,
+    file_activity, persistence_artifacts, and risk_indicators.
     """
     t0 = time.monotonic()
     try:
-        # Get target process info
-        target = {}
-        proc_result = conn.execute(
-            "MATCH (p:Process {pid: $pid}) "
-            "RETURN p.pid, p.name, p.cmd_line, p.hostname, "
-            "p.bundle_id, p.code_signed, p.signing_authority",
-            {"pid": pid},
-        )
-        if proc_result.has_next():
-            row = proc_result.get_next()
-            target = {
-                "pid": row[0],
-                "name": row[1],
-                "command_line": row[2],
-                "hostname": row[3],
-                "bundle_id": row[4],
-                "code_signed": row[5],
-                "signing_authority": row[6],
+        tree = get_process_tree(conn, pid)
+
+        if tree is None:
+            elapsed = time.monotonic() - t0
+            metrics.attack_chain_build_latency.observe(elapsed)
+            return {
+                "target_process": {},
+                "process_chain": [],
+                "child_processes": [],
+                "network_footprint": {"domains": [], "ips": [], "dns_chains": []},
+                "file_activity": [],
+                "persistence_artifacts": [],
+                "risk_indicators": [],
             }
 
-            # Try to get the user
-            user_result = conn.execute(
-                "MATCH (u:User)-[:SPAWNED]->(p:Process {pid: $pid}) "
-                "RETURN u.name",
-                {"pid": pid},
-            )
-            if user_result.has_next():
-                target["user"] = user_result.get_next()[0]
+        target = tree["target"]
+
+        # Build target_process dict
+        target_info = {
+            "pid": target["pid"],
+            "name": target["name"],
+            "command_line": target.get("cmd_line"),
+            "hostname": target.get("hostname"),
+            "parent_pid": target.get("parent_pid"),
+            "bundle_id": target.get("bundle_id"),
+            "code_signed": target.get("code_signed"),
+            "signing_authority": target.get("signing_authority"),
+        }
+
+        # Try to get the user (from SPAWNED edge on root ancestor or target)
+        ancestors = tree.get("ancestors", [])
+        root_id = ancestors[0]["id"] if ancestors else target["id"]
+        user_result = conn.execute(
+            "MATCH (u:User)-[:SPAWNED]->(p:Process {id: $id}) "
+            "RETURN u.name",
+            {"id": root_id},
+        )
+        if user_result.has_next():
+            target_info["user"] = user_result.get_next()[0]
+
+        # Build process_chain (ancestors + target, each with cmd_line)
+        process_chain = []
+        for anc in ancestors:
+            process_chain.append({
+                "name": anc["name"],
+                "pid": anc["pid"],
+                "cmd_line": anc.get("cmd_line"),
+                "parent_pid": anc.get("parent_pid"),
+                "code_signed": anc.get("code_signed"),
+                "signing_authority": anc.get("signing_authority"),
+            })
+        process_chain.append({
+            "name": target["name"],
+            "pid": target["pid"],
+            "cmd_line": target.get("cmd_line"),
+            "parent_pid": target.get("parent_pid"),
+            "code_signed": target.get("code_signed"),
+            "signing_authority": target.get("signing_authority"),
+        })
+
+        # Build child_processes recursively
+        def _serialize_children(children: list[dict]) -> list[dict]:
+            result = []
+            for child in children:
+                result.append({
+                    "pid": child["pid"],
+                    "name": child["name"],
+                    "cmd_line": child.get("cmd_line"),
+                    "code_signed": child.get("code_signed"),
+                    "signing_authority": child.get("signing_authority"),
+                    "network": child.get("network", []),
+                    "files": child.get("files", []),
+                    "children": _serialize_children(child.get("children", [])),
+                })
+            return result
+
+        child_processes = _serialize_children(target.get("children", []))
+
+        # Network footprint from target process
+        network_footprint = get_process_network_footprint(conn, pid)
+
+        # File activity from target
+        file_activity = _get_process_file_activity(conn, pid)
 
         chain = {
-            "target_process": target,
-            "process_chain": get_process_chain(conn, pid),
-            "network_footprint": get_process_network_footprint(conn, pid),
-            "file_activity": _get_process_file_activity(conn, pid),
+            "target_process": target_info,
+            "process_chain": process_chain,
+            "child_processes": child_processes,
+            "network_footprint": network_footprint,
+            "file_activity": file_activity,
             "persistence_artifacts": get_persistence_artifacts(conn, pid),
             "risk_indicators": [],
         }
@@ -334,6 +559,7 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
         return {
             "target_process": {},
             "process_chain": [],
+            "child_processes": [],
             "network_footprint": {"domains": [], "ips": [], "dns_chains": []},
             "file_activity": [],
             "persistence_artifacts": [],
@@ -377,16 +603,56 @@ def _get_process_file_activity(conn: kuzu.Connection, pid: int) -> list[dict]:
     return results[:10]
 
 
+def _format_signing(proc: dict) -> str:
+    """Format signing info for a process dict."""
+    if proc.get("code_signed"):
+        signer = proc.get("signing_authority", "unknown")
+        return f"[signed={signer}]"
+    elif proc.get("code_signed") is False:
+        return "[unsigned]"
+    return ""
+
+
+def _serialize_tree_node(proc: dict, indent: int, parts: list[str]) -> None:
+    """Recursively render a process tree node with its activity."""
+    prefix = "  " * indent
+    sign = _format_signing(proc)
+    cmd = f' cmd="{proc.get("cmd_line", "")}"' if proc.get("cmd_line") else ""
+    parts.append(
+        f"{prefix}{proc.get('name', '?')} (PID {proc.get('pid', '?')}){cmd} {sign}".rstrip()
+    )
+
+    # Network bullets
+    for item in proc.get("network", []):
+        if "domain" in item:
+            dga = " [DGA?]" if item.get("is_dga") else ""
+            parts.append(f"{prefix}  DNS: {item['domain']}{dga}")
+        elif "address" in item:
+            parts.append(
+                f"{prefix}  Network: -> {item['address']}:{item.get('port', '?')} ({item.get('protocol', 'TCP')})"
+            )
+
+    # File bullets
+    for item in proc.get("files", []):
+        parts.append(f"{prefix}  File: {item.get('operation', '?')} {item.get('file_path', '?')}")
+
+    # Recurse children
+    for child in proc.get("children", []):
+        _serialize_tree_node(child, indent + 1, parts)
+
+
 def serialize_attack_chain(chain: dict, max_tokens: int = 2000) -> str:
     """Serialize attack chain to a concise string for LLM context.
 
-    Keeps output under max_tokens (rough estimate: 4 chars per token).
+    Renders the process tree hierarchically. Each process shows:
+    name (PID) cmd="..." [signed/unsigned]
+    Indented children. Each process followed by network/file/DNS bullets.
     """
     max_chars = max_tokens * 4  # rough token estimate
 
     parts = []
 
-    # Target process
+    # Target process header
     target = chain.get("target_process", {})
     if target:
         target_line = (
@@ -394,22 +660,31 @@ def serialize_attack_chain(chain: dict, max_tokens: int = 2000) -> str:
             f"cmd={target.get('command_line', 'N/A')} "
             f"user={target.get('user', 'N/A')}"
         )
-        # Append identity info if available
         if target.get("bundle_id"):
             target_line += f" bundle={target['bundle_id']}"
-        if target.get("code_signed"):
-            signer = target.get("signing_authority", "unknown")
-            target_line += f" signed={signer}"
+        sign = _format_signing(target)
+        if sign:
+            target_line += f" {sign}"
         parts.append(target_line)
 
-    # Process chain
+    # Process chain (ancestors) — rendered as tree
     pchain = chain.get("process_chain", [])
     if pchain:
-        names = [
-            p.get("name", "?") for p in pchain
-            if isinstance(p, dict)
-        ]
-        parts.append(f"Process chain: {' -> '.join(names)}")
+        parts.append("Process tree:")
+        for i, p in enumerate(pchain):
+            indent = i
+            sign = _format_signing(p)
+            cmd = f' cmd="{p.get("cmd_line", "")}"' if p.get("cmd_line") else ""
+            parts.append(
+                f"{'  ' * indent}{p.get('name', '?')} (PID {p.get('pid', '?')}){cmd} {sign}".rstrip()
+            )
+
+    # Child processes — rendered as tree continuation
+    children = chain.get("child_processes", [])
+    if children:
+        base_indent = len(pchain) if pchain else 1
+        for child in children:
+            _serialize_tree_node(child, base_indent, parts)
 
     # Network footprint
     net = chain.get("network_footprint", {})

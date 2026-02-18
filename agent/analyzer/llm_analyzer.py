@@ -37,9 +37,10 @@ logger = logging.getLogger(__name__)
 class LlmAnalyzer:
     """Performs batch security analysis using Gemma3-27B via DeepInfra."""
 
-    def __init__(self, settings: Settings, kuzu_db: kuzu.Database) -> None:
+    def __init__(self, settings: Settings, kuzu_db: kuzu.Database, queue=None) -> None:
         self._settings = settings
         self._kuzu_db = kuzu_db
+        self._queue = queue
 
         # Build active tools list
         if settings.tool_use_enabled:
@@ -395,6 +396,23 @@ class LlmAnalyzer:
             lines.append("## Recent graph context (last 20 per entity)\n")
             lines.append(graph_context)
 
+        # Add existing findings for processes in this batch
+        if self._queue:
+            batch_pids = self._collect_batch_pids(events)
+            if batch_pids:
+                try:
+                    existing_findings = self._queue.get_findings_for_pids(batch_pids)
+                    if existing_findings:
+                        lines.append("\n## Existing findings for processes in this batch\n")
+                        for f in existing_findings[:5]:
+                            lines.append(f"### Finding: {f.title} [{f.severity}] (ID: {f.id})")
+                            lines.append(f"PIDs: {f.affected_pids}")
+                            lines.append(f"Evidence so far: event IDs {f.evidence_event_ids}")
+                            lines.append(f"Description: {f.description[:300]}")
+                            lines.append("")
+                except Exception:
+                    logger.debug("Failed to fetch existing findings for batch PIDs", exc_info=True)
+
         return "\n".join(lines)
 
     def _append_network_enrichment(
@@ -589,23 +607,62 @@ class LlmAnalyzer:
         if not isinstance(raw_findings, list):
             return []
 
+        # Build PID lookup from events: entity_name -> pid
+        pid_lookup: dict[str, int] = {}
+        for _, event in events:
+            if isinstance(event, ProcessActivity):
+                pid_lookup[event.process.name] = event.process.pid
+            elif isinstance(event, (NetworkActivity, DnsActivity, FileActivity, RegistryActivity)):
+                if event.process:
+                    pid_lookup[event.process.name] = event.process.pid
+
+        batch_pids = self._collect_batch_pids(events)
+
         findings = []
         for raw in raw_findings:
             try:
+                # Check if this is an update to an existing finding
+                finding_id = raw.get("id")
+                if finding_id and self._queue and self._is_existing_finding(finding_id):
+                    self._queue.update_finding(
+                        finding_id,
+                        new_evidence_ids=raw.get("evidence_event_ids"),
+                        new_description=raw.get("description"),
+                        new_severity=raw.get("severity"),
+                    )
+                    logger.info("Updated existing finding %s", finding_id)
+                    continue
+
                 chain_data = raw.get("chain", [])
                 chain = []
+                finding_pids: set[int] = set()
                 for step in chain_data:
+                    step_pid = step.get("pid")
+                    # Try to match entity_name to a PID from events
+                    if step_pid is None and step.get("entity_type") == "process":
+                        step_pid = pid_lookup.get(step.get("entity_name"))
+                    if step_pid is not None:
+                        finding_pids.add(step_pid)
                     chain.append(
                         ChainStep(
                             entity_type=step.get("entity_type", "unknown"),
                             entity_id=step.get("entity_id", ""),
                             entity_name=step.get("entity_name", ""),
+                            pid=step_pid,
                         )
                     )
 
                 # If no chain provided, build one from affected entities
                 if not chain:
                     chain = self._build_chain_from_events(events)
+                    for step in chain:
+                        if step.pid is not None:
+                            finding_pids.add(step.pid)
+
+                # Use explicitly provided affected_pids or fall back to collected
+                affected_pids = raw.get("affected_pids", [])
+                if not affected_pids:
+                    affected_pids = sorted(finding_pids) if finding_pids else batch_pids
 
                 finding = SecurityFinding(
                     id=str(uuid.uuid4()),
@@ -617,12 +674,26 @@ class LlmAnalyzer:
                     evidence_event_ids=raw.get("evidence_event_ids", []),
                     recommendation=raw.get("recommendation", ""),
                     chain=chain,
+                    affected_pids=affected_pids,
                 )
                 findings.append(finding)
             except Exception:
                 logger.debug("Failed to parse individual finding", exc_info=True)
 
         return findings
+
+    def _is_existing_finding(self, finding_id: str) -> bool:
+        """Check if a finding ID exists in the queue."""
+        if not self._queue:
+            return False
+        try:
+            conn = self._queue._get_conn()
+            row = conn.execute(
+                "SELECT id FROM findings WHERE id = ?", (finding_id,)
+            ).fetchone()
+            return row is not None
+        except Exception:
+            return False
 
     def _build_chain_from_events(
         self, events: list[tuple[int, OcsfEvent]]
@@ -645,6 +716,7 @@ class LlmAnalyzer:
                         entity_type="process",
                         entity_id=f"{event.device.hostname}:{event.process.pid}",
                         entity_name=event.process.name,
+                        pid=event.process.pid,
                         timestamp=event.time,
                     )
                 )
@@ -655,6 +727,7 @@ class LlmAnalyzer:
                             entity_type="process",
                             entity_id=event.process.name,
                             entity_name=event.process.name,
+                            pid=event.process.pid,
                             timestamp=event.time,
                         )
                     )
@@ -667,4 +740,27 @@ class LlmAnalyzer:
                             timestamp=event.time,
                         )
                     )
+            elif isinstance(event, (DnsActivity, FileActivity, RegistryActivity)):
+                if event.process:
+                    chain.append(
+                        ChainStep(
+                            entity_type="process",
+                            entity_id=event.process.name,
+                            entity_name=event.process.name,
+                            pid=event.process.pid,
+                            timestamp=event.time,
+                        )
+                    )
         return chain
+
+    @staticmethod
+    def _collect_batch_pids(events: list[tuple[int, OcsfEvent]]) -> list[int]:
+        """Collect all unique PIDs from a batch of events."""
+        pids = set()
+        for _, event in events:
+            if isinstance(event, ProcessActivity):
+                pids.add(event.process.pid)
+            elif isinstance(event, (NetworkActivity, DnsActivity, FileActivity, RegistryActivity)):
+                if event.process:
+                    pids.add(event.process.pid)
+        return list(pids)

@@ -23,6 +23,7 @@ class ProcessNode(BaseModel):
     exe_path: str | None = None
     hostname: str
     start_time: datetime | None = None
+    parent_pid: int | None = None
     bundle_id: str | None = None
     code_signed: bool | None = None
     signing_authority: str | None = None
@@ -70,6 +71,7 @@ class ChainStep(BaseModel):
     entity_type: str  # "user", "process", "ip"
     entity_id: str
     entity_name: str
+    pid: int | None = None
     timestamp: datetime | None = None
 
 
@@ -83,3 +85,4 @@ class SecurityFinding(BaseModel):
     evidence_event_ids: list[int]
     recommendation: str
     chain: list[ChainStep]
+    affected_pids: list[int] = []

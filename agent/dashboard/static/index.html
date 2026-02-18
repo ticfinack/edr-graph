@@ -200,6 +200,7 @@ let currentTab = 'overview';
 let graphMode = 'tree';
 let eventsPaused = false;
 let selectedFinding = null;
+let currentFinding = null;
 const API = '';
 
 // ── Tab Navigation ─────────────────────────────────────────────
@@ -323,25 +324,57 @@ async function refreshFindings() {
 async function showFindingDetail(id) {
   const f = await api('/api/findings/' + id);
   if (!f) return;
+  currentFinding = f;
   const sev = f.severity.toLowerCase();
   const el = document.getElementById('findings-detail');
+
+  // Collect PIDs from chain steps and affected_pids
+  const pidSet = new Set();
+  (f.chain||[]).forEach(s => { if (s.pid) pidSet.add(s.pid); });
+  (f.affected_pids||[]).forEach(p => pidSet.add(p));
+  const pids = Array.from(pidSet);
+
+  // Build per-PID buttons
+  let pidButtons = '';
+  if (pids.length > 0) {
+    pidButtons = '<div style="margin-top:12px"><h4 style="color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Process PIDs</h4><div style="display:flex;flex-wrap:wrap;gap:6px">';
+    pids.forEach(pid => {
+      const step = (f.chain||[]).find(s => s.pid === pid);
+      const label = step ? 'PID ' + pid + ': ' + esc(step.entity_name) : 'PID ' + pid;
+      pidButtons += '<button class="btn" onclick="loadGraphForPid(\'chain\',' + pid + ')">' + label + '</button>';
+    });
+    pidButtons += '</div></div>';
+  }
+
+  // Fallback buttons
+  let fallbackBtns = '<div style="margin-top:16px;display:flex;gap:8px">';
+  if (pids.length > 0) {
+    fallbackBtns += '<button class="btn btn-primary" onclick="loadGraphForPid(\'chain\',' + pids[0] + ')">View Attack Chain</button>';
+    fallbackBtns += '<button class="btn" onclick="loadGraphForPid(\'tree\',' + pids[0] + ')">View Process Tree</button>';
+    fallbackBtns += '<button class="btn" onclick="loadGraphForPid(\'network\',' + pids[0] + ')">View Network</button>';
+  } else {
+    fallbackBtns += '<button class="btn" onclick="loadGraphForPid(\'tree\')">View Process Tree</button>';
+    fallbackBtns += '<button class="btn" onclick="loadGraphForPid(\'network\')">View Network</button>';
+    fallbackBtns += '<button class="btn" onclick="loadGraphForPid(\'chain\')">View Attack Chain</button>';
+  }
+  fallbackBtns += '</div>';
+
   el.innerHTML = '<div class="detail-panel">' +
     '<div style="display:flex;justify-content:space-between;align-items:center">' +
       '<span class="severity-badge severity-' + sev + '" style="font-size:14px;padding:4px 12px">' + sev.toUpperCase() + '</span>' +
-      '<button class="btn" onclick="document.getElementById(\'findings-detail\').innerHTML=\'\'">&times; Close</button></div>' +
+      '<button class="btn" onclick="document.getElementById(\'findings-detail\').innerHTML=\'\';currentFinding=null;">&times; Close</button></div>' +
     '<h3 style="margin-top:12px;font-size:16px">' + esc(f.title) + '</h3>' +
     '<div class="detail-grid" style="margin-top:12px">' +
       '<dt>Time</dt><dd class="mono">' + new Date(f.timestamp).toLocaleString() + '</dd>' +
       '<dt>Entities</dt><dd>' + (f.affected_entities||[]).join(', ') + '</dd>' +
       '<dt>Evidence IDs</dt><dd class="mono">' + (f.evidence_event_ids||[]).join(', ') + '</dd>' +
+      (pids.length > 0 ? '<dt>PIDs</dt><dd class="mono">' + pids.join(', ') + '</dd>' : '') +
     '</div>' +
     '<div class="detail-section"><h4>Description</h4><pre>' + esc(f.description||'') + '</pre></div>' +
     (f.recommendation ? '<div class="detail-section"><h4>Recommendation</h4><pre>' + esc(f.recommendation) + '</pre></div>' : '') +
-    '<div style="margin-top:16px;display:flex;gap:8px">' +
-      '<button class="btn" onclick="loadGraphForPid(\'tree\')">View Process Tree</button>' +
-      '<button class="btn" onclick="loadGraphForPid(\'network\')">View Network</button>' +
-      '<button class="btn" onclick="loadGraphForPid(\'chain\')">View Attack Chain</button>' +
-    '</div></div>';
+    pidButtons +
+    fallbackBtns +
+    '</div>';
 }
 
 document.getElementById('findings-severity').addEventListener('change', refreshFindings);
@@ -375,9 +408,24 @@ async function loadGraph() {
   }
 }
 
-function loadGraphForPid(mode) {
+function loadGraphForPid(mode, pid) {
   graphMode = mode;
   document.querySelectorAll('.graph-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  // Use explicit PID if provided, else try to extract from currentFinding
+  if (pid) {
+    document.getElementById('graph-pid').value = pid;
+  } else if (currentFinding) {
+    // Extract first PID from chain or affected_pids
+    let extractedPid = null;
+    if (currentFinding.affected_pids && currentFinding.affected_pids.length > 0) {
+      extractedPid = currentFinding.affected_pids[0];
+    } else if (currentFinding.chain) {
+      for (const step of currentFinding.chain) {
+        if (step.pid) { extractedPid = step.pid; break; }
+      }
+    }
+    if (extractedPid) document.getElementById('graph-pid').value = extractedPid;
+  }
   switchTab('graph');
   loadGraph();
 }
@@ -436,21 +484,64 @@ function renderNetwork(area, data) {
 
 function renderChain(area, data) {
   const parts = [];
+  const opColors = {CREATED:'var(--low)',MODIFIED:'var(--medium)',DELETED:'var(--critical)',READ:'var(--dim)'};
+  function signBadge(p) {
+    if (p.code_signed) return ' <span style="color:var(--low);font-size:11px">[signed: ' + esc(p.signing_authority||'?') + ']</span>';
+    if (p.code_signed === false) return ' <span style="color:var(--high);font-size:11px">[unsigned]</span>';
+    return '';
+  }
   if (data.target_process && data.target_process.name) {
-    parts.push({title:'Target Process', content:'<dl class="detail-grid"><dt>Name</dt><dd>' + esc(data.target_process.name) + '</dd><dt>PID</dt><dd class="mono">' + (data.target_process.pid||'?') + '</dd><dt>Command</dt><dd class="mono">' + esc(data.target_process.command_line||'—') + '</dd><dt>User</dt><dd>' + esc(data.target_process.user||'—') + '</dd></dl>'});
+    const t = data.target_process;
+    parts.push({title:'Target Process', content:'<dl class="detail-grid"><dt>Name</dt><dd>' + esc(t.name) + signBadge(t) + '</dd><dt>PID</dt><dd class="mono">' + (t.pid||'?') + '</dd><dt>Command</dt><dd class="mono">' + esc(t.command_line||'—') + '</dd><dt>User</dt><dd>' + esc(t.user||'—') + '</dd>' + (t.parent_pid ? '<dt>Parent PID</dt><dd class="mono">' + t.parent_pid + '</dd>' : '') + '</dl>'});
   }
   if (data.process_chain && data.process_chain.length > 0) {
-    parts.push({title:'Process Chain', content: data.process_chain.map(p => '<span style="padding:2px 8px;background:var(--bg);border-radius:4px;margin:2px">' + esc(p.name||p.type||'?') + '</span>').join(' &rarr; ')});
+    const chainHtml = data.process_chain.map(p => {
+      const name = p.name || p.type || '?';
+      const pid = p.pid ? ' (PID ' + p.pid + ')' : '';
+      const cmd = p.cmd_line ? ' <span class="mono" style="color:var(--dim);font-size:11px">' + esc(p.cmd_line.substring(0,80)) + '</span>' : '';
+      return '<span style="padding:2px 8px;background:var(--bg);border-radius:4px;margin:2px;display:inline-flex;align-items:center;gap:4px">' + esc(name) + '<span class="mono" style="color:var(--dim);font-size:11px">' + pid + '</span>' + signBadge(p) + cmd + '</span>';
+    }).join(' &rarr; ');
+    parts.push({title:'Process Chain', content: chainHtml});
+  }
+  // Child processes
+  if ((data.child_processes||[]).length > 0) {
+    function renderChild(child, depth) {
+      const indent = 'padding-left:' + (depth * 20) + 'px';
+      let html = '<div style="' + indent + ';padding:4px 0;border-bottom:1px solid var(--border)">';
+      html += '<strong>' + esc(child.name||'?') + '</strong> <span class="mono" style="color:var(--dim)">(PID ' + (child.pid||'?') + ')</span>' + signBadge(child);
+      if (child.cmd_line) html += ' <span class="mono" style="color:var(--dim);font-size:11px">' + esc(child.cmd_line.substring(0,80)) + '</span>';
+      // Child network/files inline
+      (child.network||[]).forEach(n => {
+        if (n.domain) html += '<div style="' + indent + ';color:var(--dim);font-size:12px;padding-left:16px">DNS: ' + esc(n.domain) + (n.is_dga ? ' [DGA]' : '') + '</div>';
+        else if (n.address) html += '<div style="' + indent + ';color:var(--dim);font-size:12px;padding-left:16px">→ ' + esc(n.address) + ':' + (n.port||'?') + '</div>';
+      });
+      (child.files||[]).forEach(f => {
+        const c = opColors[f.operation]||'var(--dim)';
+        html += '<div style="' + indent + ';font-size:12px;padding-left:16px"><span style="color:' + c + '">' + esc(f.operation) + '</span> ' + esc(f.file_path) + '</div>';
+      });
+      html += '</div>';
+      (child.children||[]).forEach(gc => { html += renderChild(gc, depth+1); });
+      return html;
+    }
+    let childHtml = '';
+    data.child_processes.forEach(c => { childHtml += renderChild(c, 0); });
+    parts.push({title:'Child Processes', content: childHtml});
   }
   const net = data.network_footprint || {};
   if ((net.domains||[]).length > 0) {
     parts.push({title:'DNS Queries', content: net.domains.map(d => '<div>' + esc(d.name) + (d.is_dga_candidate ? ' <span class="severity-badge severity-high">DGA</span>' : '') + '</div>').join('')});
   }
   if ((net.ips||[]).length > 0) {
-    parts.push({title:'Connections', content: '<table><tr><th>IP</th><th>Port</th></tr>' + net.ips.map(i => '<tr><td class="mono">' + esc(i.address) + '</td><td class="mono">' + (i.port||'?') + '</td></tr>').join('') + '</table>'});
+    parts.push({title:'Connections', content: '<table><tr><th>IP</th><th>Port</th><th>Protocol</th></tr>' + net.ips.map(i => '<tr><td class="mono">' + esc(i.address) + '</td><td class="mono">' + (i.port||'?') + '</td><td>' + esc(i.protocol||'TCP') + '</td></tr>').join('') + '</table>'});
+  }
+  if ((net.listening_ports||[]).length > 0) {
+    parts.push({title:'Listening Ports', content: '<table><tr><th>Address</th><th>Port</th><th>Protocol</th></tr>' + net.listening_ports.map(l => '<tr><td class="mono">' + esc(l.address||'?') + '</td><td class="mono">' + (l.port||'?') + '</td><td>' + esc(l.protocol||'?') + '</td></tr>').join('') + '</table>'});
   }
   if ((data.file_activity||[]).length > 0) {
-    parts.push({title:'File Activity', content: '<table><tr><th>Operation</th><th>Path</th></tr>' + data.file_activity.map(f => '<tr><td>' + esc(f.operation) + '</td><td class="mono">' + esc(f.file_path) + '</td></tr>').join('') + '</table>'});
+    parts.push({title:'File Activity', content: '<table><tr><th>Operation</th><th>Path</th></tr>' + data.file_activity.map(f => {
+      const c = opColors[f.operation]||'var(--text)';
+      return '<tr><td><span style="color:' + c + '">' + esc(f.operation) + '</span></td><td class="mono">' + esc(f.file_path) + '</td></tr>';
+    }).join('') + '</table>'});
   }
   if ((data.risk_indicators||[]).length > 0) {
     parts.push({title:'Risk Indicators', content: data.risk_indicators.map(r => '<div class="severity-badge severity-high" style="margin:2px">' + esc(String(r)) + '</div>').join(' ')});

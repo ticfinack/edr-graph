@@ -20,6 +20,7 @@ NODE_TABLES = [
         exe_path STRING,
         hostname STRING,
         start_time TIMESTAMP,
+        parent_pid INT64,
         bundle_id STRING,
         code_signed BOOLEAN,
         signing_authority STRING,
@@ -173,6 +174,7 @@ MIGRATIONS = [
     "ALTER TABLE Process ADD bundle_id STRING DEFAULT ''",
     "ALTER TABLE Process ADD code_signed BOOLEAN DEFAULT false",
     "ALTER TABLE Process ADD signing_authority STRING DEFAULT ''",
+    "ALTER TABLE Process ADD parent_pid INT64 DEFAULT 0",
 ]
 
 

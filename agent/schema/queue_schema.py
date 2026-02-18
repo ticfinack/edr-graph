@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS findings (
     affected_entities TEXT NOT NULL,
     evidence_event_ids TEXT NOT NULL,
     recommendation TEXT NOT NULL,
-    chain TEXT NOT NULL
+    chain TEXT NOT NULL,
+    affected_pids TEXT NOT NULL DEFAULT '[]'
 )
 """
 
@@ -80,6 +81,11 @@ ALL_DDL = [
     RESPONSE_AUDIT_EVENT_INDEX,
 ]
 
+# Migrations for existing databases (errors silently ignored if column exists)
+SQLITE_MIGRATIONS = [
+    "ALTER TABLE findings ADD COLUMN affected_pids TEXT NOT NULL DEFAULT '[]'",
+]
+
 
 def init_queue_db(conn) -> None:
     """Initialize SQLite database with pragmas and schema."""
@@ -87,4 +93,9 @@ def init_queue_db(conn) -> None:
         conn.execute(pragma)
     for ddl in ALL_DDL:
         conn.execute(ddl)
+    for migration in SQLITE_MIGRATIONS:
+        try:
+            conn.execute(migration)
+        except Exception:
+            pass  # Column already exists
     conn.commit()

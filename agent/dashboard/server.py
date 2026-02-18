@@ -187,6 +187,26 @@ async def get_attack_chain(pid: int):
     return gq.build_attack_chain(conn, pid)
 
 
+@app.get("/api/graph/process-by-name/{name}")
+async def get_process_by_name(name: str):
+    """Look up Process nodes by name. Returns up to 5 matches with PID and cmd_line."""
+    conn = _get_conn()
+    try:
+        result = conn.execute(
+            "MATCH (p:Process {name: $name}) "
+            "RETURN p.pid, p.name, p.cmd_line "
+            "ORDER BY p.start_time DESC LIMIT 5",
+            {"name": name},
+        )
+        matches = []
+        while result.has_next():
+            row = result.get_next()
+            matches.append({"pid": row[0], "name": row[1], "cmd_line": row[2]})
+        return {"matches": matches}
+    except Exception:
+        return {"matches": []}
+
+
 @app.get("/api/graph/stats")
 async def get_graph_stats():
     """Node and edge counts."""
@@ -409,11 +429,13 @@ def _serialize_finding(f) -> dict:
         "affected_entities": f.affected_entities,
         "evidence_event_ids": f.evidence_event_ids,
         "recommendation": f.recommendation,
+        "affected_pids": f.affected_pids,
         "chain": [
             {
                 "entity_type": s.entity_type,
                 "entity_id": s.entity_id,
                 "entity_name": s.entity_name,
+                "pid": s.pid,
                 "timestamp": s.timestamp.isoformat() if s.timestamp else None,
             }
             for s in f.chain

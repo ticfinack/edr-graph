@@ -182,7 +182,7 @@ def analyzer_thread(
     response_engine: ResponseEngine | None = None,
 ) -> None:
     """Periodically analyze novel events with the LLM."""
-    analyzer = LlmAnalyzer(settings, kuzu_db)
+    analyzer = LlmAnalyzer(settings, kuzu_db, queue)
     conn = kuzu.Connection(kuzu_db)
     last_analyzed_id = 0
     logger.info("Started analyzer thread")
