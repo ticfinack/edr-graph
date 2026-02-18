@@ -502,6 +502,11 @@ def main() -> None:
     from agent.processor.graph_builder import backfill_parent_pids
     backfill_parent_pids(kuzu_db)
 
+    # Initialize file attribution cache (for FSEvents PID 0 attribution)
+    from agent.enrichment.file_attribution import get_file_attribution_cache
+    file_attr = get_file_attribution_cache()
+    file_attr.set_agent_pid(os.getpid())
+
     # Initialize response engine
     import sqlite3
 

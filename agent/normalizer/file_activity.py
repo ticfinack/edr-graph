@@ -37,6 +37,18 @@ def normalize_file(raw: RawEvent) -> FileActivity:
     pid = int(fields.get("pid", "0"))
     process_name = fields.get("name", "") or fields.get("process_name", "")
 
+    # FSEvents reports PID 0 — try to attribute the file to a real process
+    file_path_raw = fields.get("file_path", "") or fields.get("path", "")
+    if pid == 0 and file_path_raw:
+        try:
+            from agent.enrichment.file_attribution import get_file_attribution_cache
+            owner = get_file_attribution_cache().lookup(file_path_raw)
+            if owner:
+                pid = owner.pid
+                process_name = owner.name
+        except Exception:
+            pass
+
     process = None
     if pid or process_name:
         process = ProcessInfo(pid=pid, name=process_name)

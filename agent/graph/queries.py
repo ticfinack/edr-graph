@@ -873,7 +873,7 @@ def get_ioc_summary(conn: kuzu.Connection, limit: int = 50) -> dict:
     except Exception:
         logger.debug("IOC IP query failed", exc_info=True)
 
-    # Files
+    # Files — aggregate all processes per file, filter out PID 0 / "unknown"
     for rel_type, operation in [
         ("CREATED_FILE", "CREATED"),
         ("MODIFIED_FILE", "MODIFIED"),
@@ -890,14 +890,22 @@ def get_ioc_summary(conn: kuzu.Connection, limit: int = 50) -> dict:
             while files.has_next():
                 row = files.get_next()
                 path = row[0]
+                proc_name = row[1]
+                proc_pid = row[2]
                 if path in seen_paths:
                     continue
                 seen_paths.add(path)
+                # Filter out PID 0 / "unknown" process
+                by_procs = []
+                by_pids = []
+                if proc_pid and proc_pid > 0:
+                    by_procs = [proc_name] if proc_name else []
+                    by_pids = [proc_pid]
                 result["files"].append({
                     "path": path,
                     "operation": operation,
-                    "by_processes": [row[1]] if row[1] else [],
-                    "by_pids": [row[2]] if row[2] else [],
+                    "by_processes": by_procs,
+                    "by_pids": by_pids,
                     "timestamp": str(row[3]) if row[3] else None,
                 })
         except Exception:

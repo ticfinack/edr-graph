@@ -186,7 +186,27 @@ async def get_network_graph(pid: int):
 async def get_attack_chain(pid: int):
     """Full attack chain context for a PID."""
     conn = _get_conn()
-    return gq.build_attack_chain(conn, pid)
+    chain = gq.build_attack_chain(conn, pid)
+
+    # Enrich file_activity from findings IOCs for this PID
+    try:
+        queue = _get_queue()
+        findings = queue.get_findings_for_pids([pid])
+        existing_paths = {f.get("file_path", "").lower() for f in chain.get("file_activity", [])}
+        for f in findings:
+            for file_path in (f.iocs or {}).get("files", []):
+                if file_path and str(file_path).lower() not in existing_paths:
+                    existing_paths.add(str(file_path).lower())
+                    chain["file_activity"].append({
+                        "file_path": str(file_path),
+                        "operation": "REFERENCED",
+                        "timestamp": f.timestamp.isoformat(),
+                        "source": f"Finding: {f.title}",
+                    })
+    except Exception:
+        pass
+
+    return chain
 
 
 @app.get("/api/graph/ioc-summary")
@@ -256,8 +276,26 @@ async def get_ioc_summary():
                         titles.append(t)
             d["findings"] = titles
 
+        # Cross-reference files with findings
+        existing_file_paths = {f.get("path", "").lower() for f in result.get("files", [])}
         for f in result.get("files", []):
             f["findings"] = _find_titles(f.get("by_pids"), f.get("path"))
+
+        # Add files mentioned in findings IOCs that aren't already in the graph
+        for f_obj in findings:
+            for file_path in (f_obj.iocs or {}).get("files", []):
+                if file_path and str(file_path).lower() not in existing_file_paths:
+                    existing_file_paths.add(str(file_path).lower())
+                    # Build PID list from this finding's affected_pids
+                    f_pids = [p for p in (f_obj.affected_pids or []) if p and p > 0]
+                    result["files"].append({
+                        "path": str(file_path),
+                        "operation": "REFERENCED",
+                        "by_processes": [],
+                        "by_pids": f_pids,
+                        "timestamp": f_obj.timestamp.isoformat(),
+                        "findings": [f_obj.title],
+                    })
     except Exception:
         pass
 
