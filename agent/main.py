@@ -303,16 +303,15 @@ def _push_recent_event(raw_data: dict, source: str) -> None:
     """Push a processed event to the dashboard's recent events buffer."""
     try:
         from agent.dashboard.server import append_recent_event
+        fields = raw_data.get("fields", {})
         append_recent_event({
             "timestamp": raw_data.get("timestamp", ""),
             "source": source,
             "event_type": raw_data.get("event_type", raw_data.get("source", "")),
-            "name": raw_data.get("name", ""),
-            "pid": raw_data.get("pid", ""),
-            "fields": {
-                k: v for k, v in raw_data.items()
-                if k not in ("timestamp", "source", "event_type", "name", "pid", "hostname")
-            },
+            "name": fields.get("name", ""),
+            "pid": fields.get("pid", ""),
+            "message": fields.get("message", ""),
+            "fields": fields,
         })
     except Exception:
         pass
@@ -602,23 +601,6 @@ def main() -> None:
     if use_tray:
         try:
             from agent.tray.macos_tray import EDRTrayApp
-
-            def _get_status():
-                """Gather status for the tray icon from in-process state."""
-                uptime = time.time() - metrics.agent_uptime._value._value  # noqa: SLF001
-                events_processed = 0
-                for metric in metrics.events_processed_total.collect():
-                    for sample in metric.samples:
-                        if sample.name == "edr_events_processed_total":
-                            events_processed += int(sample.value)
-
-                return {
-                    "agent_status": "paused" if _is_paused() else "running",
-                    "uptime_seconds": time.time() - _state_start_time,
-                    "events_processed": events_processed,
-                    "events_per_second": round(events_processed / max(time.time() - _state_start_time, 1), 1),
-                    "collector_sources": settings._collector_names if hasattr(settings, "_collector_names") else [],
-                }
 
             def _on_pause(paused: bool):
                 from agent.dashboard import server as dashboard_server

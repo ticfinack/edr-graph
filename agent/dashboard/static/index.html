@@ -477,9 +477,8 @@ async function refreshEvents() {
   el.innerHTML = data.events.slice(0, 100).map(e => {
     const t = e.timestamp ? new Date(e.timestamp).toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit',fractionalSecondDigits:3}) : '—';
     const src = e.source || '?';
-    const msg = (e.message || '').substring(0, 120);
-    const fields = e.fields || {};
-    const pid = fields.pid || '';
+    const msg = (e.message || e.name || '').substring(0, 120);
+    const pid = e.pid || '';
     const srcMap = {unified_log:'ul',unified_log_dns:'dns',psutil_process:'psu',psutil_network:'net',file_create:'fse',file_modify:'fse',file_delete:'fse',file_rename:'fse'};
     const srcShort = srcMap[src] || src.substring(0,3);
     let typeClass = 'process';
