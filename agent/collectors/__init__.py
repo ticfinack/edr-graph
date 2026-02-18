@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["collect_all", "get_collectors", "Collector", "RawEvent"]
 
 
-def get_collectors() -> list[Collector]:
+def get_collectors(db_path: str | None = None) -> list[Collector]:
     """Return collectors appropriate for the current platform."""
     collectors: list[Collector] = [PsutilCollector()]
     system = platform.system()
@@ -50,7 +50,7 @@ def get_collectors() -> list[Collector]:
             logger.debug("macOS persistence poller not available", exc_info=True)
         try:
             from .connection_metadata import ConnectionMetadataCollector
-            collectors.append(ConnectionMetadataCollector())
+            collectors.append(ConnectionMetadataCollector(db_path=db_path))
         except Exception:
             logger.debug("Connection metadata collector not available", exc_info=True)
     elif system == "Windows":

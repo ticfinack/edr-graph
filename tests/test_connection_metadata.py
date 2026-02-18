@@ -127,6 +127,20 @@ class TestSYNParsing:
         assert m.group("dst_ip") == "93.184.216.34"
         assert m.group("dst_port") == "443"
 
+    def test_parse_syn_with_ecn(self):
+        """SYN with ECN flags (SEW) should match."""
+        line = "07:34:28.465722 IP 10.199.0.7.50666 > 104.18.26.120.443: Flags [SEW], seq 375125515"
+        m = _SYN_RE.search(line)
+        assert m is not None
+        assert m.group("src_ip") == "10.199.0.7"
+        assert m.group("dst_port") == "443"
+
+    def test_parse_syn_ack_excluded(self):
+        """SYN-ACK (Flags [S.]) should NOT match — we only want initial SYNs."""
+        line = "07:34:28.524714 IP 104.18.26.120.443 > 10.199.0.7.50666: Flags [S.E], seq 675966147"
+        m = _SYN_RE.search(line)
+        assert m is None
+
     def test_parse_non_syn(self):
         """Non-SYN lines should not match."""
         line = "12:34:56.789012 IP 10.0.0.1.54321 > 93.184.216.34.443: Flags [.], ack 1"

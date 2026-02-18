@@ -18,12 +18,14 @@ from .base import Collector, RawEvent
 
 logger = logging.getLogger(__name__)
 
-# Parse tcpdump SYN packet lines:
+# Parse tcpdump SYN packet lines (initial SYN only, not SYN-ACK):
 #   12:34:56.789 IP 10.0.0.1.54321 > 93.184.216.34.443: Flags [S], ...
+#   Also matches ECN variants: Flags [SEW], Flags [SE], etc.
+#   Excludes SYN-ACK: Flags [S.], Flags [S.E], etc. (dot = ACK)
 _SYN_RE = re.compile(
     r"IP (?P<src_ip>[\d.]+)\.(?P<src_port>\d+) > "
     r"(?P<dst_ip>[\d.]+)\.(?P<dst_port>\d+): "
-    r"Flags \[S\]"
+    r"Flags \[S[^.\]]*\]"
 )
 
 
@@ -352,6 +354,7 @@ class ConnectionMetadataCollector(Collector):
         self._db_path = db_path
         self._db_conn: sqlite3.Connection | None = None
         self._connections: dict[str, ConnectionMetadata] = {}
+        self._write_count = 0
 
     def name(self) -> str:
         return "connection_metadata"
@@ -360,15 +363,6 @@ class ConnectionMetadataCollector(Collector):
         if self._thread is not None:
             return
 
-        # Initialize SQLite storage
-        if self._db_path:
-            try:
-                self._db_conn = sqlite3.connect(self._db_path)
-                self._db_conn.row_factory = sqlite3.Row
-                init_connection_metadata_db(self._db_conn)
-            except Exception:
-                logger.debug("Failed to init connection metadata DB", exc_info=True)
-
         self._thread = threading.Thread(
             target=self._run_tcpdump, daemon=True, name="connection_metadata"
         )
@@ -376,6 +370,16 @@ class ConnectionMetadataCollector(Collector):
 
     def _run_tcpdump(self) -> None:
         """Run tcpdump to capture TCP SYN packets."""
+        # Initialize SQLite in this thread (SQLite connections are thread-local)
+        if self._db_path:
+            try:
+                self._db_conn = sqlite3.connect(self._db_path)
+                self._db_conn.row_factory = sqlite3.Row
+                init_connection_metadata_db(self._db_conn)
+                logger.info("Connection metadata DB initialized: %s", self._db_path)
+            except Exception:
+                logger.debug("Failed to init connection metadata DB", exc_info=True)
+
         try:
             self._proc = subprocess.Popen(
                 [
@@ -430,6 +434,10 @@ class ConnectionMetadataCollector(Collector):
         if self._db_conn:
             try:
                 store_connection_metadata(self._db_conn, metadata)
+                self._write_count += 1
+                # Periodic cleanup every 100 writes
+                if self._write_count % 100 == 0:
+                    cleanup_old_metadata(self._db_conn, retention_hours=24)
             except Exception:
                 logger.debug("Failed to store connection metadata", exc_info=True)
 
@@ -461,14 +469,6 @@ class ConnectionMetadataCollector(Collector):
         with self._buffer_lock:
             events = list(self._buffer)
             self._buffer.clear()
-
-        # Periodic cleanup of old metadata
-        if self._db_conn:
-            try:
-                cleanup_old_metadata(self._db_conn, retention_hours=24)
-            except Exception:
-                pass
-
         return events
 
     def stop(self) -> None:

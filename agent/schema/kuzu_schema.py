@@ -167,8 +167,23 @@ REL_TABLES = [
 
 ALL_DDL = NODE_TABLES + REL_TABLES
 
+# Migrations: ALTER TABLE statements for columns added after initial schema.
+# Each entry is executed with errors silently ignored (column may already exist).
+MIGRATIONS = [
+    "ALTER TABLE Process ADD bundle_id STRING DEFAULT ''",
+    "ALTER TABLE Process ADD code_signed BOOLEAN DEFAULT false",
+    "ALTER TABLE Process ADD signing_authority STRING DEFAULT ''",
+]
+
 
 def init_graph_schema(conn) -> None:
     """Execute all DDL statements to initialize the graph schema."""
     for ddl in ALL_DDL:
         conn.execute(ddl)
+
+    # Apply schema migrations for existing databases
+    for migration in MIGRATIONS:
+        try:
+            conn.execute(migration)
+        except RuntimeError:
+            pass  # Column already exists

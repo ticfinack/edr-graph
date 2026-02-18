@@ -55,7 +55,7 @@ def collector_thread(
     queue: SqliteQueue,
 ) -> None:
     """Continuously collect raw events and push to SQLite queue."""
-    collectors = get_collectors()
+    collectors = get_collectors(db_path=str(settings.db_path))
     for c in collectors:
         c.start()
     collector_names = [type(c).__name__ for c in collectors]
