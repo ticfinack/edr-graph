@@ -1,0 +1,3 @@
+type=SYSCALL msg=audit(1705312800.123:456): arch=c000003e syscall=59 success=yes exit=0 a0=55a1b2c3d4e5 a1=55a1b2c3d4f0 a2=55a1b2c3d500 a3=0 items=2 ppid=1000 pid=1234 auid=1000 uid=1000 gid=1000 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 ses=1 comm="curl" exe="/usr/bin/curl" key="exec_log"
+type=EXECVE msg=audit(1705312800.123:456): argc=3 a0="curl" a1="https://example.com" a2="-o" a3="/tmp/test"
+type=SYSCALL msg=audit(1705312801.456:457): arch=c000003e syscall=42 success=yes exit=0 a0=3 a1=7ffea1b2c3d4 a2=16 a3=0 items=0 ppid=1000 pid=1234 auid=1000 uid=1000 gid=1000 euid=1000 comm="curl" exe="/usr/bin/curl" key="connect_log"

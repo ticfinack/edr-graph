@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edr-graph"
+version = "0.1.0"
+description = "Local EDR with Graph-Based Event Correlation & AI Analysis"
+requires-python = ">=3.11"
+dependencies = [
+    "kuzu>=0.4.0",
+    "nicegui>=1.4.0",
+    "plotly>=5.18.0",
+    "psutil>=5.9.0",
+    "pydantic>=2.0.0",
+    "openai>=1.0.0",
+    "structlog>=24.0.0",
+    "prometheus_client>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pyinstaller>=6.0.0",
+]
+windows = [
+    "pywintrace>=0.3.0",
+]
+linux = [
+    "python-audit>=0.1.0",
+]
+
+[project.scripts]
+edr-graph = "agent.main:main"
+
+[tool.setuptools.packages.find]
+include = ["agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

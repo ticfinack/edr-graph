@@ -1,0 +1,4 @@
+Jan 15 10:00:00 testhost sshd[2345]: Accepted password for alice from 10.0.0.1 port 22 ssh2
+Jan 15 10:00:01 testhost sudo[2346]: alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/usr/bin/apt update
+Jan 15 10:00:02 testhost CRON[2347]: (root) CMD (/usr/local/bin/backup.sh)
+Jan 15 10:00:03 testhost sshd[2348]: Failed password for invalid user admin from 192.168.1.50 port 43210 ssh2

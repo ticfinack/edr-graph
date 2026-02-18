@@ -1,0 +1,40 @@
+[
+  {
+    "timestamp": "2025-01-15T10:00:00",
+    "source": "psutil_process",
+    "message": "New process: curl (PID 1234)",
+    "fields": {
+      "pid": "1234",
+      "name": "curl",
+      "username": "alice",
+      "cmdline": "curl https://example.com",
+      "exe": "/usr/bin/curl",
+      "ppid": "100",
+      "create_time": "2025-01-15T10:00:00"
+    },
+    "hostname": "testhost"
+  },
+  {
+    "timestamp": "2025-01-15T10:00:01",
+    "source": "psutil_network",
+    "message": "New connection: curl -> 93.184.216.34:443",
+    "fields": {
+      "pid": "1234",
+      "process_name": "curl",
+      "src_ip": "192.168.1.100",
+      "src_port": "54321",
+      "dst_ip": "93.184.216.34",
+      "dst_port": "443",
+      "status": "ESTABLISHED",
+      "type": "TCP"
+    },
+    "hostname": "testhost"
+  },
+  {
+    "timestamp": "2025-01-15T10:00:02",
+    "source": "auth",
+    "message": "Accepted password for alice from 10.0.0.1 port 22 ssh2",
+    "fields": {},
+    "hostname": "testhost"
+  }
+]

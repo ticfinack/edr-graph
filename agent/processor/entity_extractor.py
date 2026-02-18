@@ -1,0 +1,383 @@
+"""Extract graph entities (User, Process, IP, Domain, File, RegistryKey) from OCSF events."""
+
+from __future__ import annotations
+
+import ipaddress
+from datetime import datetime
+
+from agent.schema.graph_types import (
+    DomainNode,
+    FileNode,
+    IpNode,
+    ProcessNode,
+    RegistryKeyNode,
+    UserNode,
+)
+from agent.schema.ocsf_types import (
+    Authentication,
+    DnsActivity,
+    FileActivity,
+    NetworkActivity,
+    OcsfEvent,
+    ProcessActivity,
+    RegistryActivity,
+)
+
+
+class ExtractedEntities:
+    """Container for entities extracted from a single event."""
+
+    def __init__(self) -> None:
+        self.users: list[UserNode] = []
+        self.processes: list[ProcessNode] = []
+        self.ips: list[IpNode] = []
+        self.domains: list[DomainNode] = []
+        self.files: list[FileNode] = []
+        self.registry_keys: list[RegistryKeyNode] = []
+        self.spawned_edges: list[dict] = []  # {user_id, process_id, timestamp, activity_id}
+        self.connected_edges: list[dict] = []  # {process_id, ip_id, timestamp, dst_port, protocol, direction}
+        self.resolved_edges: list[dict] = []  # {process_id, domain_id, timestamp}
+        self.resolves_to_edges: list[dict] = []  # {domain_id, ip_id, timestamp}
+        self.file_edges: list[dict] = []  # {process_id, file_id, operation, timestamp}
+        self.registry_edges: list[dict] = []  # {process_id, registry_id, operation, timestamp}
+
+
+def extract_entities(event: OcsfEvent, event_id: int) -> ExtractedEntities:
+    """Extract nodes and edges from a normalized OCSF event."""
+    entities = ExtractedEntities()
+    now = event.time
+
+    if isinstance(event, ProcessActivity):
+        _extract_process_activity(event, event_id, entities, now)
+    elif isinstance(event, NetworkActivity):
+        _extract_network_activity(event, event_id, entities, now)
+    elif isinstance(event, Authentication):
+        _extract_authentication(event, event_id, entities, now)
+    elif isinstance(event, DnsActivity):
+        _extract_dns_activity(event, event_id, entities, now)
+    elif isinstance(event, FileActivity):
+        _extract_file_activity(event, event_id, entities, now)
+    elif isinstance(event, RegistryActivity):
+        _extract_registry_activity(event, event_id, entities, now)
+
+    return entities
+
+
+def _extract_process_activity(
+    event: ProcessActivity,
+    event_id: int,
+    entities: ExtractedEntities,
+    now: datetime,
+) -> None:
+    proc = event.process
+    hostname = event.device.hostname
+
+    start_time = proc.created_time or now
+    proc_id = f"{hostname}:{proc.pid}:{int(start_time.timestamp())}"
+
+    entities.processes.append(
+        ProcessNode(
+            id=proc_id,
+            name=proc.name,
+            pid=proc.pid,
+            cmd_line=proc.cmd_line or None,
+            exe_path=proc.exe_path or None,
+            hostname=hostname,
+            start_time=start_time,
+        )
+    )
+
+    if event.actor and event.actor.user:
+        user = event.actor.user
+        user_id = user.name or user.uid or "unknown"
+        entities.users.append(
+            UserNode(
+                id=user_id,
+                name=user.name,
+                uid=user.uid or None,
+                first_seen=now,
+                last_seen=now,
+            )
+        )
+        entities.spawned_edges.append(
+            {
+                "user_id": user_id,
+                "process_id": proc_id,
+                "timestamp": now,
+                "activity_id": event.activity_id,
+                "event_id": event_id,
+            }
+        )
+
+
+def _extract_network_activity(
+    event: NetworkActivity,
+    event_id: int,
+    entities: ExtractedEntities,
+    now: datetime,
+) -> None:
+    if event.process:
+        proc = event.process
+        hostname = event.device.hostname
+        start_time = proc.created_time or now
+        proc_id = f"{hostname}:{proc.pid}:{int(start_time.timestamp())}"
+
+        entities.processes.append(
+            ProcessNode(
+                id=proc_id,
+                name=proc.name,
+                pid=proc.pid,
+                cmd_line=proc.cmd_line or None,
+                exe_path=proc.exe_path or None,
+                hostname=hostname,
+                start_time=start_time,
+            )
+        )
+
+        if event.dst_endpoint and event.dst_endpoint.ip:
+            ip_addr = event.dst_endpoint.ip
+            is_private = _is_private_ip(ip_addr)
+            entities.ips.append(
+                IpNode(
+                    id=ip_addr,
+                    address=ip_addr,
+                    is_private=is_private,
+                    first_seen=now,
+                    last_seen=now,
+                )
+            )
+            entities.connected_edges.append(
+                {
+                    "process_id": proc_id,
+                    "ip_id": ip_addr,
+                    "timestamp": now,
+                    "dst_port": event.dst_endpoint.port,
+                    "protocol": "TCP",
+                    "direction": "outbound",
+                    "event_id": event_id,
+                }
+            )
+
+
+def _extract_authentication(
+    event: Authentication,
+    event_id: int,
+    entities: ExtractedEntities,
+    now: datetime,
+) -> None:
+    user_id = event.user.name or "unknown"
+    entities.users.append(
+        UserNode(
+            id=user_id,
+            name=event.user.name,
+            uid=event.user.uid or None,
+            first_seen=now,
+            last_seen=now,
+        )
+    )
+
+    if event.src_endpoint and event.src_endpoint.ip:
+        ip_addr = event.src_endpoint.ip
+        entities.ips.append(
+            IpNode(
+                id=ip_addr,
+                address=ip_addr,
+                is_private=_is_private_ip(ip_addr),
+                first_seen=now,
+                last_seen=now,
+            )
+        )
+
+
+def _extract_dns_activity(
+    event: DnsActivity,
+    event_id: int,
+    entities: ExtractedEntities,
+    now: datetime,
+) -> None:
+    hostname = event.device.hostname
+    proc_id = None
+
+    if event.process:
+        proc = event.process
+        start_time = proc.created_time or now
+        proc_id = f"{hostname}:{proc.pid}:{int(start_time.timestamp())}"
+        entities.processes.append(
+            ProcessNode(
+                id=proc_id,
+                name=proc.name,
+                pid=proc.pid,
+                cmd_line=proc.cmd_line or None,
+                exe_path=proc.exe_path or None,
+                hostname=hostname,
+                start_time=start_time,
+            )
+        )
+
+    if event.query_domain:
+        domain_name = event.query_domain.lower().rstrip(".")
+        tld = domain_name.rsplit(".", 1)[-1] if "." in domain_name else ""
+
+        entities.domains.append(
+            DomainNode(
+                id=domain_name,
+                name=domain_name,
+                first_seen=now,
+                last_seen=now,
+                is_dga_candidate=False,
+                tld=tld,
+            )
+        )
+
+        if proc_id:
+            entities.resolved_edges.append(
+                {
+                    "process_id": proc_id,
+                    "domain_id": domain_name,
+                    "timestamp": now,
+                    "event_id": event_id,
+                }
+            )
+
+        # Create Domain->IP edges for resolved IPs
+        for ip_addr in event.resolved_ips:
+            ip_addr = ip_addr.strip()
+            if not ip_addr:
+                continue
+            entities.ips.append(
+                IpNode(
+                    id=ip_addr,
+                    address=ip_addr,
+                    is_private=_is_private_ip(ip_addr),
+                    first_seen=now,
+                    last_seen=now,
+                )
+            )
+            entities.resolves_to_edges.append(
+                {
+                    "domain_id": domain_name,
+                    "ip_id": ip_addr,
+                    "timestamp": now,
+                    "event_id": event_id,
+                }
+            )
+
+
+def _extract_file_activity(
+    event: FileActivity,
+    event_id: int,
+    entities: ExtractedEntities,
+    now: datetime,
+) -> None:
+    hostname = event.device.hostname
+    proc_id = None
+
+    if event.process:
+        proc = event.process
+        start_time = proc.created_time or now
+        proc_id = f"{hostname}:{proc.pid}:{int(start_time.timestamp())}"
+        entities.processes.append(
+            ProcessNode(
+                id=proc_id,
+                name=proc.name,
+                pid=proc.pid,
+                cmd_line=proc.cmd_line or None,
+                exe_path=proc.exe_path or None,
+                hostname=hostname,
+                start_time=start_time,
+            )
+        )
+
+    if event.file_path:
+        file_id = event.file_path
+
+        entities.files.append(
+            FileNode(
+                id=file_id,
+                path=event.file_path,
+                hash_sha256=event.file_hash_sha256,
+                size=event.file_size,
+                first_seen=now,
+                last_seen=now,
+            )
+        )
+
+        # Map activity_id to operation name
+        op_map = {1: "CREATED", 2: "READ", 3: "MODIFIED", 4: "DELETED"}
+        operation = op_map.get(event.activity_id, "MODIFIED")
+
+        if proc_id:
+            entities.file_edges.append(
+                {
+                    "process_id": proc_id,
+                    "file_id": file_id,
+                    "operation": operation,
+                    "timestamp": now,
+                    "event_id": event_id,
+                }
+            )
+
+
+def _extract_registry_activity(
+    event: RegistryActivity,
+    event_id: int,
+    entities: ExtractedEntities,
+    now: datetime,
+) -> None:
+    hostname = event.device.hostname
+    proc_id = None
+
+    if event.process:
+        proc = event.process
+        start_time = proc.created_time or now
+        proc_id = f"{hostname}:{proc.pid}:{int(start_time.timestamp())}"
+        entities.processes.append(
+            ProcessNode(
+                id=proc_id,
+                name=proc.name,
+                pid=proc.pid,
+                cmd_line=proc.cmd_line or None,
+                exe_path=proc.exe_path or None,
+                hostname=hostname,
+                start_time=start_time,
+            )
+        )
+
+    if event.reg_path:
+        # Use path + value_name as unique ID
+        reg_id = event.reg_path
+        if event.reg_value_name:
+            reg_id = f"{event.reg_path}\\{event.reg_value_name}"
+
+        entities.registry_keys.append(
+            RegistryKeyNode(
+                id=reg_id,
+                path=event.reg_path,
+                value_name=event.reg_value_name,
+                value_data=event.reg_value_data,
+                previous_data=event.reg_previous_data,
+                first_seen=now,
+                last_seen=now,
+            )
+        )
+
+        op_map = {1: "CREATED", 3: "MODIFIED", 4: "DELETED"}
+        operation = op_map.get(event.activity_id, "MODIFIED")
+
+        if proc_id:
+            entities.registry_edges.append(
+                {
+                    "process_id": proc_id,
+                    "registry_id": reg_id,
+                    "operation": operation,
+                    "timestamp": now,
+                    "event_id": event_id,
+                }
+            )
+
+
+def _is_private_ip(addr: str) -> bool:
+    try:
+        return ipaddress.ip_address(addr).is_private
+    except ValueError:
+        return False
