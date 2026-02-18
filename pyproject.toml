@@ -16,6 +16,7 @@ dependencies = [
     "openai>=1.0.0",
     "structlog>=24.0.0",
     "prometheus_client>=0.20.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +29,7 @@ linux = []
 
 [project.scripts]
 edr-graph = "agent.main:main"
+edr-watchdog = "agent.watchdog:main"
 
 [tool.setuptools.packages.find]
 include = ["agent*"]

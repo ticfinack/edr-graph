@@ -1,0 +1,46 @@
+# EDR Graph Agent Configuration
+# Values here are overridden by environment variables and CLI arguments.
+
+agent:
+  name: "edr-graph-agent"
+  log_level: "INFO"        # DEBUG, INFO, WARNING, ERROR
+  log_format: "json"       # "json" or "text"
+  data_dir: "./edr_data"
+
+collector:
+  poll_interval: 5.0       # seconds between collection cycles
+  buffer_size: 500          # max events per processing batch
+
+analysis:
+  llm:
+    model: "google/gemma-3-27b-it"
+    api_key_env: "DEEPINFRA_API_KEY"   # Read API key from this env var
+    # Never put API keys directly in this file!
+  dga:
+    entropy_threshold: 3.5
+    score_threshold: 0.6
+    allowlist:
+      - "googleapis.com"
+      - "cloudflare.com"
+      - "amazonaws.com"
+      - "windows.net"
+      - "office365.com"
+      - "microsoftonline.com"
+
+response:
+  auto_respond: false       # Auto-execute response for CRITICAL severity
+  auto_terminate: false     # Allow process termination without approval
+  # quarantine_dir: "/var/edr-graph/quarantine"  # Platform-dependent default
+
+persistence:
+  watchdog_enabled: true
+  heartbeat_interval_seconds: 10
+  tamper_check_interval_seconds: 60
+
+metrics:
+  enabled: true
+  port: 9100
+
+dashboard:
+  port: 8080
+  refresh_interval: 5.0
