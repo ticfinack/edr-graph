@@ -186,16 +186,82 @@ class GraphBuilder:
                 f"MERGE (ip:IP {{id: $id}}) "
                 f"ON CREATE SET ip.address = $address, ip.is_private = $is_private, "
                 f"ip.first_seen = timestamp('{ts_first}'), "
-                f"ip.last_seen = timestamp('{ts_last}') "
-                f"ON MATCH SET ip.last_seen = timestamp('{ts_last}')",
+                f"ip.last_seen = timestamp('{ts_last}'), "
+                f"ip.country = $country, ip.city = $city, ip.isp = $isp, "
+                f"ip.org = $org, ip.asn = $asn, ip.is_hosting = $is_hosting, "
+                f"ip.is_proxy = $is_proxy, ip.classification = $classification, "
+                f"ip.provider_name = $provider_name, ip.reverse_dns = $reverse_dns "
+                f"ON MATCH SET ip.last_seen = timestamp('{ts_last}'), "
+                f"ip.country = CASE WHEN $country <> '' THEN $country ELSE ip.country END, "
+                f"ip.city = CASE WHEN $city <> '' THEN $city ELSE ip.city END, "
+                f"ip.isp = CASE WHEN $isp <> '' THEN $isp ELSE ip.isp END, "
+                f"ip.org = CASE WHEN $org <> '' THEN $org ELSE ip.org END, "
+                f"ip.asn = CASE WHEN $asn <> '' THEN $asn ELSE ip.asn END, "
+                f"ip.classification = CASE WHEN $classification <> 'unclassified' THEN $classification ELSE ip.classification END, "
+                f"ip.provider_name = CASE WHEN $provider_name <> '' THEN $provider_name ELSE ip.provider_name END, "
+                f"ip.reverse_dns = CASE WHEN $reverse_dns <> '' THEN $reverse_dns ELSE ip.reverse_dns END",
                 {
                     "id": ip_node.id,
                     "address": ip_node.address,
                     "is_private": ip_node.is_private,
+                    "country": ip_node.country,
+                    "city": ip_node.city,
+                    "isp": ip_node.isp,
+                    "org": ip_node.org,
+                    "asn": ip_node.asn,
+                    "is_hosting": ip_node.is_hosting,
+                    "is_proxy": ip_node.is_proxy,
+                    "classification": ip_node.classification,
+                    "provider_name": ip_node.provider_name,
+                    "reverse_dns": ip_node.reverse_dns,
                 },
             )
         except Exception:
             logger.debug("Failed to upsert IP %s", ip_node.id, exc_info=True)
+
+    def upsert_ip_enrichment(self, ip_node: IpNode) -> None:
+        """Public method to persist IP enrichment data from pre-enrichment.
+
+        Only updates enrichment fields (country, city, isp, etc.), never
+        overwrites good data with blanks.
+        """
+        try:
+            self._conn.execute(
+                "MERGE (ip:IP {id: $id}) "
+                "ON CREATE SET ip.address = $address, ip.is_private = $is_private, "
+                "ip.first_seen = timestamp($ts), ip.last_seen = timestamp($ts), "
+                "ip.country = $country, ip.city = $city, ip.isp = $isp, "
+                "ip.org = $org, ip.asn = $asn, ip.is_hosting = $is_hosting, "
+                "ip.is_proxy = $is_proxy, ip.classification = $classification, "
+                "ip.provider_name = $provider_name, ip.reverse_dns = $reverse_dns "
+                "ON MATCH SET "
+                "ip.country = CASE WHEN $country <> '' THEN $country ELSE ip.country END, "
+                "ip.city = CASE WHEN $city <> '' THEN $city ELSE ip.city END, "
+                "ip.isp = CASE WHEN $isp <> '' THEN $isp ELSE ip.isp END, "
+                "ip.org = CASE WHEN $org <> '' THEN $org ELSE ip.org END, "
+                "ip.asn = CASE WHEN $asn <> '' THEN $asn ELSE ip.asn END, "
+                "ip.classification = CASE WHEN $classification <> 'unclassified' THEN $classification ELSE ip.classification END, "
+                "ip.provider_name = CASE WHEN $provider_name <> '' THEN $provider_name ELSE ip.provider_name END, "
+                "ip.reverse_dns = CASE WHEN $reverse_dns <> '' THEN $reverse_dns ELSE ip.reverse_dns END",
+                {
+                    "id": ip_node.id,
+                    "address": ip_node.address,
+                    "is_private": ip_node.is_private,
+                    "ts": _ts_lit(ip_node.first_seen),
+                    "country": ip_node.country,
+                    "city": ip_node.city,
+                    "isp": ip_node.isp,
+                    "org": ip_node.org,
+                    "asn": ip_node.asn,
+                    "is_hosting": ip_node.is_hosting,
+                    "is_proxy": ip_node.is_proxy,
+                    "classification": ip_node.classification,
+                    "provider_name": ip_node.provider_name,
+                    "reverse_dns": ip_node.reverse_dns,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to upsert IP enrichment for %s", ip_node.id, exc_info=True)
 
     def _upsert_domain(self, domain: DomainNode) -> None:
         try:

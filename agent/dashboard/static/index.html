@@ -192,7 +192,7 @@ svg .edge-arrow{fill:var(--dim)}
   </div>
   <div class="card" style="margin-bottom:16px">
     <div class="card-label">External IP Connections</div>
-    <table><thead><tr><th>IP Address</th><th>Ports</th><th>Connected By</th><th>Finding</th></tr></thead><tbody id="ioc-ips"></tbody></table>
+    <table><thead><tr><th>IP Address</th><th>Classification</th><th>Provider / ISP</th><th>Country</th><th>Ports</th><th>Connected By</th><th>Finding</th></tr></thead><tbody id="ioc-ips"></tbody></table>
     <div id="ioc-ips-empty" class="empty-state" style="display:none">No external connections observed yet</div>
   </div>
   <div class="card">
@@ -577,8 +577,12 @@ function renderNetwork(area, data) {
   const iX = w - 220;
   ips.forEach((ip, i) => {
     const iY = 20 + i * 48;
-    svg += '<rect x="' + iX + '" y="' + iY + '" width="' + bW + '" height="' + bH + '" class="node-rect"/>';
-    svg += '<text x="' + (iX+8) + '" y="' + (iY+22) + '" font-size="12">' + esc(ip.address) + ':' + (ip.port||'?') + '</text>';
+    const cls = ip.classification || '';
+    const isKnown = cls === 'known_cloud' || cls === 'known_cdn' || cls === 'known_saas' || cls === 'known_security';
+    const nodeStroke = isKnown ? 'stroke:var(--low)' : cls === 'suspicious_hosting' ? 'stroke:var(--medium)' : '';
+    svg += '<rect x="' + iX + '" y="' + iY + '" width="' + bW + '" height="' + bH + '" class="node-rect"' + (nodeStroke ? ' style="' + nodeStroke + '"' : '') + '/>';
+    const clsTag = cls && cls !== 'unclassified' ? ' [' + cls + ']' : '';
+    svg += '<text x="' + (iX+8) + '" y="' + (iY+22) + '" font-size="12">' + esc(ip.address) + ':' + (ip.port||'?') + esc(clsTag) + '</text>';
     svg += '<line x1="' + (pX+bW) + '" y1="' + (pY+bH/2) + '" x2="' + iX + '" y2="' + (iY+bH/2) + '" class="edge-line" stroke-dasharray="4,4"/>';
   });
   svg += '</svg>';
@@ -635,7 +639,12 @@ function renderChain(area, data) {
     parts.push({title:'DNS Queries', content: net.domains.map(d => '<div>' + esc(d.name) + (d.is_dga_candidate ? ' <span class="severity-badge severity-high">DGA</span>' : '') + '</div>').join('')});
   }
   if ((net.ips||[]).length > 0) {
-    parts.push({title:'Connections', content: '<table><tr><th>IP</th><th>Port</th><th>Protocol</th></tr>' + net.ips.map(i => '<tr><td class="mono">' + esc(i.address) + '</td><td class="mono">' + (i.port||'?') + '</td><td>' + esc(i.protocol||'TCP') + '</td></tr>').join('') + '</table>'});
+    parts.push({title:'Connections', content: '<table><tr><th>IP</th><th>Port</th><th>Protocol</th><th>Classification</th></tr>' + net.ips.map(i => {
+      const cls = i.classification || 'unclassified';
+      const clsBadgeClass = (cls === 'known_cloud' || cls === 'known_cdn' || cls === 'known_saas' || cls === 'known_security') ? 'severity-low' : cls === 'known_hosting' ? 'severity-info' : cls === 'suspicious_hosting' ? 'severity-medium' : 'severity-info';
+      const clsLabel = cls !== 'unclassified' ? '<span class="severity-badge ' + clsBadgeClass + '">' + esc(cls) + '</span>' + (i.provider_name ? ' ' + esc(i.provider_name) : '') : '';
+      return '<tr><td class="mono">' + esc(i.address) + '</td><td class="mono">' + (i.port||'?') + '</td><td>' + esc(i.protocol||'TCP') + '</td><td>' + clsLabel + '</td></tr>';
+    }).join('') + '</table>'});
   }
   if ((net.listening_ports||[]).length > 0) {
     parts.push({title:'Listening Ports', content: '<table><tr><th>Address</th><th>Port</th><th>Protocol</th></tr>' + net.listening_ports.map(l => '<tr><td class="mono">' + esc(l.address||'?') + '</td><td class="mono">' + (l.port||'?') + '</td><td>' + esc(l.protocol||'?') + '</td></tr>').join('') + '</table>'});
@@ -717,7 +726,13 @@ async function refreshIOC() {
       const ports = (i.ports||[]).join(', ') || '—';
       const procs = (i.connected_by||[]).filter(function(n){return n && n!=='unknown';}).join(', ') || '—';
       const findings = (i.findings||[]).map(function(t){return '<span class="severity-badge severity-medium" style="font-size:10px;padding:1px 4px">' + esc(t) + '</span>';}).join(' ') || '';
-      return '<tr><td class="mono">' + esc(i.address) + '</td><td class="mono">' + esc(ports) + '</td><td>' + esc(procs) + '</td><td>' + findings + '</td></tr>';
+      const cls = i.classification || 'unclassified';
+      const clsBadgeClass = (cls === 'known_cloud' || cls === 'known_cdn' || cls === 'known_saas' || cls === 'known_security') ? 'severity-low' : cls === 'known_hosting' ? 'severity-info' : cls === 'suspicious_hosting' ? 'severity-medium' : 'severity-info';
+      const clsBadge = '<span class="severity-badge ' + clsBadgeClass + '">' + esc(cls) + '</span>';
+      const provIsp = i.provider_name ? esc(i.provider_name) : esc(i.isp || '—');
+      const country = esc(i.country || '—');
+      const rdns = i.reverse_dns ? '<div class="mono" style="font-size:11px;color:var(--dim)">' + esc(i.reverse_dns) + '</div>' : '';
+      return '<tr><td class="mono">' + esc(i.address) + rdns + '</td><td>' + clsBadge + '</td><td>' + provIsp + '</td><td>' + country + '</td><td class="mono">' + esc(ports) + '</td><td>' + esc(procs) + '</td><td>' + findings + '</td></tr>';
     }).join('');
   }
 

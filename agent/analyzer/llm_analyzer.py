@@ -15,8 +15,10 @@ from openai import OpenAI
 from agent import metrics
 
 from agent.config import Settings
+from agent.enrichment.ip_reputation import classify_ip
 from agent.intel.prompt_builder import build_intel_prompt
-from agent.schema.graph_types import ChainStep, SecurityFinding
+from agent.processor.graph_builder import GraphBuilder
+from agent.schema.graph_types import ChainStep, IpNode, SecurityFinding
 from agent.graph.queries import build_attack_chain, serialize_attack_chain
 from agent.schema.ocsf_types import (
     Authentication,
@@ -243,14 +245,62 @@ class LlmAnalyzer:
                         pass
 
         if public_ips:
+            try:
+                graph_builder = GraphBuilder(self._kuzu_db)
+            except Exception:
+                graph_builder = None
             lines = ["## Pre-enrichment: IP intelligence\n"]
             for ip in sorted(public_ips):
                 lines.append(f"### {ip}")
-                geo = executor.execute("ip_geolocation", {"ip": ip})
-                lines.append(f"Geolocation: {geo}")
-                rdns = executor.execute("reverse_dns", {"ip": ip})
-                lines.append(f"Reverse DNS: {rdns}")
+                geo_raw = executor.execute("ip_geolocation", {"ip": ip})
+                lines.append(f"Geolocation: {geo_raw}")
+                rdns_raw = executor.execute("reverse_dns", {"ip": ip})
+                rdns_str = None
+                if rdns_raw and rdns_raw != "null" and "error" not in rdns_raw.lower():
+                    rdns_str = rdns_raw.strip().strip('"')
+                lines.append(f"Reverse DNS: {rdns_raw}")
+
+                # Parse GeoIP JSON and classify
+                geo_data = {}
+                try:
+                    geo_data = json.loads(geo_raw) if geo_raw else {}
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+                if geo_data:
+                    reputation = classify_ip(geo_data, rdns_str)
+                    lines.append(
+                        f"Classification: {reputation.classification.value} "
+                        f"(provider: {reputation.provider_name or 'unknown'})"
+                    )
+
+                    # Persist enrichment to graph
+                    ip_node = IpNode(
+                        id=ip,
+                        address=ip,
+                        is_private=False,
+                        first_seen=datetime.now(),
+                        last_seen=datetime.now(),
+                        country=reputation.country,
+                        city=reputation.city,
+                        isp=reputation.isp,
+                        org=reputation.org,
+                        asn=reputation.asn,
+                        is_hosting=reputation.is_hosting,
+                        is_proxy=reputation.is_proxy,
+                        classification=reputation.classification.value,
+                        provider_name=reputation.provider_name,
+                        reverse_dns=reputation.reverse_dns or "",
+                    )
+                    if graph_builder:
+                        try:
+                            graph_builder.upsert_ip_enrichment(ip_node)
+                        except Exception:
+                            logger.debug("Failed to persist IP enrichment for %s", ip, exc_info=True)
+
                 lines.append("")
+            if graph_builder:
+                graph_builder.close()
             sections.append("\n".join(lines))
 
         # --- 2. Process intelligence ---

@@ -35,6 +35,16 @@ class IpNode(BaseModel):
     is_private: bool
     first_seen: datetime
     last_seen: datetime
+    country: str = ""
+    city: str = ""
+    isp: str = ""
+    org: str = ""
+    asn: str = ""
+    is_hosting: bool = False
+    is_proxy: bool = False
+    classification: str = "unclassified"
+    provider_name: str = ""
+    reverse_dns: str = ""
 
 
 class DomainNode(BaseModel):

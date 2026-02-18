@@ -43,6 +43,8 @@ def build_intel_prompt(tools: list[dict] | None = None) -> str:
         sections.append(_format_hierarchy("Linux", LINUX_HIERARCHY))
         sections.append(_format_hierarchy("macOS", MACOS_HIERARCHY))
 
+    sections.append(_IP_INTELLIGENCE_SECTION)
+
     if tools:
         sections.append(_format_tool_instructions(tools))
 
@@ -134,6 +136,43 @@ def _format_loobins() -> str:
     return "\n".join(lines)
 
 
+_IP_INTELLIGENCE_SECTION = """\
+## IP INTELLIGENCE INTERPRETATION
+
+Pre-enrichment now classifies external IPs into categories. Use these rules \
+when interpreting IP connections:
+
+### Classification meanings:
+- **known_cloud** (AWS, Azure, GCP, Oracle): EXPECTED infrastructure. Most \
+legitimate software connects to cloud services. Only flag if combined with \
+OTHER suspicious indicators (unusual process, exfiltration volume, DGA domain, \
+unsigned binary).
+- **known_cdn** (Cloudflare, Akamai, Fastly): EXPECTED for web traffic. CDN \
+IPs serve legitimate content. Not suspicious on their own.
+- **known_saas** (Apple, Google, Microsoft, GitHub, Anthropic): EXPECTED for \
+normal endpoint operations. A signed Apple/Google/Microsoft process connecting \
+to its vendor's cloud is completely NORMAL.
+- **known_hosting** (DigitalOcean, Linode, Vultr, Hetzner, OVH): Mildly \
+elevated risk but commonly used by legitimate services. Flag ONLY with \
+additional indicators (DGA domain, unusual port, suspicious process).
+- **known_security** (CrowdStrike, Zscaler): Security vendor infrastructure. \
+EXPECTED on managed endpoints. Never flag as malicious.
+- **suspicious_hosting**: IP is hosted infrastructure but from an unknown \
+provider. Warrants closer inspection but is NOT conclusive evidence of C2.
+- **unclassified**: No provider match. Evaluate based on other context.
+
+### RULES:
+1. NEVER flag an IP as malicious C2 solely because it is a cloud/CDN/SaaS IP.
+2. A signed Apple/Google/Microsoft process connecting to its vendor's cloud \
+is EXPECTED behavior — do NOT flag it.
+3. When classification is known_cloud, known_cdn, or known_saas, reduce \
+severity by at least one level compared to what you would assign for an \
+unknown IP with the same behavior.
+4. Only escalate a known provider IP if there are MULTIPLE corroborating \
+indicators (e.g., unsigned process + DGA domain + known_hosting IP + unusual \
+port)."""
+
+
 def _format_tool_instructions(tools: list[dict]) -> str:
     tool_names = [t["function"]["name"] for t in tools]
     tool_list = ", ".join(f"`{n}`" for n in tool_names)
@@ -146,7 +185,9 @@ def _format_tool_instructions(tools: list[dict]) -> str:
         "and unusual behaviors.\n"
         "2. **Then**, call tools to investigate:\n"
         "   - Call `ip_geolocation` on every public (non-RFC1918) destination IP to "
-        "get country, ISP, and hosting/proxy flags.\n"
+        "get country, ISP, and hosting/proxy flags. Note: pre-enrichment already "
+        "classifies IPs (known_cloud, known_cdn, known_saas, etc.) — check the "
+        "classification before flagging an IP as suspicious.\n"
         "   - Call `reverse_dns` on suspicious IPs to check for known hostnames.\n"
         "   - Call `graph_context_query` on any process or user that looks anomalous "
         "to see their full activity history.\n"

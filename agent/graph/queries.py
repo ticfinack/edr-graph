@@ -284,7 +284,8 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
         # Get direct IP connections (by PID to catch all node variants)
         ip_result = conn.execute(
             "MATCH (p:Process {pid: $pid})-[c:CONNECTED_TO]->(ip:IP) "
-            "RETURN ip.address, c.dst_port, c.protocol",
+            "RETURN ip.address, c.dst_port, c.protocol, "
+            "ip.country, ip.classification, ip.provider_name",
             {"pid": pid},
         )
         seen_ips = set()
@@ -297,6 +298,9 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
                     "address": row[0],
                     "port": row[1],
                     "protocol": row[2],
+                    "country": row[3] or "",
+                    "classification": row[4] or "unclassified",
+                    "provider_name": row[5] or "",
                 })
 
         # Get direct DNS resolutions (by PID)
@@ -744,7 +748,16 @@ def serialize_attack_chain(chain: dict, max_tokens: int = 2000) -> str:
 
     ips = net.get("ips", [])
     if ips:
-        ip_strs = [f"{i.get('address', '?')}:{i.get('port', '?')}" for i in ips[:5]]
+        ip_strs = []
+        for i in ips[:5]:
+            s = f"{i.get('address', '?')}:{i.get('port', '?')}"
+            cls = i.get("classification", "")
+            prov = i.get("provider_name", "")
+            if cls and cls != "unclassified":
+                s += f" [{cls}]"
+                if prov:
+                    s += f" ({prov})"
+            ip_strs.append(s)
         parts.append(f"Connections: {', '.join(ip_strs)}")
 
     listening = net.get("listening_ports", [])
@@ -855,7 +868,8 @@ def get_ioc_summary(conn: kuzu.Connection, limit: int = 50) -> dict:
             "MATCH (p:Process)-[c:CONNECTED_TO]->(ip:IP) "
             "RETURN ip.address, ip.is_private, collect(DISTINCT c.dst_port), "
             "collect(DISTINCT p.name), collect(DISTINCT p.pid), "
-            "min(ip.first_seen) AS fs "
+            "min(ip.first_seen) AS fs, "
+            "ip.country, ip.isp, ip.classification, ip.provider_name, ip.reverse_dns "
             "ORDER BY fs DESC LIMIT $limit",
             {"limit": limit},
         )
@@ -869,6 +883,11 @@ def get_ioc_summary(conn: kuzu.Connection, limit: int = 50) -> dict:
                 "ports": row[2],
                 "connected_by": row[3],
                 "connected_by_pids": row[4],
+                "country": row[6] or "",
+                "isp": row[7] or "",
+                "classification": row[8] or "unclassified",
+                "provider_name": row[9] or "",
+                "reverse_dns": row[10] or "",
             })
     except Exception:
         logger.debug("IOC IP query failed", exc_info=True)

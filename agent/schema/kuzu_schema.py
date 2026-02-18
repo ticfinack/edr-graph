@@ -34,6 +34,16 @@ NODE_TABLES = [
         is_private BOOLEAN,
         first_seen TIMESTAMP,
         last_seen TIMESTAMP,
+        country STRING,
+        city STRING,
+        isp STRING,
+        org STRING,
+        asn STRING,
+        is_hosting BOOLEAN,
+        is_proxy BOOLEAN,
+        classification STRING,
+        provider_name STRING,
+        reverse_dns STRING,
         PRIMARY KEY (id)
     )
     """,
@@ -175,6 +185,17 @@ MIGRATIONS = [
     "ALTER TABLE Process ADD code_signed BOOLEAN DEFAULT false",
     "ALTER TABLE Process ADD signing_authority STRING DEFAULT ''",
     "ALTER TABLE Process ADD parent_pid INT64 DEFAULT 0",
+    # IP enrichment columns
+    "ALTER TABLE IP ADD country STRING DEFAULT ''",
+    "ALTER TABLE IP ADD city STRING DEFAULT ''",
+    "ALTER TABLE IP ADD isp STRING DEFAULT ''",
+    "ALTER TABLE IP ADD org STRING DEFAULT ''",
+    "ALTER TABLE IP ADD asn STRING DEFAULT ''",
+    "ALTER TABLE IP ADD is_hosting BOOLEAN DEFAULT false",
+    "ALTER TABLE IP ADD is_proxy BOOLEAN DEFAULT false",
+    "ALTER TABLE IP ADD classification STRING DEFAULT 'unclassified'",
+    "ALTER TABLE IP ADD provider_name STRING DEFAULT ''",
+    "ALTER TABLE IP ADD reverse_dns STRING DEFAULT ''",
 ]
 
 
