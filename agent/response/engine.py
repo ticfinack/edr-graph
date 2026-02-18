@@ -13,6 +13,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent import metrics
 from agent.response.actions import ResponseAction, ResponsePolicy
 from agent.response.approval import ApprovalManager, ApprovalStatus
 from agent.response.file_quarantine import FileQuarantine, QuarantineResult
@@ -235,6 +236,9 @@ class ResponseEngine:
         # Execute the action
         self._do_execute(action, target_pid, target_path, record)
         self.audit_log.record(record)
+        metrics.response_actions_total.labels(
+            action=action.value, result=record.result
+        ).inc()
         return record
 
     def _do_execute(

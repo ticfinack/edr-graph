@@ -51,6 +51,12 @@ attack_chain_build_latency = Histogram(
     buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
 )
 
+response_actions_total = Counter(
+    "edr_response_actions_total",
+    "Total response actions taken",
+    ["action", "result"],
+)
+
 agent_uptime = Gauge(
     "edr_agent_uptime_seconds",
     "Agent uptime in seconds",

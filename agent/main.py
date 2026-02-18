@@ -26,6 +26,8 @@ from agent.normalizer import normalize
 from agent.processor.entity_extractor import extract_entities
 from agent.processor.graph_builder import GraphBuilder
 from agent.queue.sqlite_queue import SqliteQueue
+from agent.response.actions import ResponsePolicy
+from agent.response.engine import ResponseAuditLog, ResponseEngine
 from agent.schema.kuzu_schema import init_graph_schema
 
 logger = logging.getLogger("agent")
@@ -131,6 +133,7 @@ def analyzer_thread(
     settings: Settings,
     queue: SqliteQueue,
     kuzu_db: kuzu.Database,
+    response_engine: ResponseEngine | None = None,
 ) -> None:
     """Periodically analyze novel events with the LLM."""
     analyzer = LlmAnalyzer(settings, kuzu_db)
@@ -170,6 +173,16 @@ def analyzer_thread(
                 findings = analyzer.analyze_batch(novel_events)
                 for finding in findings:
                     queue.store_finding(finding)
+
+                    # Trigger response engine for each finding
+                    if response_engine:
+                        try:
+                            _trigger_response(response_engine, finding, novel_events)
+                        except Exception:
+                            logger.exception(
+                                "Response engine failed for finding %s", finding.id
+                            )
+
                 if findings:
                     logger.info("Stored %d findings from LLM", len(findings))
             else:
@@ -177,6 +190,63 @@ def analyzer_thread(
 
         except Exception:
             logger.exception("Analyzer cycle failed")
+
+
+def _trigger_response(
+    engine: ResponseEngine,
+    finding,
+    events: list,
+) -> None:
+    """Trigger the response engine for a finding.
+
+    Extracts the target PID and process name from the finding's evidence events.
+    """
+    from agent.schema.ocsf_types import (
+        DnsActivity,
+        FileActivity,
+        NetworkActivity,
+        ProcessActivity,
+        RegistryActivity,
+    )
+
+    target_pid = None
+    process_name = None
+    target_path = None
+
+    # Find PID and process name from the evidence events
+    evidence_ids = set(finding.evidence_event_ids)
+    for event_id, event in events:
+        if event_id in evidence_ids or not evidence_ids:
+            if isinstance(event, ProcessActivity):
+                target_pid = event.process.pid
+                process_name = event.process.name
+                break
+            elif isinstance(event, (NetworkActivity, DnsActivity, FileActivity, RegistryActivity)):
+                if event.process:
+                    target_pid = event.process.pid
+                    process_name = event.process.name
+                if isinstance(event, (FileActivity,)):
+                    target_path = event.file_path
+                elif isinstance(event, (RegistryActivity,)):
+                    target_path = event.reg_path
+                break
+
+    records = engine.respond(
+        severity=finding.severity,
+        event_id=finding.evidence_event_ids[0] if finding.evidence_event_ids else None,
+        target_pid=target_pid,
+        target_path=target_path,
+        process_name=process_name,
+    )
+
+    for rec in records:
+        if rec.result not in ("success", "awaiting_approval", "not_required"):
+            logger.warning(
+                "Response action %s result: %s — %s",
+                rec.action_taken,
+                rec.result,
+                rec.result_detail,
+            )
 
 
 def main() -> None:
@@ -252,6 +322,33 @@ def main() -> None:
         init_graph_schema(init_conn)
         logger.info("Graph schema initialized")
 
+        # Initialize response engine
+        import sqlite3
+
+        response_conn = sqlite3.connect(str(settings.db_path))
+        response_conn.row_factory = sqlite3.Row
+        response_conn.execute("PRAGMA journal_mode=WAL")
+        response_conn.execute("PRAGMA busy_timeout=5000")
+        from agent.schema.queue_schema import init_queue_db
+
+        init_queue_db(response_conn)
+
+        policy = ResponsePolicy(
+            auto_respond=settings.auto_respond,
+            auto_terminate=settings.auto_terminate,
+        )
+        audit_log = ResponseAuditLog(response_conn)
+        response_engine = ResponseEngine(
+            policy=policy,
+            audit_log=audit_log,
+            quarantine_dir=settings.quarantine_dir,
+        )
+        logger.info(
+            "Response engine initialized (auto_respond=%s, auto_terminate=%s)",
+            settings.auto_respond,
+            settings.auto_terminate,
+        )
+
         # Handle shutdown signals
         def on_signal(signum, frame):
             logger.info("Received signal %d, shutting down...", signum)
@@ -280,7 +377,7 @@ def main() -> None:
 
         t = threading.Thread(
             target=analyzer_thread,
-            args=(settings, queue, kuzu_db),
+            args=(settings, queue, kuzu_db, response_engine),
             daemon=True,
             name="analyzer",
         )
