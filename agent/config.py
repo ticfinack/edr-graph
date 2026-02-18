@@ -33,7 +33,7 @@ class Settings(BaseModel):
     deepinfra_model: str = "google/gemma-3-27b-it"
     deepinfra_base_url: str = "https://api.deepinfra.com/v1/openai"
 
-    collector_poll_interval: float = 5.0  # seconds
+    collector_poll_interval: float = 0.5  # seconds
     processor_poll_interval: float = 2.0  # seconds
     analyzer_interval: float = 60.0  # seconds
     processor_batch_size: int = 500

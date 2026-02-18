@@ -492,17 +492,46 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
         tree = get_process_tree(conn, pid)
 
         if tree is None:
-            elapsed = time.monotonic() - t0
-            metrics.attack_chain_build_latency.observe(elapsed)
-            return {
-                "target_process": {},
+            # No Process node in graph — still collect activity data for this PID
+            # and try to identify the process via psutil
+            target_info = {"pid": pid}
+            try:
+                import psutil
+                p = psutil.Process(pid)
+                target_info["name"] = p.name()
+                try:
+                    target_info["command_line"] = " ".join(p.cmdline())
+                except (psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+                try:
+                    target_info["parent_pid"] = p.ppid()
+                except (psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+            except Exception:
+                pass
+
+            network_footprint = get_process_network_footprint(conn, pid)
+            file_activity = _get_process_file_activity(conn, pid)
+
+            chain = {
+                "target_process": target_info,
                 "process_chain": [],
                 "child_processes": [],
-                "network_footprint": {"domains": [], "ips": [], "dns_chains": []},
-                "file_activity": [],
-                "persistence_artifacts": [],
+                "network_footprint": network_footprint,
+                "file_activity": file_activity,
+                "persistence_artifacts": get_persistence_artifacts(conn, pid),
                 "risk_indicators": [],
             }
+
+            for domain in network_footprint.get("domains", []):
+                if domain.get("is_dga_candidate"):
+                    chain["risk_indicators"].append(
+                        f"DGA candidate: {domain['name']}"
+                    )
+
+            elapsed = time.monotonic() - t0
+            metrics.attack_chain_build_latency.observe(elapsed)
+            return chain
 
         target = tree["target"]
 

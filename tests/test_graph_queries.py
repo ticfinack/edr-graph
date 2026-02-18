@@ -227,12 +227,18 @@ class TestBuildAttackChain:
             shutil.rmtree(tmp_dir)
 
     def test_nonexistent_process(self):
-        """build_attack_chain returns empty dict for non-existent pid."""
+        """build_attack_chain still returns activity data for unknown pid.
+
+        Even without a Process node in the graph, the chain queries for
+        network, file, and persistence activity, and attempts psutil lookup.
+        """
         db, conn, tmp_dir = _make_db()
         try:
             chain = build_attack_chain(conn, 99999)
-            assert chain["target_process"] == {}
+            assert chain["target_process"]["pid"] == 99999
             assert chain["process_chain"] == []
+            assert chain["file_activity"] == []
+            assert chain["persistence_artifacts"] == []
         finally:
             shutil.rmtree(tmp_dir)
 
