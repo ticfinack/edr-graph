@@ -42,12 +42,42 @@ FINDINGS_SEVERITY_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings (severity)
 """
 
+RESPONSE_AUDIT_DDL = """
+CREATE TABLE IF NOT EXISTS response_audit (
+    response_id TEXT PRIMARY KEY,
+    event_id INTEGER,
+    timestamp TEXT NOT NULL,
+    action_taken TEXT NOT NULL,
+    target_pid INTEGER,
+    target_path TEXT,
+    llm_severity TEXT,
+    llm_confidence REAL,
+    approved_by TEXT,
+    approval_status TEXT NOT NULL DEFAULT 'auto',
+    result TEXT NOT NULL DEFAULT 'pending',
+    result_detail TEXT,
+    reverted INTEGER NOT NULL DEFAULT 0,
+    revert_timestamp TEXT
+)
+"""
+
+RESPONSE_AUDIT_TIME_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_response_audit_time ON response_audit (timestamp DESC)
+"""
+
+RESPONSE_AUDIT_EVENT_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_response_audit_event ON response_audit (event_id)
+"""
+
 ALL_DDL = [
     EVENT_QUEUE_DDL,
     EVENT_QUEUE_INDEX,
     FINDINGS_DDL,
     FINDINGS_TIME_INDEX,
     FINDINGS_SEVERITY_INDEX,
+    RESPONSE_AUDIT_DDL,
+    RESPONSE_AUDIT_TIME_INDEX,
+    RESPONSE_AUDIT_EVENT_INDEX,
 ]
 
 
