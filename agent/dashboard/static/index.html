@@ -329,37 +329,43 @@ async function showFindingDetail(id) {
   const sev = f.severity.toLowerCase();
   const el = document.getElementById('findings-detail');
 
-  // Collect PIDs from chain steps and affected_pids (filter out 0/null)
+  // Collect PIDs from chain steps, affected_pids, and affected_entities (filter out 0/null)
   const pidSet = new Set();
   (f.chain||[]).forEach(s => { if (s.pid && s.pid > 0) pidSet.add(s.pid); });
   (f.affected_pids||[]).forEach(p => { if (p && p > 0) pidSet.add(p); });
+  // Extract PIDs from affected_entities strings like "pid:1234" or "hostname:1234:..."
+  (f.affected_entities||[]).forEach(e => {
+    const m = String(e).match(/(?:^pid:|:)(\d{2,})(?::|$)/);
+    if (m) { const n = parseInt(m[1]); if (n > 0) pidSet.add(n); }
+  });
   const pids = Array.from(pidSet);
 
-  // Also collect process names from chain (for name-based lookup fallback)
+  // Collect process names from chain (for name-based lookup fallback)
   const processNames = [];
   (f.chain||[]).forEach(s => {
     if (s.entity_type === 'process' && s.entity_name) processNames.push(s.entity_name);
   });
 
-  // Build per-PID buttons
-  let pidButtons = '';
+  // Build per-PID buttons — every finding should have at least one PID since
+  // every event flows through a process (user → shell → action)
+  let pidButtons = '<div style="margin-top:12px"><h4 style="color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Investigate Process</h4><div style="display:flex;flex-wrap:wrap;gap:6px">';
   if (pids.length > 0) {
-    pidButtons = '<div style="margin-top:12px"><h4 style="color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Investigate Process</h4><div style="display:flex;flex-wrap:wrap;gap:6px">';
     pids.forEach(pid => {
       const step = (f.chain||[]).find(s => s.pid === pid);
       const label = step ? 'PID ' + pid + ': ' + esc(step.entity_name) : 'PID ' + pid;
       pidButtons += '<button class="btn" onclick="loadGraphForPid(\'chain\',' + pid + ')">' + label + '</button>';
     });
-    pidButtons += '</div></div>';
-  } else if (processNames.length > 0) {
-    // No PIDs available — offer name-based lookup
-    pidButtons = '<div style="margin-top:12px"><h4 style="color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Investigate Process</h4><div style="display:flex;flex-wrap:wrap;gap:6px">';
-    const uniqueNames = [...new Set(processNames)];
-    uniqueNames.forEach(name => {
-      pidButtons += '<button class="btn" onclick="lookupProcessByName(\'' + esc(name) + '\')">' + esc(name) + ' (find PID)</button>';
-    });
-    pidButtons += '</div></div>';
   }
+  // Always offer name-based lookup for process names not already covered by PIDs
+  const coveredNames = new Set(pids.map(pid => { const s = (f.chain||[]).find(s => s.pid === pid); return s ? s.entity_name : null; }).filter(Boolean));
+  const uncoveredNames = [...new Set(processNames)].filter(n => !coveredNames.has(n));
+  uncoveredNames.forEach(name => {
+    pidButtons += '<button class="btn" onclick="lookupProcessByName(\'' + esc(name) + '\')">' + esc(name) + ' (find PID)</button>';
+  });
+  if (pids.length === 0 && uncoveredNames.length === 0) {
+    pidButtons += '<span style="color:var(--dim);font-size:12px">No process info — enter a PID on the Graph tab</span>';
+  }
+  pidButtons += '</div></div>';
 
   // Graph action buttons
   let graphBtns = '<div style="margin-top:16px;display:flex;gap:8px;align-items:center">';
@@ -367,8 +373,8 @@ async function showFindingDetail(id) {
     graphBtns += '<button class="btn btn-primary" onclick="loadGraphForPid(\'chain\',' + pids[0] + ')">View Attack Chain</button>';
     graphBtns += '<button class="btn" onclick="loadGraphForPid(\'tree\',' + pids[0] + ')">View Process Tree</button>';
     graphBtns += '<button class="btn" onclick="loadGraphForPid(\'network\',' + pids[0] + ')">View Network</button>';
-  } else {
-    graphBtns += '<span style="color:var(--dim);font-size:12px">No PID available — use process name lookup above or enter a PID on the Graph tab</span>';
+  } else if (uncoveredNames.length > 0) {
+    graphBtns += '<button class="btn btn-primary" onclick="lookupProcessByName(\'' + esc(uncoveredNames[0]) + '\')">View Attack Chain (' + esc(uncoveredNames[0]) + ')</button>';
   }
   graphBtns += '</div>';
 

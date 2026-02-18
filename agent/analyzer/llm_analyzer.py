@@ -659,10 +659,16 @@ class LlmAnalyzer:
                         if step.pid is not None:
                             finding_pids.add(step.pid)
 
-                # Use explicitly provided affected_pids or fall back to collected
-                affected_pids = raw.get("affected_pids", [])
+                # Build affected_pids: prefer LLM-provided, then chain-extracted,
+                # then all PIDs from the batch.  Filter to real ints > 0.
+                affected_pids = [
+                    int(p) for p in (raw.get("affected_pids") or [])
+                    if isinstance(p, (int, float)) and int(p) > 0
+                ]
                 if not affected_pids:
-                    affected_pids = sorted(finding_pids) if finding_pids else batch_pids
+                    affected_pids = sorted(p for p in finding_pids if p > 0)
+                if not affected_pids:
+                    affected_pids = batch_pids
 
                 finding = SecurityFinding(
                     id=str(uuid.uuid4()),
