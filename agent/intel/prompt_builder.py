@@ -259,10 +259,12 @@ def _format_tool_instructions(tools: list[dict]) -> str:
 _IOC_FEED_SECTION = """\
 ## IOC FEED MATCHING
 
-Events matching known-bad IOC feeds (Feodo Tracker, ThreatFox, URLhaus, MalBazaar) \
-are flagged as CRITICAL automatically by the processor pipeline. These matches appear \
-as findings with titles starting with "Known Botnet C2 IP Detected", "Known Malicious \
-Domain Detected", or "Known Malware Hash Detected".
+Events matching known-bad IOC feeds are flagged as CRITICAL automatically by the \
+processor pipeline. Active IP feeds: Feodo Tracker (botnet C2), Stamparm ipsum \
+(aggregated reputation), Blocklist.de (attack sources), C2 Tracker (Cobalt Strike, \
+Sliver, etc.), Emerging Threats. Domain feeds: ThreatFox, URLhaus. Hash feeds: \
+MalBazaar. Matches appear as findings with titles starting with "Known Botnet C2 IP \
+Detected", "Known Malicious Domain Detected", or "Known Malware Hash Detected".
 
 When you see pre-enrichment data showing "IOC FEED MATCH", this means the indicator \
 was found in a threat intelligence feed. Provide additional behavioral context:

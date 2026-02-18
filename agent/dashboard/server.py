@@ -239,60 +239,65 @@ async def get_ioc_summary():
         queue = _get_queue()
         findings = queue.get_findings(limit=200)
 
-        # Build PID -> finding titles lookup
-        pid_findings: dict[int, list[str]] = {}
-        # Build IOC value -> finding titles lookup
-        ioc_findings: dict[str, list[str]] = {}
+        # Build PID -> finding info lookup
+        pid_findings: dict[int, list[dict]] = {}
+        # Build IOC value -> finding info lookup
+        ioc_findings: dict[str, list[dict]] = {}
         for f in findings:
+            f_info = {
+                "title": f.title,
+                "id": f.id,
+                "pids": [p for p in (f.affected_pids or []) if p and p > 0],
+            }
             for pid in (f.affected_pids or []):
                 if pid and pid > 0:
-                    pid_findings.setdefault(pid, []).append(f.title)
+                    pid_findings.setdefault(pid, []).append(f_info)
             for key in ("domains", "ips", "files", "urls"):
                 for val in (f.iocs or {}).get(key, []):
-                    ioc_findings.setdefault(str(val).lower(), []).append(f.title)
+                    ioc_findings.setdefault(str(val).lower(), []).append(f_info)
 
-        def _find_titles(pids: list, value_key: str | None = None) -> list[str]:
-            """Collect unique finding titles for a set of PIDs and/or IOC value."""
-            titles: list[str] = []
+        def _find_refs(pids: list, value_key: str | None = None) -> list[dict]:
+            """Collect unique finding refs for a set of PIDs and/or IOC value."""
+            refs: list[dict] = []
             seen: set[str] = set()
             for pid in (pids or []):
                 if pid and pid > 0:
-                    for t in pid_findings.get(pid, []):
-                        if t not in seen:
-                            seen.add(t)
-                            titles.append(t)
+                    for fi in pid_findings.get(pid, []):
+                        if fi["id"] not in seen:
+                            seen.add(fi["id"])
+                            refs.append(fi)
             if value_key:
-                for t in ioc_findings.get(value_key.lower(), []):
-                    if t not in seen:
-                        seen.add(t)
-                        titles.append(t)
-            return titles
+                for fi in ioc_findings.get(value_key.lower(), []):
+                    if fi["id"] not in seen:
+                        seen.add(fi["id"])
+                        refs.append(fi)
+            return refs
 
         for ip in result.get("external_ips", []):
-            ip["findings"] = _find_titles(ip.get("connected_by_pids"), ip.get("address"))
+            ip["findings"] = _find_refs(ip.get("connected_by_pids"), ip.get("address"))
 
-        # Build IP -> finding titles from the IP results so domains can
+        # Build IP -> finding refs from the IP results so domains can
         # inherit findings transitively: Domain→resolves_to→IP→connected_by→Process→Finding
-        ip_to_findings: dict[str, list[str]] = {}
+        ip_to_findings: dict[str, list[dict]] = {}
         for ip in result.get("external_ips", []):
             if ip.get("findings"):
                 ip_to_findings[ip["address"]] = ip["findings"]
 
         for d in result.get("domains", []):
-            titles = _find_titles(d.get("resolved_by_pids"), d.get("name"))
+            refs = _find_refs(d.get("resolved_by_pids"), d.get("name"))
             # Also inherit findings from IPs this domain resolves to
-            seen = set(titles)
+            seen = {r["id"] for r in refs}
             for resolved_ip in (d.get("resolved_ips") or []):
-                for t in ip_to_findings.get(resolved_ip, []):
-                    if t not in seen:
-                        seen.add(t)
-                        titles.append(t)
-            d["findings"] = titles
+                for r in ip_to_findings.get(resolved_ip, []):
+                    if r["id"] not in seen:
+                        seen.add(r["id"])
+                        refs.append(r)
+            d["findings"] = refs
 
         # Cross-reference files with findings
         existing_file_paths = {f.get("path", "").lower() for f in result.get("files", [])}
         for f in result.get("files", []):
-            f["findings"] = _find_titles(f.get("by_pids"), f.get("path"))
+            f["findings"] = _find_refs(f.get("by_pids"), f.get("path"))
 
         # Add files mentioned in findings IOCs that aren't already in the graph
         for f_obj in findings:
@@ -307,7 +312,11 @@ async def get_ioc_summary():
                         "by_processes": [],
                         "by_pids": f_pids,
                         "timestamp": f_obj.timestamp.isoformat(),
-                        "findings": [f_obj.title],
+                        "findings": [{
+                            "title": f_obj.title,
+                            "id": f_obj.id,
+                            "pids": f_pids,
+                        }],
                     })
     except Exception:
         pass
@@ -540,6 +549,9 @@ async def get_settings_info():
         "auto_terminate": settings.auto_terminate,
         "watchdog_enabled": settings.watchdog_enabled,
         "tamper_check_enabled": settings.tamper_check_enabled,
+        "ioc_feeds_enabled": settings.ioc_feeds_enabled,
+        "ioc_feeds_refresh_hours": settings.ioc_feeds_refresh_hours,
+        "investigation_tools_enabled": settings.investigation_tools_enabled,
     }
 
 

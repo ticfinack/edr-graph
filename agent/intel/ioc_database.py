@@ -1,34 +1,47 @@
-"""IOC feed database — downloads and caches known-bad indicators from abuse.ch.
+"""IOC feed database — downloads and caches known-bad indicators.
 
 Feeds (all free, no API key required):
-- Feodo Tracker: botnet C2 IPs (Dridex, Emotet, TrickBot, QakBot)
+
+IP feeds:
+- Feodo Tracker (aggressive): historical botnet C2 IPs
+- Stamparm ipsum: aggregated IP reputation (seen on 3+ blacklists)
+- Blocklist.de: attack source IPs from honeypots/IDS
+- C2 Tracker (montysecurity): active C2 framework IPs (Cobalt Strike, etc.)
+- Emerging Threats: compromised IPs
+
+Domain/IOC feeds:
 - ThreatFox: recent IOCs (IPs, domains, URLs) from various malware families
 - URLhaus: active malware distribution URLs (domain extraction)
+
+Hash feeds:
 - MalBazaar: recent malware SHA256 hashes
 """
 
 from __future__ import annotations
 
-import json
+import csv
+import io
 import logging
+import re
 import threading
 import time
-import urllib.error
-import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
+import urllib.request
+
 logger = logging.getLogger(__name__)
 
-_HTTP_TIMEOUT = 30  # seconds — feeds can be large
+_HTTP_TIMEOUT = 45  # seconds — some feeds are large
+_IP_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
 
 
 @dataclass
 class IocMatch:
     """Represents a match against a known-bad indicator."""
 
-    feed_name: str  # "feodo_tracker", "threatfox", "urlhaus", "malbazaar"
+    feed_name: str
     ioc_type: str  # "ip", "domain", "sha256", "url"
     ioc_value: str
     description: str
@@ -36,7 +49,7 @@ class IocMatch:
 
 
 class IocDatabase:
-    """Thread-safe database of known-bad indicators from abuse.ch feeds.
+    """Thread-safe database of known-bad indicators from public threat feeds.
 
     Call :meth:`download_feeds` once at startup, then use :meth:`check_ip`,
     :meth:`check_domain`, and :meth:`check_hash` from any thread.
@@ -49,6 +62,7 @@ class IocDatabase:
         self._last_refresh: float = 0.0
         self._refresh_interval: float = refresh_interval_hours * 3600
         self._lock = threading.Lock()
+        self._feed_stats: dict[str, int] = {}
 
     # -- Public API --------------------------------------------------------
 
@@ -58,22 +72,46 @@ class IocDatabase:
             ips: dict[str, IocMatch] = {}
             domains: dict[str, IocMatch] = {}
             hashes: dict[str, IocMatch] = {}
+            stats: dict[str, int] = {}
 
-            self._download_feodo(ips)
-            self._download_threatfox(ips, domains)
-            self._download_urlhaus(domains)
-            self._download_malbazaar(hashes)
+            # IP feeds
+            stats["feodo_tracker"] = self._download_feodo(ips)
+            stats["ipsum"] = self._download_ipsum(ips)
+            stats["blocklist_de"] = self._download_blocklist_de(ips)
+            stats["c2_tracker"] = self._download_c2_tracker(ips)
+            stats["emerging_threats"] = self._download_emerging_threats(ips)
+
+            # Domain/IOC feeds
+            tf_ip, tf_dom = self._download_threatfox(ips, domains)
+            stats["threatfox_ips"] = tf_ip
+            stats["threatfox_domains"] = tf_dom
+            stats["urlhaus"] = self._download_urlhaus(domains)
+
+            # Hash feeds
+            stats["malbazaar"] = self._download_malbazaar(hashes)
 
             self._ips = ips
             self._domains = domains
             self._hashes = hashes
+            self._feed_stats = stats
             self._last_refresh = time.monotonic()
 
             logger.info(
-                "Downloaded %d IPs, %d domains, %d hashes from IOC feeds",
+                "IOC feeds loaded: %d IPs, %d domains, %d hashes "
+                "(feodo=%d ipsum=%d blocklist_de=%d c2_tracker=%d et=%d "
+                "threatfox=%d+%d urlhaus=%d malbazaar=%d)",
                 len(self._ips),
                 len(self._domains),
                 len(self._hashes),
+                stats.get("feodo_tracker", 0),
+                stats.get("ipsum", 0),
+                stats.get("blocklist_de", 0),
+                stats.get("c2_tracker", 0),
+                stats.get("emerging_threats", 0),
+                stats.get("threatfox_ips", 0),
+                stats.get("threatfox_domains", 0),
+                stats.get("urlhaus", 0),
+                stats.get("malbazaar", 0),
             )
 
     def refresh_if_stale(self) -> None:
@@ -102,7 +140,6 @@ class IocDatabase:
         with self._lock:
             last_refresh_iso = None
             if self._last_refresh > 0:
-                # Convert monotonic offset to wall-clock time
                 elapsed = time.monotonic() - self._last_refresh
                 wall = datetime.now(timezone.utc).timestamp() - elapsed
                 last_refresh_iso = datetime.fromtimestamp(
@@ -115,9 +152,10 @@ class IocDatabase:
                 "hash_count": len(self._hashes),
                 "last_refresh": last_refresh_iso,
                 "refresh_interval_hours": self._refresh_interval / 3600,
+                "feeds": dict(self._feed_stats),
             }
 
-    # -- Feed downloaders --------------------------------------------------
+    # -- HTTP helper -------------------------------------------------------
 
     @staticmethod
     def _http_get(url: str) -> str:
@@ -129,9 +167,46 @@ class IocDatabase:
         with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
             return resp.read().decode("utf-8", errors="replace")
 
-    def _download_feodo(self, ips: dict[str, IocMatch]) -> None:
-        """Feodo Tracker — botnet C2 IP blocklist."""
-        url = "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt"
+    @staticmethod
+    def _parse_ip_lines(body: str) -> list[str]:
+        """Extract valid IPs from a text body, skipping comments/blanks."""
+        ips = []
+        for line in body.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("//"):
+                continue
+            # Some feeds have "ip\tscore" format
+            ip = line.split()[0].strip()
+            if _IP_RE.match(ip):
+                ips.append(ip)
+        return ips
+
+    # -- Feed downloaders --------------------------------------------------
+
+    def _download_feodo(self, ips: dict[str, IocMatch]) -> int:
+        """Feodo Tracker aggressive — all historical botnet C2 IPs."""
+        url = "https://feodotracker.abuse.ch/downloads/ipblocklist_aggressive.txt"
+        try:
+            body = self._http_get(url)
+            count = 0
+            for ip in self._parse_ip_lines(body):
+                if ip not in ips:
+                    ips[ip] = IocMatch(
+                        feed_name="feodo_tracker",
+                        ioc_type="ip",
+                        ioc_value=ip,
+                        description="Feodo Tracker botnet C2",
+                    )
+                    count += 1
+            logger.debug("Feodo Tracker: %d IPs", count)
+            return count
+        except Exception:
+            logger.warning("Failed to download Feodo Tracker feed", exc_info=True)
+            return 0
+
+    def _download_ipsum(self, ips: dict[str, IocMatch]) -> int:
+        """Stamparm ipsum — aggregated IP reputation (score >= 3 blacklists)."""
+        url = "https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt"
         try:
             body = self._http_get(url)
             count = 0
@@ -139,60 +214,129 @@ class IocDatabase:
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
-                ips[line] = IocMatch(
-                    feed_name="feodo_tracker",
-                    ioc_type="ip",
-                    ioc_value=line,
-                    description="Feodo Tracker botnet C2",
-                )
-                count += 1
-            logger.debug("Feodo Tracker: %d IPs", count)
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                ip, score_str = parts[0], parts[1]
+                try:
+                    score = int(score_str)
+                except ValueError:
+                    continue
+                # Only include IPs seen on 3+ blacklists for quality
+                if score < 3 or not _IP_RE.match(ip):
+                    continue
+                if ip not in ips:
+                    confidence = "high" if score >= 5 else "medium"
+                    ips[ip] = IocMatch(
+                        feed_name="ipsum",
+                        ioc_type="ip",
+                        ioc_value=ip,
+                        description=f"ipsum reputation (score {score}/{score_str})",
+                        confidence=confidence,
+                    )
+                    count += 1
+            logger.debug("ipsum: %d IPs (score>=3)", count)
+            return count
         except Exception:
-            logger.warning("Failed to download Feodo Tracker feed", exc_info=True)
+            logger.warning("Failed to download ipsum feed", exc_info=True)
+            return 0
+
+    def _download_blocklist_de(self, ips: dict[str, IocMatch]) -> int:
+        """Blocklist.de — attack source IPs from IDS/honeypots."""
+        url = "https://lists.blocklist.de/lists/all.txt"
+        try:
+            body = self._http_get(url)
+            count = 0
+            for ip in self._parse_ip_lines(body):
+                if ip not in ips:
+                    ips[ip] = IocMatch(
+                        feed_name="blocklist_de",
+                        ioc_type="ip",
+                        ioc_value=ip,
+                        description="Blocklist.de attack source",
+                        confidence="medium",
+                    )
+                    count += 1
+            logger.debug("Blocklist.de: %d IPs", count)
+            return count
+        except Exception:
+            logger.warning("Failed to download Blocklist.de feed", exc_info=True)
+            return 0
+
+    def _download_c2_tracker(self, ips: dict[str, IocMatch]) -> int:
+        """C2 Tracker — active C2 framework IPs (Cobalt Strike, Sliver, etc.)."""
+        url = "https://raw.githubusercontent.com/montysecurity/C2-Tracker/main/data/all.txt"
+        try:
+            body = self._http_get(url)
+            count = 0
+            for ip in self._parse_ip_lines(body):
+                if ip not in ips:
+                    ips[ip] = IocMatch(
+                        feed_name="c2_tracker",
+                        ioc_type="ip",
+                        ioc_value=ip,
+                        description="C2 Tracker — active C2 framework server",
+                    )
+                    count += 1
+            logger.debug("C2 Tracker: %d IPs", count)
+            return count
+        except Exception:
+            logger.warning("Failed to download C2 Tracker feed", exc_info=True)
+            return 0
+
+    def _download_emerging_threats(self, ips: dict[str, IocMatch]) -> int:
+        """Emerging Threats — compromised IPs."""
+        url = "https://rules.emergingthreats.net/blockrules/compromised-ips.txt"
+        try:
+            body = self._http_get(url)
+            count = 0
+            for ip in self._parse_ip_lines(body):
+                if ip not in ips:
+                    ips[ip] = IocMatch(
+                        feed_name="emerging_threats",
+                        ioc_type="ip",
+                        ioc_value=ip,
+                        description="Emerging Threats compromised host",
+                        confidence="medium",
+                    )
+                    count += 1
+            logger.debug("Emerging Threats: %d IPs", count)
+            return count
+        except Exception:
+            logger.warning("Failed to download Emerging Threats feed", exc_info=True)
+            return 0
 
     def _download_threatfox(
         self,
         ips: dict[str, IocMatch],
         domains: dict[str, IocMatch],
-    ) -> None:
-        """ThreatFox — recent IOCs (JSON export)."""
-        url = "https://threatfox.abuse.ch/export/json/recent/"
+    ) -> tuple[int, int]:
+        """ThreatFox — recent IOCs via CSV export."""
+        url = "https://threatfox.abuse.ch/export/csv/recent/"
         try:
             body = self._http_get(url)
-            data = json.loads(body)
-
-            # ThreatFox JSON: {"query_status": "ok", "data": [{"id":..., "ioc":"...", "ioc_type":"...", ...}, ...]}
-            # But the actual format wraps entries by ID: {"query_status":"ok", "data": {"0": [{...}], "1": [{...}], ...}}
-            entries = data.get("data")
-            if not entries:
-                return
-
             count_ip = 0
             count_domain = 0
 
-            # Handle both list-of-dicts and dict-of-lists formats
-            items: list[dict] = []
-            if isinstance(entries, dict):
-                for entry_list in entries.values():
-                    if isinstance(entry_list, list):
-                        items.extend(entry_list)
-                    elif isinstance(entry_list, dict):
-                        items.append(entry_list)
-            elif isinstance(entries, list):
-                items = entries
+            # Skip comment lines
+            lines = [
+                line for line in body.splitlines()
+                if line.strip() and not line.startswith("#")
+            ]
+            reader = csv.reader(io.StringIO("\n".join(lines)))
 
-            for item in items:
-                ioc_value = item.get("ioc", "")
-                ioc_type = item.get("ioc_type", "")
-                malware = item.get("malware_printable", "")
-                threat_type = item.get("threat_type", "")
-
-                desc = f"ThreatFox: {malware}" if malware else f"ThreatFox: {threat_type}"
+            for row in reader:
+                if len(row) < 6:
+                    continue
+                # CSV columns: date, id, ioc, ioc_type, threat_type, malware, ...
+                ioc_value = row[2].strip().strip('"')
+                ioc_type = row[3].strip().strip('"')
+                malware = row[7].strip().strip('"') if len(row) > 7 else ""
+                desc = f"ThreatFox: {malware}" if malware else "ThreatFox IOC"
 
                 if ioc_type == "ip:port":
-                    # Extract just the IP from "1.2.3.4:443"
                     ip = ioc_value.split(":")[0].strip()
-                    if ip and ip not in ips:
+                    if ip and _IP_RE.match(ip) and ip not in ips:
                         ips[ip] = IocMatch(
                             feed_name="threatfox",
                             ioc_type="ip",
@@ -211,9 +355,10 @@ class IocDatabase:
                         )
                         count_domain += 1
                 elif ioc_type == "url":
-                    # Extract domain from URL
                     try:
-                        parsed = urlparse(ioc_value if "://" in ioc_value else f"http://{ioc_value}")
+                        parsed = urlparse(
+                            ioc_value if "://" in ioc_value else f"http://{ioc_value}"
+                        )
                         domain = (parsed.hostname or "").lower()
                         if domain and domain not in domains:
                             domains[domain] = IocMatch(
@@ -227,10 +372,12 @@ class IocDatabase:
                         pass
 
             logger.debug("ThreatFox: %d IPs, %d domains", count_ip, count_domain)
+            return count_ip, count_domain
         except Exception:
             logger.warning("Failed to download ThreatFox feed", exc_info=True)
+            return 0, 0
 
-    def _download_urlhaus(self, domains: dict[str, IocMatch]) -> None:
+    def _download_urlhaus(self, domains: dict[str, IocMatch]) -> int:
         """URLhaus — active malware distribution URLs (extract domains)."""
         url = "https://urlhaus.abuse.ch/downloads/text_online/"
         try:
@@ -254,10 +401,12 @@ class IocDatabase:
                 except Exception:
                     pass
             logger.debug("URLhaus: %d domains", count)
+            return count
         except Exception:
             logger.warning("Failed to download URLhaus feed", exc_info=True)
+            return 0
 
-    def _download_malbazaar(self, hashes: dict[str, IocMatch]) -> None:
+    def _download_malbazaar(self, hashes: dict[str, IocMatch]) -> int:
         """MalBazaar — recent malware SHA256 hashes."""
         url = "https://bazaar.abuse.ch/export/txt/sha256/recent/"
         try:
@@ -267,7 +416,6 @@ class IocDatabase:
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
-                # SHA256 hashes are 64 hex chars
                 if len(line) == 64:
                     hashes[line.lower()] = IocMatch(
                         feed_name="malbazaar",
@@ -277,5 +425,7 @@ class IocDatabase:
                     )
                     count += 1
             logger.debug("MalBazaar: %d hashes", count)
+            return count
         except Exception:
             logger.warning("Failed to download MalBazaar feed", exc_info=True)
+            return 0
