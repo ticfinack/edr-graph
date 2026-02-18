@@ -1,2 +1,0 @@
-[console_scripts]
-edr-graph = agent.main:main
