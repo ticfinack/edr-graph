@@ -195,6 +195,15 @@ severity if the new evidence warrants it.
 If a process already has a finding but the new events are unrelated to that \
 finding, create a new finding instead.
 
+## PID ATTRIBUTION
+
+DNS events come from mDNSResponder (PID 0) and file events from FSEvents (PID 0). \
+These are system-level collectors — the actual originating process PID is NOT in those \
+events. When creating findings, use the process PID from process_start or network events \
+in the same batch, NOT PID 0. If a finding involves DNS or file activity, attribute it \
+to the process that initiated the network connection or was active at that time. \
+Do NOT include PID 0 in affected_pids.
+
 ## OUTPUT FORMAT
 
 Return ONLY a JSON array of findings. Each finding must have:
@@ -203,9 +212,15 @@ Return ONLY a JSON array of findings. Each finding must have:
 - description: detailed explanation referencing specific intel (e.g., "svchost.exe \
 spawned by explorer.exe violates SANS Hunt Evil parent-child rule")
 - affected_entities: array of entity IDs
+- affected_pids: array of integer PIDs (>0) for processes involved in this finding
 - evidence_event_ids: array of event queue IDs
 - recommendation: actionable next step
 - chain: array of {entity_type, entity_id, entity_name, pid} for the event chain
+- iocs: object with optional keys:
+  - domains: array of FQDNs observed (e.g., ["evil.com", "c2.example.org"])
+  - ips: array of IP addresses (e.g., ["1.2.3.4"])
+  - files: array of file paths (e.g., ["/tmp/payload.sh"])
+  - urls: array of full URLs if known
 - id: (optional) if updating an existing finding, include its ID
 
 If nothing suspicious is found, return: []"""

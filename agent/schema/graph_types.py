@@ -86,3 +86,4 @@ class SecurityFinding(BaseModel):
     recommendation: str
     chain: list[ChainStep]
     affected_pids: list[int] = []
+    iocs: dict = {}  # {"domains": [], "ips": [], "files": [], "urls": []}

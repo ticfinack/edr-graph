@@ -152,10 +152,12 @@ async def get_finding_detail(finding_id: str):
 
 @app.get("/api/graph/process-tree/{pid}")
 async def get_process_tree(pid: int):
-    """Process tree for a given PID."""
+    """Process tree for a given PID (ancestors + descendants with activity)."""
     conn = _get_conn()
-    chain = gq.get_process_chain(conn, pid)
-    return {"root": chain}
+    tree = gq.get_process_tree(conn, pid)
+    if tree is None:
+        return {"root": []}
+    return tree
 
 
 @app.get("/api/graph/network/{pid}")
@@ -185,6 +187,43 @@ async def get_attack_chain(pid: int):
     """Full attack chain context for a PID."""
     conn = _get_conn()
     return gq.build_attack_chain(conn, pid)
+
+
+@app.get("/api/graph/ioc-summary")
+async def get_ioc_summary():
+    """Global IOC/IOA summary: all domains, external IPs, and file activity.
+
+    Also cross-references with findings IOCs to show which findings mention each indicator.
+    """
+    conn = _get_conn()
+    result = gq.get_ioc_summary(conn)
+
+    # Cross-reference with findings IOCs
+    try:
+        queue = _get_queue()
+        findings = queue.get_findings(limit=200)
+        # Build lookup: ioc_value -> list of finding titles
+        ioc_findings: dict[str, list[str]] = {}
+        for f in findings:
+            iocs = f.iocs or {}
+            for key in ("domains", "ips", "files", "urls"):
+                for val in iocs.get(key, []):
+                    v = str(val).lower()
+                    if v not in ioc_findings:
+                        ioc_findings[v] = []
+                    ioc_findings[v].append(f.title)
+
+        # Annotate graph IOCs with finding references
+        for d in result.get("domains", []):
+            d["findings"] = ioc_findings.get(d["name"].lower(), [])
+        for ip in result.get("external_ips", []):
+            ip["findings"] = ioc_findings.get(ip["address"].lower(), [])
+        for f in result.get("files", []):
+            f["findings"] = ioc_findings.get(f["path"].lower(), [])
+    except Exception:
+        pass
+
+    return result
 
 
 @app.get("/api/graph/process-by-name/{name}")
@@ -420,6 +459,8 @@ async def get_settings_info():
 
 def _serialize_finding(f) -> dict:
     """Convert a SecurityFinding to a JSON-serializable dict."""
+    # Filter out PID 0 (system-level collectors like mDNSResponder/FSEvents)
+    affected_pids = [p for p in f.affected_pids if p and p > 0]
     return {
         "id": f.id,
         "timestamp": f.timestamp.isoformat(),
@@ -429,17 +470,18 @@ def _serialize_finding(f) -> dict:
         "affected_entities": f.affected_entities,
         "evidence_event_ids": f.evidence_event_ids,
         "recommendation": f.recommendation,
-        "affected_pids": f.affected_pids,
+        "affected_pids": affected_pids,
         "chain": [
             {
                 "entity_type": s.entity_type,
                 "entity_id": s.entity_id,
                 "entity_name": s.entity_name,
-                "pid": s.pid,
+                "pid": s.pid if s.pid and s.pid > 0 else None,
                 "timestamp": s.timestamp.isoformat() if s.timestamp else None,
             }
             for s in f.chain
         ],
+        "iocs": f.iocs if f.iocs else {},
     }
 
 

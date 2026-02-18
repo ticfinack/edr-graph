@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS findings (
     evidence_event_ids TEXT NOT NULL,
     recommendation TEXT NOT NULL,
     chain TEXT NOT NULL,
-    affected_pids TEXT NOT NULL DEFAULT '[]'
+    affected_pids TEXT NOT NULL DEFAULT '[]',
+    iocs TEXT NOT NULL DEFAULT '{}'
 )
 """
 
@@ -84,6 +85,7 @@ ALL_DDL = [
 # Migrations for existing databases (errors silently ignored if column exists)
 SQLITE_MIGRATIONS = [
     "ALTER TABLE findings ADD COLUMN affected_pids TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE findings ADD COLUMN iocs TEXT NOT NULL DEFAULT '{}'",
 ]
 
 

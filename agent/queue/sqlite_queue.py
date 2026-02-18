@@ -110,8 +110,8 @@ class SqliteQueue:
         conn.execute(
             "INSERT OR REPLACE INTO findings "
             "(id, timestamp, severity, title, description, "
-            "affected_entities, evidence_event_ids, recommendation, chain, affected_pids) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "affected_entities, evidence_event_ids, recommendation, chain, affected_pids, iocs) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 finding.id,
                 finding.timestamp.isoformat(),
@@ -123,6 +123,7 @@ class SqliteQueue:
                 finding.recommendation,
                 json.dumps([step.model_dump(mode="json") for step in finding.chain]),
                 json.dumps(finding.affected_pids),
+                json.dumps(finding.iocs),
             ),
         )
         conn.commit()
@@ -162,11 +163,16 @@ class SqliteQueue:
     def _row_to_finding(row: sqlite3.Row) -> SecurityFinding:
         from agent.schema.graph_types import ChainStep
 
-        # Handle affected_pids gracefully for old rows without the column
+        # Handle affected_pids/iocs gracefully for old rows without the columns
         try:
             affected_pids = json.loads(row["affected_pids"])
         except (KeyError, IndexError):
             affected_pids = []
+
+        try:
+            iocs = json.loads(row["iocs"])
+        except (KeyError, IndexError):
+            iocs = {}
 
         return SecurityFinding(
             id=row["id"],
@@ -179,6 +185,7 @@ class SqliteQueue:
             recommendation=row["recommendation"],
             chain=[ChainStep(**s) for s in json.loads(row["chain"])],
             affected_pids=affected_pids,
+            iocs=iocs,
         )
 
     def get_findings_for_pids(self, pids: list[int]) -> list[SecurityFinding]:

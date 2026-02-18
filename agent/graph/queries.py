@@ -139,7 +139,7 @@ def _get_pid_network(conn: kuzu.Connection, pid: int) -> list[dict]:
                 seen.add(key)
                 items.append({"address": row[0], "port": row[1], "protocol": row[2]})
 
-        # DNS
+        # DNS (direct)
         dns_result = conn.execute(
             "MATCH (p:Process {pid: $pid})-[:RESOLVED]->(d:Domain) "
             "RETURN d.name, d.is_dga_candidate",
@@ -151,6 +151,23 @@ def _get_pid_network(conn: kuzu.Connection, pid: int) -> list[dict]:
             if row[0] not in seen_domains:
                 seen_domains.add(row[0])
                 items.append({"domain": row[0], "is_dga": row[1]})
+
+        # Infer domains from connected IPs (DNS goes to mDNSResponder, not the process)
+        connected_ips = {i["address"] for i in items if "address" in i}
+        for ip_addr in connected_ips:
+            try:
+                inferred = conn.execute(
+                    "MATCH (d:Domain)-[:RESOLVES_TO]->(ip:IP {address: $ip}) "
+                    "RETURN d.name, d.is_dga_candidate",
+                    {"ip": ip_addr},
+                )
+                while inferred.has_next():
+                    row = inferred.get_next()
+                    if row[0] not in seen_domains:
+                        seen_domains.add(row[0])
+                        items.append({"domain": row[0], "is_dga": row[1]})
+            except Exception:
+                pass
     except Exception:
         pass
     return items
@@ -247,6 +264,9 @@ def get_process_tree(conn: kuzu.Connection, pid: int) -> dict | None:
 def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
     """All network activity for a process.
 
+    Queries by PID (not node ID) to catch all Process nodes sharing the same
+    PID — activity events may create Process nodes with different IDs.
+
     Returns: {
         "domains": [{"name": ..., "first_seen": ..., "is_dga_candidate": ...}],
         "ips": [{"address": ..., "port": ..., "protocol": ...}],
@@ -261,21 +281,11 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
     }
 
     try:
-        # Get process id from pid
-        proc_result = conn.execute(
-            "MATCH (p:Process {pid: $pid}) RETURN p.id",
-            {"pid": pid},
-        )
-        if not proc_result.has_next():
-            return result
-
-        proc_id = proc_result.get_next()[0]
-
-        # Get direct IP connections
+        # Get direct IP connections (by PID to catch all node variants)
         ip_result = conn.execute(
-            "MATCH (p:Process {id: $id})-[c:CONNECTED_TO]->(ip:IP) "
+            "MATCH (p:Process {pid: $pid})-[c:CONNECTED_TO]->(ip:IP) "
             "RETURN ip.address, c.dst_port, c.protocol",
-            {"id": proc_id},
+            {"pid": pid},
         )
         seen_ips = set()
         while ip_result.has_next():
@@ -289,11 +299,11 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
                     "protocol": row[2],
                 })
 
-        # Get DNS resolutions
+        # Get direct DNS resolutions (by PID)
         dns_result = conn.execute(
-            "MATCH (p:Process {id: $id})-[:RESOLVED]->(d:Domain) "
+            "MATCH (p:Process {pid: $pid})-[:RESOLVED]->(d:Domain) "
             "RETURN d.name, d.first_seen, d.is_dga_candidate",
-            {"id": proc_id},
+            {"pid": pid},
         )
         seen_domains = set()
         while dns_result.has_next():
@@ -305,6 +315,32 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
                     "first_seen": str(row[1]) if row[1] else None,
                     "is_dga_candidate": row[2],
                 })
+
+        # Infer domains from IP connections: if Process→IP and Domain→IP,
+        # the process likely queried that domain.  DNS events go to
+        # mDNSResponder (PID 0), so direct RESOLVED edges are usually
+        # missing for the actual initiating process.
+        connected_ips = {ip["address"] for ip in result["ips"]}
+        if connected_ips:
+            for ip_addr in connected_ips:
+                try:
+                    inferred = conn.execute(
+                        "MATCH (d:Domain)-[:RESOLVES_TO]->(ip:IP {address: $ip}) "
+                        "RETURN d.name, d.first_seen, d.is_dga_candidate",
+                        {"ip": ip_addr},
+                    )
+                    while inferred.has_next():
+                        row = inferred.get_next()
+                        if row[0] not in seen_domains:
+                            seen_domains.add(row[0])
+                            result["domains"].append({
+                                "name": row[0],
+                                "first_seen": str(row[1]) if row[1] else None,
+                                "is_dga_candidate": row[2],
+                                "inferred": True,
+                            })
+                except Exception:
+                    pass
 
         # Get DNS chains (domain -> resolved IPs)
         for domain_name in seen_domains:
@@ -322,12 +358,12 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
                     "resolved_to": resolved,
                 })
 
-        # Get listening ports
+        # Get listening ports (by PID)
         try:
             listen_result = conn.execute(
-                "MATCH (p:Process {id: $id})-[l:LISTENING_ON]->(ip:IP) "
+                "MATCH (p:Process {pid: $pid})-[l:LISTENING_ON]->(ip:IP) "
                 "RETURN ip.address, l.port, l.protocol",
-                {"id": proc_id},
+                {"pid": pid},
             )
             while listen_result.has_next():
                 row = listen_result.get_next()
@@ -762,3 +798,95 @@ def serialize_attack_chain(chain: dict, max_tokens: int = 2000) -> str:
         text = text[:max_chars - 20] + "\n... (truncated)"
 
     return text
+
+
+def get_ioc_summary(conn: kuzu.Connection, limit: int = 50) -> dict:
+    """Global IOC/IOA summary from the graph.
+
+    Returns all domains, external IPs, and recently modified files with
+    the processes that touched them. Useful because many events (FSEvents,
+    DNS) are attributed to system processes (PID 0 / mDNSResponder) rather
+    than the actual initiating process.
+    """
+    result = {
+        "domains": [],
+        "external_ips": [],
+        "files": [],
+    }
+
+    # Domains
+    try:
+        dns = conn.execute(
+            "MATCH (p:Process)-[:RESOLVED]->(d:Domain) "
+            "RETURN d.name, d.is_dga_candidate, d.first_seen, "
+            "collect(DISTINCT p.name), collect(DISTINCT p.pid) "
+            "ORDER BY d.first_seen DESC LIMIT $limit",
+            {"limit": limit},
+        )
+        while dns.has_next():
+            row = dns.get_next()
+            result["domains"].append({
+                "name": row[0],
+                "is_dga_candidate": row[1],
+                "first_seen": str(row[2]) if row[2] else None,
+                "resolved_by": row[3],
+                "resolved_by_pids": row[4],
+            })
+    except Exception:
+        logger.debug("IOC domain query failed", exc_info=True)
+
+    # IPs
+    try:
+        ips = conn.execute(
+            "MATCH (p:Process)-[c:CONNECTED_TO]->(ip:IP) "
+            "RETURN ip.address, ip.is_private, collect(DISTINCT c.dst_port), "
+            "collect(DISTINCT p.name), collect(DISTINCT p.pid), "
+            "min(ip.first_seen) AS fs "
+            "ORDER BY fs DESC LIMIT $limit",
+            {"limit": limit},
+        )
+        while ips.has_next():
+            row = ips.get_next()
+            is_private = row[1]
+            if is_private is True:
+                continue
+            result["external_ips"].append({
+                "address": row[0],
+                "ports": row[2],
+                "connected_by": row[3],
+                "connected_by_pids": row[4],
+            })
+    except Exception:
+        logger.debug("IOC IP query failed", exc_info=True)
+
+    # Files
+    for rel_type, operation in [
+        ("CREATED_FILE", "CREATED"),
+        ("MODIFIED_FILE", "MODIFIED"),
+        ("DELETED_FILE", "DELETED"),
+    ]:
+        try:
+            files = conn.execute(
+                f"MATCH (p:Process)-[r:{rel_type}]->(f:File) "
+                f"RETURN f.path, p.name, p.pid, r.timestamp "
+                f"ORDER BY r.timestamp DESC LIMIT $limit",
+                {"limit": limit // 3},
+            )
+            seen_paths = set()
+            while files.has_next():
+                row = files.get_next()
+                path = row[0]
+                if path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                result["files"].append({
+                    "path": path,
+                    "operation": operation,
+                    "by_processes": [row[1]] if row[1] else [],
+                    "by_pids": [row[2]] if row[2] else [],
+                    "timestamp": str(row[3]) if row[3] else None,
+                })
+        except Exception:
+            logger.debug("IOC file query failed for %s", rel_type, exc_info=True)
+
+    return result

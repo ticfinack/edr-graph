@@ -124,6 +124,7 @@ svg .edge-arrow{fill:var(--dim)}
   <button class="tab-btn" data-tab="findings">Findings</button>
   <button class="tab-btn" data-tab="graph">Graph</button>
   <button class="tab-btn" data-tab="events">Events</button>
+  <button class="tab-btn" data-tab="ioc">IOC/IOA</button>
   <button class="tab-btn" data-tab="audit">Audit</button>
   <button class="tab-btn" data-tab="settings">Settings</button>
 </div>
@@ -182,6 +183,25 @@ svg .edge-arrow{fill:var(--dim)}
   <div id="events-stream"></div>
 </div>
 
+<!-- ── IOC/IOA ──────────────────────────────────────────────────── -->
+<div class="tab-panel" id="panel-ioc">
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-label">DNS Queries (Domains)</div>
+    <table><thead><tr><th>Domain</th><th>DGA</th><th>First Seen</th><th>Resolved By</th><th>Finding</th></tr></thead><tbody id="ioc-domains"></tbody></table>
+    <div id="ioc-domains-empty" class="empty-state" style="display:none">No domains observed yet</div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-label">External IP Connections</div>
+    <table><thead><tr><th>IP Address</th><th>Ports</th><th>Connected By</th><th>Finding</th></tr></thead><tbody id="ioc-ips"></tbody></table>
+    <div id="ioc-ips-empty" class="empty-state" style="display:none">No external connections observed yet</div>
+  </div>
+  <div class="card">
+    <div class="card-label">File Activity</div>
+    <table><thead><tr><th>Operation</th><th>Path</th><th>By Process</th><th>Finding</th></tr></thead><tbody id="ioc-files"></tbody></table>
+    <div id="ioc-files-empty" class="empty-state" style="display:none">No file activity observed yet</div>
+  </div>
+</div>
+
 <!-- ── Audit ─────────────────────────────────────────────────────── -->
 <div class="tab-panel" id="panel-audit">
   <table><thead><tr><th>Time</th><th>Action</th><th>Target</th><th>Severity</th><th>Approved</th><th>Result</th><th></th></tr></thead><tbody id="audit-tbody"></tbody></table>
@@ -225,8 +245,8 @@ window.addEventListener('hashchange', () => { if (location.hash) switchTab(locat
 // Keyboard shortcuts
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-  const tabs = ['overview','findings','graph','events','audit','settings'];
-  if (e.key >= '1' && e.key <= '6') switchTab(tabs[parseInt(e.key)-1]);
+  const tabs = ['overview','findings','graph','events','ioc','audit','settings'];
+  if (e.key >= '1' && e.key <= '7') switchTab(tabs[parseInt(e.key)-1]);
   if (e.key === 'r') refreshTab(currentTab);
   if (e.key === 'p') toggleEventPause();
 });
@@ -244,6 +264,7 @@ function refreshTab(tab) {
   if (tab === 'overview') refreshOverview();
   else if (tab === 'findings') refreshFindings();
   else if (tab === 'events') refreshEvents();
+  else if (tab === 'ioc') refreshIOC();
   else if (tab === 'audit') refreshAudit();
   else if (tab === 'settings') refreshSettings();
 }
@@ -322,6 +343,37 @@ async function refreshFindings() {
   }).join('');
 }
 
+function renderFindingIOCs(iocs) {
+  const domains = iocs.domains || [];
+  const ips = iocs.ips || [];
+  const files = iocs.files || [];
+  const urls = iocs.urls || [];
+  if (domains.length === 0 && ips.length === 0 && files.length === 0 && urls.length === 0) return '';
+  let html = '<div class="detail-section"><h4>IOC / IOA</h4><div style="display:flex;flex-wrap:wrap;gap:16px">';
+  if (domains.length > 0) {
+    html += '<div><div style="color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px">Domains</div>';
+    domains.forEach(function(d) { html += '<div class="mono" style="font-size:13px">' + esc(d) + '</div>'; });
+    html += '</div>';
+  }
+  if (ips.length > 0) {
+    html += '<div><div style="color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px">IPs</div>';
+    ips.forEach(function(ip) { html += '<div class="mono" style="font-size:13px">' + esc(ip) + '</div>'; });
+    html += '</div>';
+  }
+  if (files.length > 0) {
+    html += '<div><div style="color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px">Files</div>';
+    files.forEach(function(f) { html += '<div class="mono" style="font-size:13px">' + esc(f) + '</div>'; });
+    html += '</div>';
+  }
+  if (urls.length > 0) {
+    html += '<div><div style="color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px">URLs</div>';
+    urls.forEach(function(u) { html += '<div class="mono" style="font-size:13px">' + esc(u) + '</div>'; });
+    html += '</div>';
+  }
+  html += '</div></div>';
+  return html;
+}
+
 async function showFindingDetail(id) {
   const f = await api('/api/findings/' + id);
   if (!f) return;
@@ -391,6 +443,7 @@ async function showFindingDetail(id) {
     '</div>' +
     '<div class="detail-section"><h4>Description</h4><pre>' + esc(f.description||'') + '</pre></div>' +
     (f.recommendation ? '<div class="detail-section"><h4>Recommendation</h4><pre>' + esc(f.recommendation) + '</pre></div>' : '') +
+    renderFindingIOCs(f.iocs || {}) +
     pidButtons +
     graphBtns +
     '</div>';
@@ -425,7 +478,7 @@ async function loadGraph() {
 
   if (graphMode === 'tree') {
     const data = await api('/api/graph/process-tree/' + pid);
-    if (data) renderTree(area, data.root, pid);
+    if (data && (data.target || data.ancestors)) renderTree(area, data, pid);
     else area.innerHTML = '<div class="empty-state">No data for PID ' + pid + '</div>';
   } else if (graphMode === 'network') {
     const data = await api('/api/graph/network/' + pid);
@@ -460,25 +513,45 @@ function loadGraphForPid(mode, pid) {
   loadGraph();
 }
 
-function renderTree(area, chain, pid) {
-  if (!chain || chain.length === 0) { area.innerHTML = '<div class="empty-state">No process tree data</div>'; return; }
-  const w = area.clientWidth - 32, h = Math.max(300, chain.length * 60 + 40);
-  let svg = '<svg width="' + w + '" height="' + h + '" xmlns="http://www.w3.org/2000/svg">';
-  const x = 40, boxW = 300, boxH = 36;
-  chain.forEach((node, i) => {
-    const y = 20 + i * 56;
-    const isTarget = node.pid === pid;
-    svg += '<rect x="' + x + '" y="' + y + '" width="' + boxW + '" height="' + boxH + '" class="node-rect' + (isTarget?' highlight':'') + '"/>';
-    const label = (node.type === 'user' ? 'User: ' : 'PID ' + (node.pid||'?') + ' ') + (node.name||'?');
-    svg += '<text x="' + (x+12) + '" y="' + (y+22) + '" font-size="13">' + esc(label) + '</text>';
-    if (i > 0) {
-      const py = 20 + (i-1) * 56 + boxH;
-      svg += '<line x1="' + (x+boxW/2) + '" y1="' + py + '" x2="' + (x+boxW/2) + '" y2="' + y + '" class="edge-line"/>';
-      svg += '<polygon points="' + (x+boxW/2-4) + ',' + (y-2) + ' ' + (x+boxW/2+4) + ',' + (y-2) + ' ' + (x+boxW/2) + ',' + (y+2) + '" class="edge-arrow"/>';
-    }
-  });
-  svg += '</svg>';
-  area.innerHTML = svg;
+function renderTree(area, data, pid) {
+  const ancestors = data.ancestors || [];
+  const target = data.target;
+  if (!target) { area.innerHTML = '<div class="empty-state">No process tree data</div>'; return; }
+  const opColors = {CREATED:'var(--low)',MODIFIED:'var(--medium)',DELETED:'var(--critical)',READ:'var(--dim)'};
+
+  function signBadge(p) {
+    if (p.code_signed) return ' <span style="color:var(--low);font-size:11px">[signed: ' + esc(p.signing_authority||'?') + ']</span>';
+    if (p.code_signed === false) return ' <span style="color:var(--high);font-size:11px">[unsigned]</span>';
+    return '';
+  }
+
+  function renderNode(proc, depth, isTarget) {
+    const indent = depth * 24;
+    let html = '<div style="padding:6px 0 6px ' + indent + 'px;border-bottom:1px solid var(--border)' + (isTarget ? ';background:rgba(99,102,241,0.1)' : '') + '">';
+    html += '<strong>' + esc(proc.name||'?') + '</strong> <span class="mono" style="color:var(--dim)">(PID ' + (proc.pid||'?') + ')</span>' + signBadge(proc);
+    if (proc.cmd_line) html += ' <span class="mono" style="color:var(--dim);font-size:11px">' + esc(proc.cmd_line.substring(0,100)) + '</span>';
+    // Network activity
+    (proc.network||[]).forEach(function(n) {
+      if (n.domain) html += '<div style="padding-left:' + (indent+16) + 'px;color:var(--dim);font-size:12px">DNS: ' + esc(n.domain) + (n.is_dga ? ' <span class="severity-badge severity-high">DGA</span>' : '') + '</div>';
+      else if (n.address) html += '<div style="padding-left:' + (indent+16) + 'px;color:var(--dim);font-size:12px">&rarr; ' + esc(n.address) + ':' + (n.port||'?') + '</div>';
+    });
+    // File activity
+    (proc.files||[]).forEach(function(f) {
+      var c = opColors[f.operation]||'var(--dim)';
+      html += '<div style="padding-left:' + (indent+16) + 'px;font-size:12px"><span style="color:' + c + '">' + esc(f.operation) + '</span> ' + esc(f.file_path) + '</div>';
+    });
+    html += '</div>';
+    // Recurse children
+    (proc.children||[]).forEach(function(child) { html += renderNode(child, depth+1, child.pid === pid); });
+    return html;
+  }
+
+  let html = '';
+  // Ancestors
+  ancestors.forEach(function(anc, i) { html += renderNode(anc, i, false); });
+  // Target (at ancestor depth)
+  html += renderNode(target, ancestors.length, true);
+  area.innerHTML = html || '<div class="empty-state">No process tree data</div>';
 }
 
 function renderNetwork(area, data) {
@@ -608,6 +681,62 @@ async function refreshEvents() {
     else if (src.includes('network') || src.includes('net')) typeClass = 'network';
     return '<div class="event-row"><span class="event-time">' + t + '</span><span class="event-type ' + typeClass + '">' + esc(src) + '</span><span class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(msg) + '</span><span class="mono" style="color:var(--dim)">' + (pid ? 'PID:'+pid : '') + '</span><span class="event-source">' + srcShort + '</span></div>';
   }).join('');
+}
+
+// ── IOC/IOA ────────────────────────────────────────────────────
+async function refreshIOC() {
+  const data = await api('/api/graph/ioc-summary');
+  if (!data) return;
+
+  const domains = data.domains || [];
+  const domTbody = document.getElementById('ioc-domains');
+  const domEmpty = document.getElementById('ioc-domains-empty');
+  if (domains.length === 0) {
+    domTbody.innerHTML = '';
+    domEmpty.style.display = 'block';
+  } else {
+    domEmpty.style.display = 'none';
+    domTbody.innerHTML = domains.map(function(d) {
+      const dga = d.is_dga_candidate ? '<span class="severity-badge severity-high">DGA</span>' : '';
+      const procs = (d.resolved_by||[]).filter(function(n){return n && n!=='unknown';}).join(', ') || '—';
+      const time = d.first_seen ? new Date(d.first_seen).toLocaleString() : '—';
+      const findings = (d.findings||[]).map(function(t){return '<span class="severity-badge severity-medium" style="font-size:10px;padding:1px 4px">' + esc(t) + '</span>';}).join(' ') || '';
+      return '<tr><td class="mono">' + esc(d.name) + '</td><td>' + dga + '</td><td class="mono">' + esc(time) + '</td><td>' + esc(procs) + '</td><td>' + findings + '</td></tr>';
+    }).join('');
+  }
+
+  const ips = data.external_ips || [];
+  const ipTbody = document.getElementById('ioc-ips');
+  const ipEmpty = document.getElementById('ioc-ips-empty');
+  if (ips.length === 0) {
+    ipTbody.innerHTML = '';
+    ipEmpty.style.display = 'block';
+  } else {
+    ipEmpty.style.display = 'none';
+    ipTbody.innerHTML = ips.map(function(i) {
+      const ports = (i.ports||[]).join(', ') || '—';
+      const procs = (i.connected_by||[]).filter(function(n){return n && n!=='unknown';}).join(', ') || '—';
+      const findings = (i.findings||[]).map(function(t){return '<span class="severity-badge severity-medium" style="font-size:10px;padding:1px 4px">' + esc(t) + '</span>';}).join(' ') || '';
+      return '<tr><td class="mono">' + esc(i.address) + '</td><td class="mono">' + esc(ports) + '</td><td>' + esc(procs) + '</td><td>' + findings + '</td></tr>';
+    }).join('');
+  }
+
+  const files = data.files || [];
+  const fileTbody = document.getElementById('ioc-files');
+  const fileEmpty = document.getElementById('ioc-files-empty');
+  if (files.length === 0) {
+    fileTbody.innerHTML = '';
+    fileEmpty.style.display = 'block';
+  } else {
+    fileEmpty.style.display = 'none';
+    const opColors = {CREATED:'var(--low)',MODIFIED:'var(--medium)',DELETED:'var(--critical)'};
+    fileTbody.innerHTML = files.map(function(f) {
+      var c = opColors[f.operation]||'var(--text)';
+      var procs = (f.by_processes||[]).filter(function(n){return n && n!=='unknown';}).join(', ') || '—';
+      var findings = (f.findings||[]).map(function(t){return '<span class="severity-badge severity-medium" style="font-size:10px;padding:1px 4px">' + esc(t) + '</span>';}).join(' ') || '';
+      return '<tr><td><span style="color:' + c + '">' + esc(f.operation) + '</span></td><td class="mono">' + esc(f.path) + '</td><td>' + esc(procs) + '</td><td>' + findings + '</td></tr>';
+    }).join('');
+  }
 }
 
 // ── Audit ──────────────────────────────────────────────────────

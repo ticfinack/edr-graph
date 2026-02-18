@@ -670,6 +670,14 @@ class LlmAnalyzer:
                 if not affected_pids:
                     affected_pids = batch_pids
 
+                # Extract IOCs from LLM output
+                raw_iocs = raw.get("iocs") or {}
+                iocs = {}
+                for key in ("domains", "ips", "files", "urls"):
+                    vals = raw_iocs.get(key)
+                    if vals and isinstance(vals, list):
+                        iocs[key] = [str(v) for v in vals if v]
+
                 finding = SecurityFinding(
                     id=str(uuid.uuid4()),
                     timestamp=datetime.now(),
@@ -681,6 +689,7 @@ class LlmAnalyzer:
                     recommendation=raw.get("recommendation", ""),
                     chain=chain,
                     affected_pids=affected_pids,
+                    iocs=iocs,
                 )
                 findings.append(finding)
             except Exception:
@@ -761,12 +770,17 @@ class LlmAnalyzer:
 
     @staticmethod
     def _collect_batch_pids(events: list[tuple[int, OcsfEvent]]) -> list[int]:
-        """Collect all unique PIDs from a batch of events."""
+        """Collect all unique PIDs > 0 from a batch of events.
+
+        PID 0 is filtered out — it comes from mDNSResponder (DNS) and FSEvents
+        (file activity) where the originating process is unknown.
+        """
         pids = set()
         for _, event in events:
             if isinstance(event, ProcessActivity):
-                pids.add(event.process.pid)
+                if event.process.pid > 0:
+                    pids.add(event.process.pid)
             elif isinstance(event, (NetworkActivity, DnsActivity, FileActivity, RegistryActivity)):
-                if event.process:
+                if event.process and event.process.pid > 0:
                     pids.add(event.process.pid)
         return list(pids)
