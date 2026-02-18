@@ -82,6 +82,7 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
         "domains": [],
         "ips": [],
         "dns_chains": [],
+        "listening_ports": [],
     }
 
     try:
@@ -145,6 +146,23 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
                     "domain": domain_name,
                     "resolved_to": resolved,
                 })
+
+        # Get listening ports
+        try:
+            listen_result = conn.execute(
+                "MATCH (p:Process {id: $id})-[l:LISTENING_ON]->(ip:IP) "
+                "RETURN ip.address, l.port, l.protocol",
+                {"id": proc_id},
+            )
+            while listen_result.has_next():
+                row = listen_result.get_next()
+                result["listening_ports"].append({
+                    "address": row[0],
+                    "port": row[1],
+                    "protocol": row[2],
+                })
+        except Exception:
+            pass  # LISTENING_ON table may not exist in older schemas
 
     except Exception:
         logger.debug("Failed to get network footprint for pid %d", pid, exc_info=True)
@@ -258,7 +276,8 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
         target = {}
         proc_result = conn.execute(
             "MATCH (p:Process {pid: $pid}) "
-            "RETURN p.pid, p.name, p.cmd_line, p.hostname",
+            "RETURN p.pid, p.name, p.cmd_line, p.hostname, "
+            "p.bundle_id, p.code_signed, p.signing_authority",
             {"pid": pid},
         )
         if proc_result.has_next():
@@ -268,6 +287,9 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
                 "name": row[1],
                 "command_line": row[2],
                 "hostname": row[3],
+                "bundle_id": row[4],
+                "code_signed": row[5],
+                "signing_authority": row[6],
             }
 
             # Try to get the user
@@ -367,11 +389,18 @@ def serialize_attack_chain(chain: dict, max_tokens: int = 2000) -> str:
     # Target process
     target = chain.get("target_process", {})
     if target:
-        parts.append(
+        target_line = (
             f"Target: {target.get('name', '?')} (PID {target.get('pid', '?')}) "
             f"cmd={target.get('command_line', 'N/A')} "
             f"user={target.get('user', 'N/A')}"
         )
+        # Append identity info if available
+        if target.get("bundle_id"):
+            target_line += f" bundle={target['bundle_id']}"
+        if target.get("code_signed"):
+            signer = target.get("signing_authority", "unknown")
+            target_line += f" signed={signer}"
+        parts.append(target_line)
 
     # Process chain
     pchain = chain.get("process_chain", [])
@@ -398,6 +427,21 @@ def serialize_attack_chain(chain: dict, max_tokens: int = 2000) -> str:
     if ips:
         ip_strs = [f"{i.get('address', '?')}:{i.get('port', '?')}" for i in ips[:5]]
         parts.append(f"Connections: {', '.join(ip_strs)}")
+
+    listening = net.get("listening_ports", [])
+    if listening:
+        listen_strs = [
+            f"{l.get('address', '?')}:{l.get('port', '?')}/{l.get('protocol', '?')}"
+            for l in listening[:5]
+        ]
+        parts.append(f"Listening on: {', '.join(listen_strs)}")
+
+    # Connection context (enrichment data)
+    conn_ctx = chain.get("connection_context", [])
+    if conn_ctx:
+        parts.append("Connection context:")
+        for ctx in conn_ctx[:5]:
+            parts.append(f"  {ctx}")
 
     dns_chains = net.get("dns_chains", [])
     if dns_chains:

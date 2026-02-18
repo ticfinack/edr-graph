@@ -92,6 +92,17 @@ def processor_thread(
 ) -> None:
     """Process queued events: normalize, extract entities, write to graph."""
     builder = GraphBuilder(kuzu_db)
+
+    # Initialize port mapper for connection context enrichment
+    port_mapper = None
+    if settings.process_identity_enabled:
+        try:
+            from agent.enrichment.port_mapper import PortMapper
+            port_mapper = PortMapper(refresh_interval=settings.port_mapper_refresh_interval)
+            logger.info("Port mapper initialized (refresh every %.0fs)", settings.port_mapper_refresh_interval)
+        except Exception:
+            logger.debug("Port mapper not available", exc_info=True)
+
     logger.info("Started processor thread")
 
     while not _shutdown.is_set():
@@ -122,6 +133,7 @@ def processor_thread(
                             event_id,
                             dga_allowlist=set(settings.dga_allowlist),
                             dga_threshold=settings.dga_score_threshold,
+                            port_mapper=port_mapper,
                         )
                         # Gate file READ edges behind config flag
                         if not settings.file_read_tracking:
@@ -454,6 +466,22 @@ def main() -> None:
     settings.ensure_dirs()
 
     logger.info("Starting edr-graph, data dir: %s", settings.data_dir)
+
+    # Warm process identity cache on macOS
+    if sys.platform == "darwin" and settings.process_identity_enabled:
+        try:
+            from agent.enrichment.process_identity import warm_cache
+            warm_cache()
+        except Exception:
+            logger.debug("Process identity cache warming failed", exc_info=True)
+
+    # Load custom allowlist entries from config
+    if settings.allowlist_enabled and settings.allowlist_custom_entries:
+        try:
+            from agent.enrichment.application_allowlist import load_custom_entries
+            load_custom_entries(settings.allowlist_custom_entries)
+        except Exception:
+            logger.debug("Custom allowlist loading failed", exc_info=True)
 
     # Initialize SQLite queue
     queue = SqliteQueue(settings.db_path)

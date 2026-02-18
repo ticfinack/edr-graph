@@ -20,6 +20,9 @@ NODE_TABLES = [
         exe_path STRING,
         hostname STRING,
         start_time TIMESTAMP,
+        bundle_id STRING,
+        code_signed BOOLEAN,
+        signing_authority STRING,
         PRIMARY KEY (id)
     )
     """,
@@ -147,6 +150,15 @@ REL_TABLES = [
     """
     CREATE REL TABLE IF NOT EXISTS DELETED_REG(
         FROM Process TO RegistryKey,
+        timestamp TIMESTAMP,
+        event_id INT64
+    )
+    """,
+    """
+    CREATE REL TABLE IF NOT EXISTS LISTENING_ON(
+        FROM Process TO IP,
+        port INT64,
+        protocol STRING,
         timestamp TIMESTAMP,
         event_id INT64
     )

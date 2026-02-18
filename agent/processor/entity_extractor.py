@@ -28,6 +28,31 @@ from agent.schema.ocsf_types import (
     RegistryActivity,
 )
 
+# Lazy import to avoid circular deps and allow graceful degradation
+_get_process_identity = None
+
+def _ensure_identity_import():
+    global _get_process_identity
+    if _get_process_identity is None:
+        try:
+            from agent.enrichment.process_identity import get_process_identity
+            _get_process_identity = get_process_identity
+        except ImportError:
+            _get_process_identity = False  # Mark as unavailable
+
+def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
+    """Enrich a ProcessNode with identity information if available."""
+    _ensure_identity_import()
+    if not _get_process_identity or not proc_node.exe_path:
+        return
+    try:
+        identity = _get_process_identity(pid, proc_node.exe_path)
+        proc_node.bundle_id = identity.bundle_id
+        proc_node.code_signed = identity.code_signed
+        proc_node.signing_authority = identity.signing_authority
+    except Exception:
+        logger.debug("Failed to enrich process identity for pid %d", pid, exc_info=True)
+
 
 class ExtractedEntities:
     """Container for entities extracted from a single event."""
@@ -56,6 +81,7 @@ def extract_entities(
     event_id: int,
     dga_allowlist: set[str] | None = None,
     dga_threshold: float = 0.6,
+    port_mapper=None,
 ) -> ExtractedEntities:
     """Extract nodes and edges from a normalized OCSF event."""
     entities = ExtractedEntities()
@@ -64,7 +90,7 @@ def extract_entities(
     if isinstance(event, ProcessActivity):
         _extract_process_activity(event, event_id, entities, now)
     elif isinstance(event, NetworkActivity):
-        _extract_network_activity(event, event_id, entities, now)
+        _extract_network_activity(event, event_id, entities, now, port_mapper=port_mapper)
     elif isinstance(event, Authentication):
         _extract_authentication(event, event_id, entities, now)
     elif isinstance(event, DnsActivity):
@@ -112,17 +138,17 @@ def _extract_process_activity(
     start_time = proc.created_time or now
     proc_id = f"{hostname}:{proc.pid}:{int(start_time.timestamp())}"
 
-    entities.processes.append(
-        ProcessNode(
-            id=proc_id,
-            name=proc.name,
-            pid=proc.pid,
-            cmd_line=proc.cmd_line or None,
-            exe_path=proc.exe_path or None,
-            hostname=hostname,
-            start_time=start_time,
-        )
+    proc_node = ProcessNode(
+        id=proc_id,
+        name=proc.name,
+        pid=proc.pid,
+        cmd_line=proc.cmd_line or None,
+        exe_path=proc.exe_path or None,
+        hostname=hostname,
+        start_time=start_time,
     )
+    _enrich_process_node(proc_node, proc.pid)
+    entities.processes.append(proc_node)
 
     if event.actor and event.actor.user:
         user = event.actor.user
@@ -152,6 +178,7 @@ def _extract_network_activity(
     event_id: int,
     entities: ExtractedEntities,
     now: datetime,
+    port_mapper=None,
 ) -> None:
     if event.process:
         proc = event.process
@@ -159,20 +186,21 @@ def _extract_network_activity(
         start_time = proc.created_time or now
         proc_id = f"{hostname}:{proc.pid}:{int(start_time.timestamp())}"
 
-        entities.processes.append(
-            ProcessNode(
-                id=proc_id,
-                name=proc.name,
-                pid=proc.pid,
-                cmd_line=proc.cmd_line or None,
-                exe_path=proc.exe_path or None,
-                hostname=hostname,
-                start_time=start_time,
-            )
+        proc_node = ProcessNode(
+            id=proc_id,
+            name=proc.name,
+            pid=proc.pid,
+            cmd_line=proc.cmd_line or None,
+            exe_path=proc.exe_path or None,
+            hostname=hostname,
+            start_time=start_time,
         )
+        _enrich_process_node(proc_node, proc.pid)
+        entities.processes.append(proc_node)
 
         if event.dst_endpoint and event.dst_endpoint.ip:
             ip_addr = event.dst_endpoint.ip
+            dst_port = event.dst_endpoint.port
             is_private = _is_private_ip(ip_addr)
             entities.ips.append(
                 IpNode(
@@ -188,12 +216,52 @@ def _extract_network_activity(
                     "process_id": proc_id,
                     "ip_id": ip_addr,
                     "timestamp": now,
-                    "dst_port": event.dst_endpoint.port,
+                    "dst_port": dst_port,
                     "protocol": "TCP",
                     "direction": "outbound",
                     "event_id": event_id,
                 }
             )
+
+            # Port mapper enrichment: add connection context
+            if port_mapper is not None and dst_port is not None:
+                try:
+                    src_identity = None
+                    if proc_node.code_signed is not None:
+                        # Build a minimal identity from proc_node fields
+                        from agent.enrichment.process_identity import ProcessIdentity
+                        src_identity = ProcessIdentity(
+                            pid=proc.pid,
+                            path=proc.exe_path or "",
+                            name=proc.name,
+                            bundle_id=proc_node.bundle_id,
+                            code_signed=proc_node.code_signed or False,
+                            signing_authority=proc_node.signing_authority,
+                        )
+                    conn_ctx = port_mapper.build_connection_context(
+                        src_pid=proc.pid,
+                        src_name=proc.name,
+                        src_identity=src_identity,
+                        dst_ip=ip_addr,
+                        dst_port=dst_port,
+                    )
+                    if conn_ctx.is_localhost_ipc:
+                        if conn_ctx.dest_process:
+                            entities.risk_indicators.append({
+                                "type": "connection_context",
+                                "description": f"Localhost IPC: {proc.name} -> {conn_ctx.dest_process} (low risk)",
+                                "severity": "info",
+                                "connection_context": conn_ctx.connection_description,
+                            })
+                        else:
+                            entities.risk_indicators.append({
+                                "type": "connection_context",
+                                "description": f"Localhost connection to unknown listener on port {dst_port}",
+                                "severity": "low",
+                                "connection_context": conn_ctx.connection_description,
+                            })
+                except Exception:
+                    logger.debug("Port mapper enrichment failed", exc_info=True)
 
 
 def _extract_authentication(

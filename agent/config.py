@@ -87,6 +87,19 @@ class Settings(BaseModel):
     novel_edge_threshold: int = 5
     graph_context_limit: int = 20
 
+    # Enrichment settings
+    process_identity_enabled: bool = True
+    process_identity_cache_size: int = 500
+    port_mapper_refresh_interval: float = 30.0
+    allowlist_enabled: bool = True
+    allowlist_custom_entries: list[dict] = []
+
+    # Connection metadata settings
+    connection_metadata_enabled: bool = True
+    connection_metadata_capture_sni: bool = True
+    connection_metadata_compute_ja3: bool = True
+    connection_metadata_retention_hours: int = 24
+
     # Tool-use settings
     tool_use_enabled: bool = True
     tool_use_max_iterations: int = 5
@@ -138,6 +151,13 @@ _YAML_KEY_MAP: dict[tuple[str, ...], str] = {
     ("tray", "notification_cooldown_seconds"): "tray_notification_cooldown",
     ("tray", "notify_on_high"): "tray_notify_on_high",
     ("tray", "notify_on_critical"): "tray_notify_on_critical",
+    ("enrichment", "process_identity", "enabled"): "process_identity_enabled",
+    ("enrichment", "process_identity", "cache_size"): "process_identity_cache_size",
+    ("enrichment", "port_mapper", "refresh_interval_seconds"): "port_mapper_refresh_interval",
+    ("enrichment", "allowlist", "enabled"): "allowlist_enabled",
+    ("enrichment", "allowlist", "custom_entries"): "allowlist_custom_entries",
+    ("enrichment", "connection_metadata", "enabled"): "connection_metadata_enabled",
+    ("enrichment", "connection_metadata", "retention_hours"): "connection_metadata_retention_hours",
 }
 
 

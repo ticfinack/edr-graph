@@ -48,6 +48,11 @@ def get_collectors() -> list[Collector]:
             ))
         except Exception:
             logger.debug("macOS persistence poller not available", exc_info=True)
+        try:
+            from .connection_metadata import ConnectionMetadataCollector
+            collectors.append(ConnectionMetadataCollector())
+        except Exception:
+            logger.debug("Connection metadata collector not available", exc_info=True)
     elif system == "Windows":
         from .windows import WindowsCollector
         collectors.append(WindowsCollector())

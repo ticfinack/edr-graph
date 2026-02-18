@@ -23,6 +23,9 @@ class ProcessNode(BaseModel):
     exe_path: str | None = None
     hostname: str
     start_time: datetime | None = None
+    bundle_id: str | None = None
+    code_signed: bool | None = None
+    signing_authority: str | None = None
 
 
 class IpNode(BaseModel):

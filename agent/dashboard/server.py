@@ -323,6 +323,40 @@ async def approve_response(response_id: str, body: dict):
     return {"status": "ok", "response_id": response_id, "approval_status": new_status}
 
 
+@app.get("/api/connections/{pid}")
+async def get_connections(pid: int, hours: int = Query(1, ge=1, le=168)):
+    """Connection metadata for a process within a time window."""
+    import sqlite3
+
+    settings = _get_settings()
+    if not settings:
+        return {"connections": [], "pid": pid}
+
+    try:
+        from agent.collectors.connection_metadata import (
+            get_connection_metadata,
+        )
+
+        conn = sqlite3.connect(str(settings.db_path))
+        conn.row_factory = sqlite3.Row
+
+        # Check if table exists
+        table_check = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='connection_metadata'"
+        ).fetchone()
+        if not table_check:
+            conn.close()
+            return {"connections": [], "pid": pid, "message": "No connection metadata table"}
+
+        rows = get_connection_metadata(conn, pid=pid if pid > 0 else None, hours=hours)
+        conn.close()
+
+        return {"connections": rows, "pid": pid, "hours": hours, "count": len(rows)}
+    except Exception:
+        logger.debug("Failed to get connection metadata", exc_info=True)
+        return {"connections": [], "pid": pid, "error": "Query failed"}
+
+
 @app.post("/api/pause")
 async def pause_agent():
     """Pause the processing pipeline. Events still collect but aren't processed."""

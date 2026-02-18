@@ -354,6 +354,8 @@ class LlmAnalyzer:
                     lines.append(
                         f"Destination: {event.dst_endpoint.ip}:{event.dst_endpoint.port}"
                     )
+                # Add enrichment context for network events
+                self._append_network_enrichment(lines, event)
             elif isinstance(event, Authentication):
                 lines.append(f"User: {event.user.name}")
                 lines.append(f"Status: {'Success' if event.status_id == 1 else 'Failure'}")
@@ -394,6 +396,102 @@ class LlmAnalyzer:
             lines.append(graph_context)
 
         return "\n".join(lines)
+
+    def _append_network_enrichment(
+        self, lines: list[str], event: NetworkActivity
+    ) -> None:
+        """Append process identity and allowlist context for a NetworkActivity event."""
+        try:
+            if not event.process or not event.dst_endpoint:
+                return
+
+            # Process identity enrichment
+            identity = None
+            if event.process.exe_path:
+                try:
+                    from agent.enrichment.process_identity import get_process_identity
+                    identity = get_process_identity(event.process.pid, event.process.exe_path)
+                    if identity and identity.code_signed:
+                        notarized = "notarized" if identity.is_notarized else "not notarized"
+                        lines.append(
+                            f"Identity: {identity.bundle_id or 'N/A'}, "
+                            f"signed by \"{identity.signing_authority or 'unknown'}\", "
+                            f"{notarized}"
+                        )
+                except ImportError:
+                    pass
+
+            # Allowlist check
+            if self._settings.allowlist_enabled:
+                try:
+                    from agent.enrichment.application_allowlist import check_allowlist
+                    result = check_allowlist(
+                        process_identity=identity,
+                        dest_ip=event.dst_endpoint.ip or "",
+                        dest_port=event.dst_endpoint.port or 0,
+                        process_name=event.process.name,
+                    )
+                    if result.is_allowed:
+                        lines.append(
+                            f"Allowlist: MATCH — \"{result.matched_pattern.description}\" "
+                            f"({result.risk_reduction})"
+                        )
+                    elif result.matched_entry:
+                        lines.append(
+                            f"Allowlist: NO MATCH — {result.explanation}"
+                        )
+                except ImportError:
+                    pass
+
+            # Connection metadata (SNI, JA3) from SQLite
+            try:
+                self._append_connection_metadata(lines, event)
+            except Exception:
+                pass
+
+        except Exception:
+            logger.debug("Network enrichment failed", exc_info=True)
+
+    def _append_connection_metadata(
+        self, lines: list[str], event: NetworkActivity
+    ) -> None:
+        """Look up connection metadata (SNI, JA3) from SQLite for this event."""
+        if not event.dst_endpoint:
+            return
+
+        try:
+            import sqlite3
+            from agent.collectors.connection_metadata import get_connection_metadata
+
+            db_path = str(self._settings.db_path)
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+
+            # Check if connection_metadata table exists
+            table_check = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='connection_metadata'"
+            ).fetchone()
+            if not table_check:
+                conn.close()
+                return
+
+            rows = get_connection_metadata(conn, pid=event.process.pid if event.process else None, hours=1)
+            conn.close()
+
+            for row in rows[:1]:  # Just the most recent match
+                sni = row.get("tls_sni")
+                ja3 = row.get("ja3_hash")
+                if sni:
+                    lines.append(f"TLS SNI: {sni}")
+                if ja3:
+                    from agent.collectors.connection_metadata import KNOWN_JA3
+                    ja3_info = KNOWN_JA3.get(ja3)
+                    if ja3_info:
+                        lines.append(f"JA3: {ja3} ({ja3_info['app']}, risk: {ja3_info['risk']})")
+                    else:
+                        lines.append(f"JA3: {ja3}")
+        except Exception:
+            pass
 
     def _build_attack_chain_context(self, events: list[tuple[int, OcsfEvent]]) -> str:
         """Build attack chain context for processes in this batch."""
