@@ -81,6 +81,8 @@ _MACOS_SYSTEM_BASELINE: frozenset[str] = frozenset({
     # Claude / dev tools (self — don't flag ourselves)
     "Claude", "Claude Helper",
     "Web App",
+    # EDR agent itself
+    "edr-graph",
 })
 
 _LINUX_SYSTEM_BASELINE: frozenset[str] = frozenset({
@@ -106,6 +108,26 @@ _WINDOWS_SYSTEM_BASELINE: frozenset[str] = frozenset({
     "spoolsv.exe", "lsaiso.exe", "SecurityHealthService.exe",
     "MsMpEng.exe", "NisSrv.exe",
 })
+
+
+import re
+
+# Patterns for the EDR agent's own processes and its launcher (Claude Code).
+# Claude Code's binary lives under ~/.local/share/claude/versions/<semver>
+# so psutil reports the version string (e.g. "2.1.45") as the process name.
+_AGENT_NAME_RE = re.compile(
+    r"^("
+    r"edr-graph"
+    r"|python\d*(\.\d+)*"          # python, python3, python3.13, …
+    r"|Python"
+    r"|\d+\.\d+\.\d+"              # semver like 2.1.45 (Claude Code)
+    r")$"
+)
+
+
+def _is_agent_process(proc_name: str) -> bool:
+    """Return True if *proc_name* belongs to the agent or its launcher."""
+    return bool(_AGENT_NAME_RE.match(proc_name))
 
 
 def _get_system_baseline() -> frozenset[str]:
@@ -151,6 +173,10 @@ def _check_process_novelty(
     if not proc_name:
         return False  # Unidentifiable process, drop it
 
+    # Drop the agent's own processes (version-string names, python variants)
+    if _is_agent_process(proc_name):
+        return False
+
     # Drop known-benign system processes (unless they have a suspicious cmd_line)
     if proc_name in SYSTEM_BASELINE:
         cmd = event.process.cmd_line or ""
@@ -193,6 +219,10 @@ def _check_network_novelty(
     dst_ip = event.dst_endpoint.ip
     if not proc_name or not dst_ip:
         return False  # Unidentifiable, drop it
+
+    # Drop the agent's own network connections
+    if _is_agent_process(proc_name):
+        return False
 
     # Drop known-benign system processes making network connections
     if proc_name in SYSTEM_BASELINE:

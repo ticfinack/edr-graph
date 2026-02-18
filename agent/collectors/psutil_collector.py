@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import socket
 from datetime import datetime
 
@@ -24,15 +25,29 @@ class PsutilCollector(Collector):
         self._prev_pids: set[int] = set()
         self._prev_conns: set[tuple] = set()
         self._initialized = False
+        self._agent_pid = os.getpid()
+        self._agent_pids: set[int] = set()  # refreshed each cycle
 
     def name(self) -> str:
         return "psutil"
 
     def collect(self) -> list[RawEvent]:
+        self._refresh_agent_pids()
         events: list[RawEvent] = []
         events.extend(self._collect_processes())
         events.extend(self._collect_network())
         return events
+
+    def _refresh_agent_pids(self) -> None:
+        """Build set of PIDs belonging to the agent's own process tree."""
+        pids = {self._agent_pid}
+        try:
+            parent = psutil.Process(self._agent_pid)
+            for child in parent.children(recursive=True):
+                pids.add(child.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        self._agent_pids = pids
 
     def _collect_processes(self) -> list[RawEvent]:
         events: list[RawEvent] = []
@@ -47,7 +62,7 @@ class PsutilCollector(Collector):
                 pid = info["pid"]
                 current_pids.add(pid)
 
-                if self._initialized and pid not in self._prev_pids:
+                if self._initialized and pid not in self._prev_pids and pid not in self._agent_pids:
                     cmdline = " ".join(info["cmdline"]) if info["cmdline"] else ""
                     create_time = (
                         datetime.fromtimestamp(info["create_time"])
@@ -105,7 +120,7 @@ class PsutilCollector(Collector):
             )
             current_conns.add(conn_key)
 
-            if self._initialized and conn_key not in self._prev_conns:
+            if self._initialized and conn_key not in self._prev_conns and (conn.pid or 0) not in self._agent_pids:
                 proc_name = ""
                 if conn.pid:
                     try:

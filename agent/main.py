@@ -344,6 +344,13 @@ def _push_finding_notification(finding) -> None:
 def main() -> None:
     global _tray_app
 
+    # Set process title so we show as "edr-graph" in Activity Monitor / ps
+    try:
+        import setproctitle
+        setproctitle.setproctitle("edr-graph")
+    except ImportError:
+        pass
+
     parser = argparse.ArgumentParser(
         description="edr-graph: Local EDR with Graph-Based Event Correlation"
     )
