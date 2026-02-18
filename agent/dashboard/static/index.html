@@ -597,6 +597,38 @@ function renderChain(area, data) {
     if (p.code_signed === false) return ' <span style="color:var(--high);font-size:11px">[unsigned]</span>';
     return '';
   }
+  // Assessment Summary — findings for this process
+  const findings = data.findings || [];
+  if (findings.length > 0) {
+    let html = '';
+    findings.forEach(f => {
+      const sev = f.severity.toLowerCase();
+      const time = new Date(f.timestamp).toLocaleString();
+      html += '<div style="padding:10px;margin-bottom:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg)">';
+      html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">';
+      html += '<span class="severity-badge severity-' + sev + '">' + sev + '</span>';
+      html += '<strong style="flex:1">' + esc(f.title) + '</strong>';
+      html += '<span class="mono" style="color:var(--dim);font-size:11px">' + esc(time) + '</span>';
+      html += '</div>';
+      html += '<div style="font-size:13px;line-height:1.5;margin-bottom:6px">' + esc(f.description) + '</div>';
+      if (f.recommendation) {
+        html += '<div style="font-size:12px;color:var(--dim)"><strong>Recommendation:</strong> ' + esc(f.recommendation) + '</div>';
+      }
+      const iocs = f.iocs || {};
+      const iocParts = [];
+      (iocs.domains||[]).forEach(d => iocParts.push(esc(d)));
+      (iocs.ips||[]).forEach(ip => iocParts.push(esc(ip)));
+      (iocs.files||[]).forEach(fp => iocParts.push(esc(fp)));
+      if (iocParts.length > 0) {
+        html += '<div style="margin-top:4px;font-size:12px;color:var(--dim)"><strong>IOCs:</strong> <span class="mono">' + iocParts.join(', ') + '</span></div>';
+      }
+      html += '</div>';
+    });
+    parts.push({title:'Assessment Summary (' + findings.length + ' finding' + (findings.length !== 1 ? 's' : '') + ')', content: html});
+  } else {
+    parts.push({title:'Assessment Summary', content: '<div style="color:var(--dim);font-size:13px">No findings for this process.</div>'});
+  }
+
   if (data.target_process && data.target_process.name) {
     const t = data.target_process;
     parts.push({title:'Target Process', content:'<dl class="detail-grid"><dt>Name</dt><dd>' + esc(t.name) + signBadge(t) + '</dd><dt>PID</dt><dd class="mono">' + (t.pid||'?') + '</dd><dt>Command</dt><dd class="mono">' + esc(t.command_line||'—') + '</dd><dt>User</dt><dd>' + esc(t.user||'—') + '</dd>' + (t.parent_pid ? '<dt>Parent PID</dt><dd class="mono">' + t.parent_pid + '</dd>' : '') + '</dl>'});

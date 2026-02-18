@@ -189,10 +189,12 @@ async def get_attack_chain(pid: int):
     chain = gq.build_attack_chain(conn, pid)
 
     # Enrich file_activity from findings IOCs for this PID
+    # and include findings as assessment summary
     try:
         queue = _get_queue()
         findings = queue.get_findings_for_pids([pid])
         existing_paths = {f.get("file_path", "").lower() for f in chain.get("file_activity", [])}
+        chain["findings"] = []
         for f in findings:
             for file_path in (f.iocs or {}).get("files", []):
                 if file_path and str(file_path).lower() not in existing_paths:
@@ -203,6 +205,17 @@ async def get_attack_chain(pid: int):
                         "timestamp": f.timestamp.isoformat(),
                         "source": f"Finding: {f.title}",
                     })
+            chain["findings"].append({
+                "id": f.id,
+                "severity": f.severity,
+                "title": f.title,
+                "description": f.description,
+                "recommendation": f.recommendation,
+                "timestamp": f.timestamp.isoformat(),
+                "affected_entities": f.affected_entities,
+                "evidence_event_ids": f.evidence_event_ids,
+                "iocs": f.iocs or {},
+            })
     except Exception:
         pass
 
