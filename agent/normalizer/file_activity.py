@@ -23,6 +23,7 @@ _ACTIVITY_MAP = {
     "file_read": 2,
     "file_modify": 3,
     "file_delete": 4,
+    "file_rename": 3,  # Treat rename as modify for graph edges
 }
 
 _MAX_HASH_SIZE = 100 * 1024 * 1024  # 100MB

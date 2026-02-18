@@ -55,6 +55,7 @@ _NORMALIZERS["file_create"] = normalize_file
 _NORMALIZERS["file_modify"] = normalize_file
 _NORMALIZERS["file_read"] = normalize_file
 _NORMALIZERS["file_delete"] = normalize_file
+_NORMALIZERS["file_rename"] = normalize_file
 
 # Registry activity sources
 _NORMALIZERS["registry_create"] = normalize_registry

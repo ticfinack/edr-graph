@@ -15,6 +15,15 @@ import time
 import kuzu
 
 from agent.logging_setup import setup_logging
+
+# macOS process enrichment (optional)
+_enrich_process = None
+try:
+    if sys.platform == "darwin":
+        from agent.collectors.macos_proc_enricher import enrich_process_event
+        _enrich_process = enrich_process_event
+except ImportError:
+    pass
 from agent.health import start_health_server
 from agent import metrics
 from agent.analyzer.llm_analyzer import LlmAnalyzer
@@ -85,6 +94,9 @@ def processor_thread(
             for event_id, raw_data in batch:
                 t0 = time.monotonic()
                 try:
+                    # Enrich process command lines on macOS
+                    if _enrich_process is not None:
+                        raw_data = _enrich_process(raw_data)
                     raw = RawEvent.from_dict(raw_data)
                     ocsf = normalize(raw)
                     if ocsf is not None:

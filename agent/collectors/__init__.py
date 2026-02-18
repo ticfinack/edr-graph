@@ -34,6 +34,20 @@ def get_collectors() -> list[Collector]:
             collectors.append(MacOSDnsCollector())
         except Exception:
             logger.debug("macOS DNS collector not available", exc_info=True)
+        fsevents_collector = None
+        try:
+            from .macos_fsevents_collector import MacOSFSEventsCollector
+            fsevents_collector = MacOSFSEventsCollector()
+            collectors.append(fsevents_collector)
+        except Exception:
+            logger.debug("macOS FSEvents collector not available", exc_info=True)
+        try:
+            from .macos_persistence_poller import MacOSPersistencePoller
+            collectors.append(MacOSPersistencePoller(
+                fsevents_collector=fsevents_collector,
+            ))
+        except Exception:
+            logger.debug("macOS persistence poller not available", exc_info=True)
     elif system == "Windows":
         from .windows import WindowsCollector
         collectors.append(WindowsCollector())
