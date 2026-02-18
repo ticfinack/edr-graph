@@ -198,28 +198,66 @@ async def get_ioc_summary():
     conn = _get_conn()
     result = gq.get_ioc_summary(conn)
 
-    # Cross-reference with findings IOCs
+    # Cross-reference IOCs with findings via two strategies:
+    # 1. PID-based: if a finding's affected_pids overlap with the PIDs that
+    #    connected to / resolved / created the IOC, link them.
+    # 2. Value-based: if the finding's iocs field explicitly names the indicator.
     try:
         queue = _get_queue()
         findings = queue.get_findings(limit=200)
-        # Build lookup: ioc_value -> list of finding titles
+
+        # Build PID -> finding titles lookup
+        pid_findings: dict[int, list[str]] = {}
+        # Build IOC value -> finding titles lookup
         ioc_findings: dict[str, list[str]] = {}
         for f in findings:
-            iocs = f.iocs or {}
+            for pid in (f.affected_pids or []):
+                if pid and pid > 0:
+                    pid_findings.setdefault(pid, []).append(f.title)
             for key in ("domains", "ips", "files", "urls"):
-                for val in iocs.get(key, []):
-                    v = str(val).lower()
-                    if v not in ioc_findings:
-                        ioc_findings[v] = []
-                    ioc_findings[v].append(f.title)
+                for val in (f.iocs or {}).get(key, []):
+                    ioc_findings.setdefault(str(val).lower(), []).append(f.title)
 
-        # Annotate graph IOCs with finding references
-        for d in result.get("domains", []):
-            d["findings"] = ioc_findings.get(d["name"].lower(), [])
+        def _find_titles(pids: list, value_key: str | None = None) -> list[str]:
+            """Collect unique finding titles for a set of PIDs and/or IOC value."""
+            titles: list[str] = []
+            seen: set[str] = set()
+            for pid in (pids or []):
+                if pid and pid > 0:
+                    for t in pid_findings.get(pid, []):
+                        if t not in seen:
+                            seen.add(t)
+                            titles.append(t)
+            if value_key:
+                for t in ioc_findings.get(value_key.lower(), []):
+                    if t not in seen:
+                        seen.add(t)
+                        titles.append(t)
+            return titles
+
         for ip in result.get("external_ips", []):
-            ip["findings"] = ioc_findings.get(ip["address"].lower(), [])
+            ip["findings"] = _find_titles(ip.get("connected_by_pids"), ip.get("address"))
+
+        # Build IP -> finding titles from the IP results so domains can
+        # inherit findings transitively: Domain→resolves_to→IP→connected_by→Process→Finding
+        ip_to_findings: dict[str, list[str]] = {}
+        for ip in result.get("external_ips", []):
+            if ip.get("findings"):
+                ip_to_findings[ip["address"]] = ip["findings"]
+
+        for d in result.get("domains", []):
+            titles = _find_titles(d.get("resolved_by_pids"), d.get("name"))
+            # Also inherit findings from IPs this domain resolves to
+            seen = set(titles)
+            for resolved_ip in (d.get("resolved_ips") or []):
+                for t in ip_to_findings.get(resolved_ip, []):
+                    if t not in seen:
+                        seen.add(t)
+                        titles.append(t)
+            d["findings"] = titles
+
         for f in result.get("files", []):
-            f["findings"] = ioc_findings.get(f["path"].lower(), [])
+            f["findings"] = _find_titles(f.get("by_pids"), f.get("path"))
     except Exception:
         pass
 

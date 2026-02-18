@@ -825,12 +825,26 @@ def get_ioc_summary(conn: kuzu.Connection, limit: int = 50) -> dict:
         )
         while dns.has_next():
             row = dns.get_next()
+            domain_name = row[0]
+            # Get IPs this domain resolves to (for transitive finding linking)
+            resolved_ips = []
+            try:
+                ip_result = conn.execute(
+                    "MATCH (d:Domain {name: $name})-[:RESOLVES_TO]->(ip:IP) "
+                    "RETURN ip.address",
+                    {"name": domain_name},
+                )
+                while ip_result.has_next():
+                    resolved_ips.append(ip_result.get_next()[0])
+            except Exception:
+                pass
             result["domains"].append({
-                "name": row[0],
+                "name": domain_name,
                 "is_dga_candidate": row[1],
                 "first_seen": str(row[2]) if row[2] else None,
                 "resolved_by": row[3],
                 "resolved_by_pids": row[4],
+                "resolved_ips": resolved_ips,
             })
     except Exception:
         logger.debug("IOC domain query failed", exc_info=True)
