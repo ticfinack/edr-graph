@@ -695,6 +695,25 @@ def _get_tray_status(settings: Settings, queue: SqliteQueue):
         except Exception:
             pass
 
+        # Gather findings summary
+        findings_total = 0
+        findings_high = 0
+        findings_critical = 0
+        last_finding_title = None
+        try:
+            all_findings = queue.get_findings(limit=200)
+            findings_total = len(all_findings)
+            for f in all_findings:
+                sev = f.severity.lower() if f.severity else ""
+                if sev == "high":
+                    findings_high += 1
+                elif sev == "critical":
+                    findings_critical += 1
+            if all_findings:
+                last_finding_title = all_findings[0].title
+        except Exception:
+            pass
+
         return {
             "agent_status": "paused" if _is_paused() else "running",
             "uptime_seconds": uptime,
@@ -702,6 +721,10 @@ def _get_tray_status(settings: Settings, queue: SqliteQueue):
             "events_per_second": round(events_processed / max(uptime, 1), 1),
             "collector_sources": collector_names,
             "queue_depth": queue.count_unprocessed(),
+            "findings_total": findings_total,
+            "findings_high": findings_high,
+            "findings_critical": findings_critical,
+            "last_finding_title": last_finding_title,
         }
 
     return _status

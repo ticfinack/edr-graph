@@ -251,6 +251,15 @@ class EDRTrayApp:
         eps = status.get("events_per_second", 0)
         self._events_item.title = f"Events: {processed:,} processed ({eps}/sec)"
 
+        # Findings summary
+        findings_total = status.get("findings_total", 0)
+        findings_high = status.get("findings_high", 0)
+        findings_critical = status.get("findings_critical", 0)
+        last_title = status.get("last_finding_title")
+        self.update_findings_summary(
+            findings_total, findings_high, findings_critical, last_title
+        )
+
         # Collectors
         collectors = status.get("collector_sources", [])
         if collectors:
