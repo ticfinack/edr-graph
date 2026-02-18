@@ -896,6 +896,12 @@ async function refreshSettings() {
     html += '<div class="settings-row"><span class="settings-key">Hash signatures</span><span class="settings-val">' + fmtNum(iocStats.hash_count||0) + ' <span style="color:var(--dim);font-size:11px">(MalBazaar)</span></span></div>';
     html += '<div class="settings-row"><span class="settings-key">Last updated</span><span class="settings-val">' + esc(refreshTime) + (refreshAgo ? ' <span style="color:var(--dim);font-size:11px">(' + refreshAgo + ')</span>' : '') + '</span></div>';
     html += '<div class="settings-row"><span class="settings-key">Refresh interval</span><span class="settings-val">' + (data.ioc_feeds_refresh_hours || 4) + ' hours</span></div>';
+    const exclPatterns = data.ioc_exclusion_patterns || [];
+    if (exclPatterns.length > 0) {
+      html += '<div class="settings-row"><span class="settings-key">Exclusion patterns</span><span class="settings-val mono" style="font-size:12px">' + exclPatterns.map(p => esc(p)).join(', ') + '</span></div>';
+    } else {
+      html += '<div class="settings-row"><span class="settings-key">Exclusion patterns</span><span class="settings-val" style="color:var(--dim)">None (set ioc_exclusion_patterns in config)</span></div>';
+    }
     if (data.investigation_tools_enabled !== undefined) {
       html += '<div class="settings-row"><span class="settings-key">Investigation tools</span><span class="settings-val">' + (data.investigation_tools_enabled ? '<span style="color:var(--low)">Enabled</span>' : '<span style="color:var(--dim)">Disabled</span>') + '</span></div>';
     }

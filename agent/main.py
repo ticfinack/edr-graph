@@ -685,6 +685,7 @@ def main() -> None:
 
             ioc_db = IocDatabase(
                 refresh_interval_hours=settings.ioc_feeds_refresh_hours,
+                exclusion_patterns=settings.ioc_exclusion_patterns,
             )
             ioc_db.download_feeds()
         except Exception:

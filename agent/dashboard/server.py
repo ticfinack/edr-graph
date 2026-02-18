@@ -551,6 +551,7 @@ async def get_settings_info():
         "tamper_check_enabled": settings.tamper_check_enabled,
         "ioc_feeds_enabled": settings.ioc_feeds_enabled,
         "ioc_feeds_refresh_hours": settings.ioc_feeds_refresh_hours,
+        "ioc_exclusion_patterns": settings.ioc_exclusion_patterns,
         "investigation_tools_enabled": settings.investigation_tools_enabled,
     }
 

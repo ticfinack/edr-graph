@@ -36,6 +36,56 @@ logger = logging.getLogger(__name__)
 _HTTP_TIMEOUT = 45  # seconds — some feeds are large
 _IP_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
 
+# Legitimate infrastructure domains that host user-uploaded malware.
+# URLhaus/ThreatFox list URLs on these services, but the domains themselves
+# are not malicious — blocking them would break normal operations.
+_DOMAIN_ALLOWLIST = frozenset({
+    # Cloud storage / CDN
+    "storage.googleapis.com",
+    "firebasestorage.googleapis.com",
+    "drive.google.com",
+    "docs.google.com",
+    "sites.google.com",
+    "s3.amazonaws.com",
+    "blob.core.windows.net",
+    "1drv.ms",
+    "onedrive.live.com",
+    # Code hosting
+    "github.com",
+    "raw.githubusercontent.com",
+    "codeload.github.com",
+    "objects.githubusercontent.com",
+    "gist.githubusercontent.com",
+    "gitlab.com",
+    "bitbucket.org",
+    # File sharing / paste
+    "dropbox.com",
+    "dl.dropboxusercontent.com",
+    "pastebin.com",
+    "paste.ee",
+    "transfer.sh",
+    "cdn.discordapp.com",
+    "media.discordapp.net",
+    "discord.gg",
+    "anonfiles.com",
+    "mega.nz",
+    "mediafire.com",
+    # Web hosting / archives
+    "web.archive.org",
+    "archive.org",
+    "img1.wsimg.com",
+    "sites.google.com",
+    "wordpress.com",
+    "blogspot.com",
+    "weebly.com",
+    # URL shorteners
+    "bit.ly",
+    "tinyurl.com",
+    "t.co",
+    "is.gd",
+    "rebrand.ly",
+})
+
 
 @dataclass
 class IocMatch:
@@ -55,7 +105,11 @@ class IocDatabase:
     :meth:`check_domain`, and :meth:`check_hash` from any thread.
     """
 
-    def __init__(self, refresh_interval_hours: float = 4.0) -> None:
+    def __init__(
+        self,
+        refresh_interval_hours: float = 4.0,
+        exclusion_patterns: list[str] | None = None,
+    ) -> None:
         self._ips: dict[str, IocMatch] = {}
         self._domains: dict[str, IocMatch] = {}
         self._hashes: dict[str, IocMatch] = {}
@@ -63,6 +117,17 @@ class IocDatabase:
         self._refresh_interval: float = refresh_interval_hours * 3600
         self._lock = threading.Lock()
         self._feed_stats: dict[str, int] = {}
+        # User-configurable regex exclusions for domains/IPs
+        self._exclusion_patterns: list[re.Pattern] = []
+        for pat in (exclusion_patterns or []):
+            try:
+                self._exclusion_patterns.append(re.compile(pat, re.IGNORECASE))
+            except re.error:
+                logger.warning("Invalid IOC exclusion pattern: %s", pat)
+
+    def _is_excluded(self, value: str) -> bool:
+        """Check if a value matches any user-configured exclusion pattern."""
+        return any(p.search(value) for p in self._exclusion_patterns)
 
     # -- Public API --------------------------------------------------------
 
@@ -153,6 +218,7 @@ class IocDatabase:
                 "last_refresh": last_refresh_iso,
                 "refresh_interval_hours": self._refresh_interval / 3600,
                 "feeds": dict(self._feed_stats),
+                "exclusion_patterns": len(self._exclusion_patterns),
             }
 
     # -- HTTP helper -------------------------------------------------------
@@ -346,7 +412,7 @@ class IocDatabase:
                         count_ip += 1
                 elif ioc_type == "domain":
                     domain = ioc_value.strip().lower()
-                    if domain and domain not in domains:
+                    if domain and domain not in domains and domain not in _DOMAIN_ALLOWLIST and not self._is_excluded(domain):
                         domains[domain] = IocMatch(
                             feed_name="threatfox",
                             ioc_type="domain",
@@ -360,7 +426,7 @@ class IocDatabase:
                             ioc_value if "://" in ioc_value else f"http://{ioc_value}"
                         )
                         domain = (parsed.hostname or "").lower()
-                        if domain and domain not in domains:
+                        if domain and domain not in domains and domain not in _DOMAIN_ALLOWLIST and not self._is_excluded(domain):
                             domains[domain] = IocMatch(
                                 feed_name="threatfox",
                                 ioc_type="domain",
@@ -383,6 +449,7 @@ class IocDatabase:
         try:
             body = self._http_get(url)
             count = 0
+            skipped = 0
             for line in body.splitlines():
                 line = line.strip()
                 if not line or line.startswith("#"):
@@ -390,17 +457,21 @@ class IocDatabase:
                 try:
                     parsed = urlparse(line if "://" in line else f"http://{line}")
                     domain = (parsed.hostname or "").lower()
-                    if domain and domain not in domains:
-                        domains[domain] = IocMatch(
-                            feed_name="urlhaus",
-                            ioc_type="domain",
-                            ioc_value=domain,
-                            description="URLhaus active malware distribution",
-                        )
-                        count += 1
+                    if not domain or domain in domains:
+                        continue
+                    if domain in _DOMAIN_ALLOWLIST or self._is_excluded(domain):
+                        skipped += 1
+                        continue
+                    domains[domain] = IocMatch(
+                        feed_name="urlhaus",
+                        ioc_type="domain",
+                        ioc_value=domain,
+                        description="URLhaus active malware distribution",
+                    )
+                    count += 1
                 except Exception:
                     pass
-            logger.debug("URLhaus: %d domains", count)
+            logger.debug("URLhaus: %d domains (%d allowlisted)", count, skipped)
             return count
         except Exception:
             logger.warning("Failed to download URLhaus feed", exc_info=True)

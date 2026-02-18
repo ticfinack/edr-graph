@@ -107,6 +107,7 @@ class Settings(BaseModel):
     # IOC feed settings
     ioc_feeds_enabled: bool = True
     ioc_feeds_refresh_hours: int = 4
+    ioc_exclusion_patterns: list[str] = Field(default_factory=list)
 
     # Investigation tools (Tier 4 — safe, read-only local host inspection)
     investigation_tools_enabled: bool = True
