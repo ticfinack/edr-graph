@@ -1,0 +1,48 @@
+# EDR Graph Agent — Live Testing Configuration
+# Safe defaults: observe-only, no auto-response, no watchdog/tamper checks.
+
+agent:
+  name: "edr-graph-test"
+  version: "2.0.0"
+  log_level: "DEBUG"
+  log_format: "text"
+
+collector:
+  mode: "auto"
+  buffer_size: 10000
+  file_read_tracking: false
+
+analysis:
+  llm:
+    provider: "deepinfra"
+    api_key_env: "DEEPINFRA_API_KEY"
+    max_tokens: 2048
+    temperature: 0.1
+    timeout_seconds: 30
+    max_concurrent_calls: 1      # Conservative for testing
+    rate_limit_per_minute: 10    # Conservative for testing
+  dga:
+    entropy_threshold: 3.5
+    score_threshold: 0.6
+    allowlist:
+      - "googleapis.com"
+      - "cloudflare.com"
+      - "amazonaws.com"
+      - "windows.net"
+      - "office365.com"
+      - "microsoftonline.com"
+      - "apple.com"
+      - "icloud.com"
+
+response:
+  auto_respond: false            # LOG_ONLY mode — observe, don't act
+  auto_terminate: false
+
+persistence:
+  watchdog_enabled: false        # Disabled for testing
+  heartbeat_interval_seconds: 10
+  tamper_check_interval_seconds: 60
+
+metrics:
+  enabled: true
+  port: 9100
