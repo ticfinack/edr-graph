@@ -8,3 +8,4 @@ build/
 .pytest_cache/
 *.db
 edr_data/
+.env
