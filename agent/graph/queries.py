@@ -117,14 +117,19 @@ def get_process_children(conn: kuzu.Connection, pid: int) -> list[dict]:
         return []
 
 
-def _get_pid_network(conn: kuzu.Connection, proc_id: str) -> list[dict]:
-    """Compact network info for a process node ID."""
+def _get_pid_network(conn: kuzu.Connection, pid: int) -> list[dict]:
+    """Compact network info for all Process nodes sharing this PID.
+
+    Activity events (network, DNS) may create Process nodes with different
+    IDs than the original process event (missing created_time leads to a
+    different timestamp component).  Querying by PID catches all of them.
+    """
     items = []
     try:
         result = conn.execute(
-            "MATCH (p:Process {id: $id})-[c:CONNECTED_TO]->(ip:IP) "
+            "MATCH (p:Process {pid: $pid})-[c:CONNECTED_TO]->(ip:IP) "
             "RETURN ip.address, c.dst_port, c.protocol",
-            {"id": proc_id},
+            {"pid": pid},
         )
         seen = set()
         while result.has_next():
@@ -136,20 +141,23 @@ def _get_pid_network(conn: kuzu.Connection, proc_id: str) -> list[dict]:
 
         # DNS
         dns_result = conn.execute(
-            "MATCH (p:Process {id: $id})-[:RESOLVED]->(d:Domain) "
+            "MATCH (p:Process {pid: $pid})-[:RESOLVED]->(d:Domain) "
             "RETURN d.name, d.is_dga_candidate",
-            {"id": proc_id},
+            {"pid": pid},
         )
+        seen_domains = set()
         while dns_result.has_next():
             row = dns_result.get_next()
-            items.append({"domain": row[0], "is_dga": row[1]})
+            if row[0] not in seen_domains:
+                seen_domains.add(row[0])
+                items.append({"domain": row[0], "is_dga": row[1]})
     except Exception:
         pass
     return items
 
 
-def _get_pid_files(conn: kuzu.Connection, proc_id: str) -> list[dict]:
-    """Compact file activity for a process node ID."""
+def _get_pid_files(conn: kuzu.Connection, pid: int) -> list[dict]:
+    """Compact file activity for all Process nodes sharing this PID."""
     items = []
     try:
         for rel_type, operation in [
@@ -159,9 +167,9 @@ def _get_pid_files(conn: kuzu.Connection, proc_id: str) -> list[dict]:
             ("READ_FILE", "READ"),
         ]:
             result = conn.execute(
-                f"MATCH (p:Process {{id: $id}})-[r:{rel_type}]->(f:File) "
+                f"MATCH (p:Process {{pid: $pid}})-[r:{rel_type}]->(f:File) "
                 f"RETURN f.path, r.timestamp ORDER BY r.timestamp DESC LIMIT 5",
-                {"id": proc_id},
+                {"pid": pid},
             )
             while result.has_next():
                 row = result.get_next()
@@ -211,21 +219,21 @@ def get_process_tree(conn: kuzu.Connection, pid: int) -> dict | None:
                 if cpid in visited:
                     continue
                 visited.add(cpid)
-                child["network"] = _get_pid_network(conn, child["id"])
-                child["files"] = _get_pid_files(conn, child["id"])
+                child["network"] = _get_pid_network(conn, cpid)
+                child["files"] = _get_pid_files(conn, cpid)
                 child["children"] = _build_subtree(cpid, depth - 1)
                 result.append(child)
             return result
 
         # Attach activity to target
-        target["network"] = _get_pid_network(conn, target["id"])
-        target["files"] = _get_pid_files(conn, target["id"])
+        target["network"] = _get_pid_network(conn, pid)
+        target["files"] = _get_pid_files(conn, pid)
         target["children"] = _build_subtree(pid, 5)
 
         # Attach activity to ancestors
         for anc in ancestors:
-            anc["network"] = _get_pid_network(conn, anc["id"])
-            anc["files"] = _get_pid_files(conn, anc["id"])
+            anc["network"] = _get_pid_network(conn, anc["pid"])
+            anc["files"] = _get_pid_files(conn, anc["pid"])
 
         return {
             "target": target,
