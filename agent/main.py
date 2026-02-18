@@ -21,7 +21,7 @@ from agent.analyzer.llm_analyzer import LlmAnalyzer
 from agent.analyzer.preflight import is_novel
 from agent.collectors import collect_all, get_collectors
 from agent.collectors.base import RawEvent
-from agent.config import Settings
+from agent.config import Settings, load_settings
 from agent.normalizer import normalize
 from agent.processor.entity_extractor import extract_entities
 from agent.processor.graph_builder import GraphBuilder
@@ -256,6 +256,10 @@ def main() -> None:
         description="edr-graph: Local EDR with Graph-Based Event Correlation"
     )
     parser.add_argument(
+        "--config", type=str, default=None,
+        help="Path to config.yaml file",
+    )
+    parser.add_argument(
         "--data-dir", type=str, default=None, help="Data directory path"
     )
     parser.add_argument(
@@ -282,23 +286,59 @@ def main() -> None:
         help="Health/metrics HTTP port (default: 9100)",
     )
     parser.add_argument(
+        "--auto-respond",
+        action="store_true",
+        default=None,
+        help="Auto-execute response actions for CRITICAL severity",
+    )
+    parser.add_argument(
         "--no-dashboard",
         action="store_true",
         help="Run without the web dashboard",
     )
+    parser.add_argument(
+        "--no-watchdog",
+        action="store_true",
+        help="Disable watchdog heartbeat",
+    )
+    parser.add_argument(
+        "--no-tamper-check",
+        action="store_true",
+        help="Disable tamper detection",
+    )
+    parser.add_argument(
+        "--generate-config",
+        action="store_true",
+        help="Print default config.yaml to stdout and exit",
+    )
     args = parser.parse_args()
+
+    # Generate config and exit
+    if args.generate_config:
+        from agent.config import generate_default_config
+        print(generate_default_config())
+        return
 
     # Configure structured logging
     setup_logging(log_level=args.log_level, log_format=args.log_format)
 
-    # Build settings
-    settings = Settings()
+    # Build settings: config file → env vars → defaults, then CLI overrides
+    config_path = Path(args.config) if args.config else None
+    settings = load_settings(config_path=config_path)
+
+    # CLI overrides (highest priority)
     if args.data_dir:
         settings.data_dir = Path(args.data_dir)
     if args.port:
         settings.dashboard_port = args.port
     if args.metrics_port:
         settings.metrics_port = args.metrics_port
+    if args.auto_respond:
+        settings.auto_respond = True
+    if args.no_watchdog:
+        settings.watchdog_enabled = False
+    if args.no_tamper_check:
+        settings.tamper_check_enabled = False
     settings.ensure_dirs()
 
     # NiceGUI re-spawns the process — use an env var to detect the original
