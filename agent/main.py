@@ -38,6 +38,7 @@ from agent.processor.graph_builder import GraphBuilder
 from agent.queue.sqlite_queue import SqliteQueue
 from agent.platform.tamper_detection import TamperChecker
 from agent.response.actions import ResponsePolicy
+from agent.response.baseline import BehaviorBaseline, ResponseAllowlist
 from agent.response.engine import ResponseAuditLog, ResponseEngine
 from agent.schema.kuzu_schema import init_graph_schema
 from agent.watchdog import write_heartbeat
@@ -275,6 +276,8 @@ def _trigger_response(
     target_pid = None
     process_name = None
     target_path = None
+    dst_ip = ""
+    domain = ""
 
     # Find PID and process name from the evidence events
     evidence_ids = set(finding.evidence_event_ids)
@@ -288,9 +291,15 @@ def _trigger_response(
                 if event.process:
                     target_pid = event.process.pid
                     process_name = event.process.name
-                if isinstance(event, (FileActivity,)):
+                if isinstance(event, NetworkActivity):
+                    if event.dst_endpoint and event.dst_endpoint.ip:
+                        dst_ip = event.dst_endpoint.ip
+                elif isinstance(event, DnsActivity):
+                    if event.query_domain:
+                        domain = event.query_domain
+                elif isinstance(event, FileActivity):
                     target_path = event.file_path
-                elif isinstance(event, (RegistryActivity,)):
+                elif isinstance(event, RegistryActivity):
                     target_path = event.reg_path
                 break
 
@@ -300,6 +309,9 @@ def _trigger_response(
         target_pid=target_pid,
         target_path=target_path,
         process_name=process_name,
+        dst_ip=dst_ip,
+        domain=domain,
+        finding_title=finding.title,
     )
 
     for rec in records:
@@ -655,13 +667,27 @@ def main() -> None:
         auto_terminate=settings.auto_terminate,
     )
     audit_log = ResponseAuditLog(response_conn)
+    baseline = BehaviorBaseline(settings.db_path)
+    allowlist = ResponseAllowlist(settings.db_path)
     response_engine = ResponseEngine(
         policy=policy,
         audit_log=audit_log,
         quarantine_dir=settings.quarantine_dir,
+        baseline=baseline,
+        allowlist=allowlist,
     )
+    response_engine.set_mode(settings.response_mode)
+
+    # Initialize DNS sinkhole
+    try:
+        from agent.response.dns_sinkhole import DnsSinkhole
+        response_engine.dns_sinkhole = DnsSinkhole()
+    except Exception:
+        logger.debug("DNS sinkhole initialization failed (non-fatal)", exc_info=True)
+
     logger.info(
-        "Response engine initialized (auto_respond=%s, auto_terminate=%s)",
+        "Response engine initialized (mode=%s, auto_respond=%s, auto_terminate=%s)",
+        settings.response_mode,
         settings.auto_respond,
         settings.auto_terminate,
     )
@@ -767,6 +793,9 @@ def main() -> None:
                 settings=settings,
                 collector_names=collector_names,
                 ioc_db=ioc_db,
+                response_engine=response_engine,
+                baseline=baseline,
+                allowlist=allowlist,
             )
             start_dashboard_server(port=settings.dashboard_port)
             logger.info("Dashboard server started on http://127.0.0.1:%d", settings.dashboard_port)

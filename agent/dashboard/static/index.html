@@ -105,6 +105,20 @@ svg .edge-arrow{fill:var(--dim)}
 .empty-state{text-align:center;padding:48px;color:var(--dim)}
 .clickable{cursor:pointer}
 .feed-match-badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;background:rgba(239,68,68,0.2);color:var(--critical);margin-left:6px;text-transform:uppercase}
+
+/* Mode toggle buttons */
+.mode-toggle{display:inline-flex;gap:0;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.mode-toggle .btn{border:none;border-radius:0;border-right:1px solid var(--border);padding:6px 16px}
+.mode-toggle .btn:last-child{border-right:none}
+.mode-toggle .btn.active{background:var(--accent);color:#fff}
+.btn-warn{background:var(--high);border-color:var(--high);color:#fff}
+.btn-warn:hover{opacity:0.9}
+.inline-form{display:flex;gap:8px;align-items:center;margin:8px 0}
+.inline-form select,.inline-form input{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:13px}
+.rule-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)}
+.rule-info{display:flex;gap:8px;align-items:center}
+.rule-type-badge{display:inline-block;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:500;background:rgba(59,130,246,0.15);color:var(--accent);font-family:"SF Mono",Menlo,monospace}
+.net-item{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)}
 </style>
 </head>
 <body>
@@ -864,9 +878,13 @@ async function approveAction(id, action) {
 
 // ── Settings ───────────────────────────────────────────────────
 async function refreshSettings() {
-  const [data, iocStats] = await Promise.all([
+  const [data, iocStats, modeData, baselineStats, allowlistData, netStatus] = await Promise.all([
     api('/api/settings'),
     api('/api/intel/ioc-stats'),
+    api('/api/response/mode'),
+    api('/api/response/baseline/stats'),
+    api('/api/response/allowlist'),
+    api('/api/response/network-status'),
   ]);
   if (!data || Object.keys(data).length === 0) { document.getElementById('settings-content').innerHTML = '<div class="empty-state">Settings not available</div>'; return; }
   const groups = {
@@ -876,6 +894,97 @@ async function refreshSettings() {
     'Infrastructure': ['data_dir','dashboard_port','metrics_port','watchdog_enabled','tamper_check_enabled'],
   };
   let html = '';
+
+  // ── Response Mode section ──
+  const currentMode = (modeData && modeData.mode) || 'passive';
+  html += '<div class="settings-group"><h3>Response Mode</h3>';
+  html += '<div class="card" style="padding:16px;margin-bottom:16px">';
+  html += '<div style="display:flex;align-items:center;gap:16px;margin-bottom:12px">';
+  html += '<div class="mode-toggle">';
+  ['learning','active','passive'].forEach(function(m) {
+    html += '<button class="btn' + (m === currentMode ? ' active' : '') + '" onclick="setResponseMode(\'' + m + '\')">' + m.charAt(0).toUpperCase() + m.slice(1) + '</button>';
+  });
+  html += '</div>';
+  html += '<span style="color:var(--dim);font-size:13px">Mode: <strong style="color:var(--text)">' + esc(currentMode) + '</strong></span>';
+  html += '</div>';
+  if (baselineStats) {
+    const total = baselineStats.total || 0;
+    let daysLearned = '';
+    if (baselineStats.earliest && baselineStats.latest) {
+      const days = Math.max(1, Math.ceil((new Date(baselineStats.latest) - new Date(baselineStats.earliest)) / 86400000));
+      daysLearned = ' (learned ' + days + ' day' + (days !== 1 ? 's' : '') + ')';
+    }
+    html += '<div style="color:var(--dim);font-size:13px">Baseline: <strong style="color:var(--text)">' + fmtNum(total) + '</strong> behaviors' + daysLearned + '</div>';
+  }
+  if (allowlistData && allowlistData.rules) {
+    html += '<div style="color:var(--dim);font-size:13px;margin-top:4px">Allowlist: <strong style="color:var(--text)">' + allowlistData.rules.length + '</strong> rules</div>';
+  }
+  html += '<div style="margin-top:8px"><button class="btn btn-danger" style="font-size:11px" onclick="clearBaseline()">Clear Baseline</button></div>';
+  html += '</div></div>';
+
+  // ── Allowlist section ──
+  html += '<div class="settings-group"><h3>Response Allowlist</h3>';
+  html += '<div class="card" style="padding:16px;margin-bottom:16px">';
+  html += '<div class="inline-form" id="allowlist-add-form">';
+  html += '<select id="al-rule-type"><option value="process_name">process_name</option><option value="dst_ip">dst_ip</option><option value="dst_cidr">dst_cidr</option><option value="domain">domain</option><option value="file_path">file_path</option><option value="finding_title">finding_title</option></select>';
+  html += '<input type="text" id="al-pattern" placeholder="Pattern..." style="flex:1">';
+  html += '<input type="text" id="al-desc" placeholder="Description..." style="width:200px">';
+  html += '<button class="btn btn-primary" onclick="addAllowlistRule()">+ Add Rule</button>';
+  html += '</div>';
+  const rules = (allowlistData && allowlistData.rules) || [];
+  if (rules.length === 0) {
+    html += '<div style="color:var(--dim);font-size:13px;padding:8px 0">No allowlist rules configured</div>';
+  } else {
+    rules.forEach(function(r) {
+      html += '<div class="rule-row"><div class="rule-info"><span class="rule-type-badge">' + esc(r.rule_type) + '</span><span class="mono">' + esc(r.pattern) + '</span>';
+      if (r.description) html += '<span style="color:var(--dim);font-size:12px"> — ' + esc(r.description) + '</span>';
+      html += '</div><button class="btn btn-danger" style="font-size:11px;padding:2px 8px" onclick="deleteAllowlistRule(' + r.id + ')">Delete</button></div>';
+    });
+  }
+  html += '</div></div>';
+
+  // ── Network Controls section ──
+  html += '<div class="settings-group"><h3>Network Controls</h3>';
+  html += '<div class="card" style="padding:16px;margin-bottom:16px">';
+  const panicActive = netStatus && netStatus.panic_active;
+  html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">';
+  html += '<span style="font-size:13px">Panic Mode:</span>';
+  if (panicActive) {
+    html += '<button class="btn btn-warn" onclick="panicRestore()">DEACTIVATE</button>';
+    html += '<span class="severity-badge severity-critical">ACTIVE</span>';
+  } else {
+    html += '<button class="btn btn-danger" onclick="panicActivate()">ACTIVATE</button>';
+    html += '<span style="color:var(--dim);font-size:12px">Inactive</span>';
+  }
+  html += '</div>';
+  const blocked = (netStatus && netStatus.blocked_connections) || [];
+  const sinkholed = (netStatus && netStatus.sinkholed_domains) || [];
+  const isolatedPids = (netStatus && netStatus.isolated_pids) || [];
+  html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px;color:var(--dim);font-size:13px">';
+  html += '<div>Blocked connections: <strong style="color:var(--text)">' + blocked.length + '</strong></div>';
+  html += '<div>Sinkholed domains: <strong style="color:var(--text)">' + sinkholed.length + '</strong></div>';
+  html += '<div>Isolated PIDs: <strong style="color:var(--text)">' + isolatedPids.length + '</strong></div>';
+  html += '</div>';
+  if (blocked.length > 0) {
+    html += '<div style="margin-bottom:12px"><div style="color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px">Blocked</div>';
+    blocked.forEach(function(b) {
+      const label = b.port ? b.ip + ':' + b.port : b.ip;
+      html += '<div class="net-item"><span class="mono">' + esc(label) + '</span><button class="btn" style="font-size:11px;padding:2px 8px" onclick="unblockConn(\'' + esc(b.ip) + '\',' + (b.port || 'null') + ')">Unblock</button></div>';
+    });
+    html += '</div>';
+  }
+  if (sinkholed.length > 0) {
+    html += '<div style="margin-bottom:12px"><div style="color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px">Sinkholed</div>';
+    sinkholed.forEach(function(d) {
+      html += '<div class="net-item"><span class="mono">' + esc(d) + '</span><button class="btn" style="font-size:11px;padding:2px 8px" onclick="unsinkhole(\'' + esc(d) + '\')">Restore</button></div>';
+    });
+    html += '</div>';
+  }
+  html += '<div style="display:flex;gap:8px;margin-top:8px">';
+  html += '<button class="btn" onclick="promptBlockIP()">+ Block IP</button>';
+  html += '<button class="btn" onclick="promptSinkhole()">+ Sinkhole Domain</button>';
+  html += '</div>';
+  html += '</div></div>';
 
   // Threat Intelligence Signatures section
   html += '<div class="settings-group"><h3>Threat Intelligence Signatures</h3>';
@@ -921,6 +1030,72 @@ async function refreshSettings() {
     html += '</div>';
   }
   document.getElementById('settings-content').innerHTML = html;
+}
+
+// ── Response Mode / Allowlist / Network Controls ────────────────
+async function setResponseMode(mode) {
+  await fetch(API + '/api/response/mode', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});
+  refreshSettings();
+}
+
+async function clearBaseline() {
+  if (!confirm('Clear the entire behavior baseline? This cannot be undone.')) return;
+  await fetch(API + '/api/response/baseline/clear', {method:'POST'});
+  refreshSettings();
+}
+
+async function addAllowlistRule() {
+  const ruleType = document.getElementById('al-rule-type').value;
+  const pattern = document.getElementById('al-pattern').value.trim();
+  const desc = document.getElementById('al-desc').value.trim();
+  if (!pattern) { alert('Pattern is required'); return; }
+  await fetch(API + '/api/response/allowlist', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rule_type:ruleType,pattern:pattern,description:desc})});
+  document.getElementById('al-pattern').value = '';
+  document.getElementById('al-desc').value = '';
+  refreshSettings();
+}
+
+async function deleteAllowlistRule(id) {
+  if (!confirm('Delete this allowlist rule?')) return;
+  await fetch(API + '/api/response/allowlist/' + id, {method:'DELETE'});
+  refreshSettings();
+}
+
+async function promptBlockIP() {
+  const input = prompt('Enter IP address (optionally :port, e.g. 1.2.3.4:443):');
+  if (!input) return;
+  let ip = input.trim(), port = null;
+  if (ip.includes(':')) { const parts = ip.split(':'); ip = parts[0]; port = parseInt(parts[1]); }
+  await fetch(API + '/api/response/block-connection', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,port})});
+  refreshSettings();
+}
+
+async function unblockConn(ip, port) {
+  await fetch(API + '/api/response/unblock-connection', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,port})});
+  refreshSettings();
+}
+
+async function promptSinkhole() {
+  const domain = prompt('Enter domain to sinkhole (e.g. evil.example.com):');
+  if (!domain) return;
+  await fetch(API + '/api/response/sinkhole', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain:domain.trim()})});
+  refreshSettings();
+}
+
+async function unsinkhole(domain) {
+  await fetch(API + '/api/response/unsinkhole', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain})});
+  refreshSettings();
+}
+
+async function panicActivate() {
+  if (!confirm('ACTIVATE PANIC MODE?\n\nThis will block ALL network traffic except loopback.\nThis is an emergency action.')) return;
+  await fetch(API + '/api/response/panic', {method:'POST'});
+  refreshSettings();
+}
+
+async function panicRestore() {
+  await fetch(API + '/api/response/panic/restore', {method:'POST'});
+  refreshSettings();
 }
 
 // ── Helpers ────────────────────────────────────────────────────

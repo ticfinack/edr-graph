@@ -209,21 +209,21 @@ class TestResponseEngineMediumSeverity:
 
 
 class TestResponseEngineHighSeverity:
-    def test_high_without_auto_respond_pends_isolate(self, engine):
-        records = engine.respond(severity="high", event_id=4, target_pid=1234)
+    def test_high_without_auto_respond_pends_block_connection(self, engine):
+        records = engine.respond(severity="high", event_id=4, target_pid=1234, dst_ip="1.2.3.4")
         actions = [r.action_taken for r in records]
         assert "alert" in actions
-        assert "isolate_network" in actions
-        # Isolate should be awaiting approval (auto_respond=False)
-        isolate_rec = [r for r in records if r.action_taken == "isolate_network"][0]
-        assert isolate_rec.result == "awaiting_approval"
+        assert "block_connection" in actions
+        # Block should be awaiting approval (auto_respond=False)
+        block_rec = [r for r in records if r.action_taken == "block_connection"][0]
+        assert block_rec.result == "awaiting_approval"
 
     def test_high_with_auto_respond_executes(self, auto_engine):
         with patch("agent.response.network_control._run_command"):
-            records = auto_engine.respond(severity="high", event_id=5, target_pid=1234)
-        isolate_rec = [r for r in records if r.action_taken == "isolate_network"][0]
-        assert isolate_rec.result == "success"
-        assert isolate_rec.approval_status == "auto_approved"
+            records = auto_engine.respond(severity="high", event_id=5, target_pid=1234, dst_ip="1.2.3.4")
+        block_rec = [r for r in records if r.action_taken == "block_connection"][0]
+        assert block_rec.result == "success"
+        assert block_rec.approval_status == "auto_approved"
 
 
 class TestResponseEngineCriticalSeverity:

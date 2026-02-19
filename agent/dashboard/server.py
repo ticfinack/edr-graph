@@ -567,6 +567,211 @@ async def get_ioc_stats():
     return stats
 
 
+# ── Response Mode / Baseline / Allowlist / Network Controls ───────────────
+
+
+@app.get("/api/response/mode")
+async def get_response_mode():
+    """Current response mode."""
+    engine = _state.get("response_engine")
+    if engine is None:
+        return {"mode": "passive"}
+    return {"mode": engine.response_mode}
+
+
+@app.post("/api/response/mode")
+async def set_response_mode(body: dict):
+    """Switch response mode."""
+    engine = _state.get("response_engine")
+    if engine is None:
+        raise HTTPException(503, "Response engine not initialized")
+    mode = body.get("mode", "")
+    try:
+        engine.set_mode(mode)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"mode": engine.response_mode}
+
+
+@app.get("/api/response/baseline/stats")
+async def get_baseline_stats():
+    """Baseline statistics."""
+    baseline = _state.get("baseline")
+    if baseline is None:
+        return {"total": 0, "by_type": {}, "earliest": None, "latest": None}
+    return baseline.stats()
+
+
+@app.get("/api/response/baseline")
+async def get_baseline_entries(limit: int = Query(100, ge=1, le=1000)):
+    """Baseline entries."""
+    baseline = _state.get("baseline")
+    if baseline is None:
+        return {"entries": []}
+    return {"entries": baseline.get_entries(limit=limit)}
+
+
+@app.post("/api/response/baseline/clear")
+async def clear_baseline():
+    """Clear the behavior baseline."""
+    baseline = _state.get("baseline")
+    if baseline is None:
+        raise HTTPException(503, "Baseline not initialized")
+    baseline.clear()
+    return {"status": "ok"}
+
+
+@app.get("/api/response/allowlist")
+async def get_allowlist():
+    """Get all allowlist rules."""
+    allowlist = _state.get("allowlist")
+    if allowlist is None:
+        return {"rules": []}
+    return {"rules": allowlist.get_rules()}
+
+
+@app.post("/api/response/allowlist")
+async def add_allowlist_rule(body: dict):
+    """Add an allowlist rule."""
+    allowlist = _state.get("allowlist")
+    if allowlist is None:
+        raise HTTPException(503, "Allowlist not initialized")
+    rule_type = body.get("rule_type", "")
+    pattern = body.get("pattern", "")
+    description = body.get("description", "")
+    if not rule_type or not pattern:
+        raise HTTPException(400, "rule_type and pattern are required")
+    try:
+        rule_id = allowlist.add_rule(rule_type, pattern, description)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"status": "ok", "rule_id": rule_id}
+
+
+@app.delete("/api/response/allowlist/{rule_id}")
+async def delete_allowlist_rule(rule_id: int):
+    """Delete an allowlist rule."""
+    allowlist = _state.get("allowlist")
+    if allowlist is None:
+        raise HTTPException(503, "Allowlist not initialized")
+    if not allowlist.remove_rule(rule_id):
+        raise HTTPException(404, "Rule not found")
+    return {"status": "ok"}
+
+
+@app.post("/api/response/block-connection")
+async def block_connection(body: dict):
+    """Block traffic to a specific IP:port."""
+    engine = _state.get("response_engine")
+    if engine is None:
+        raise HTTPException(503, "Response engine not initialized")
+    ip = body.get("ip", "")
+    port = body.get("port")
+    if not ip:
+        raise HTTPException(400, "ip is required")
+    if port is not None:
+        port = int(port)
+    outcome = engine.network_isolator.block_connection(ip, port)
+    return {"status": outcome.result.value, "detail": outcome.detail}
+
+
+@app.post("/api/response/unblock-connection")
+async def unblock_connection(body: dict):
+    """Remove a connection block."""
+    engine = _state.get("response_engine")
+    if engine is None:
+        raise HTTPException(503, "Response engine not initialized")
+    ip = body.get("ip", "")
+    port = body.get("port")
+    if not ip:
+        raise HTTPException(400, "ip is required")
+    if port is not None:
+        port = int(port)
+    outcome = engine.network_isolator.unblock_connection(ip, port)
+    return {"status": outcome.result.value, "detail": outcome.detail}
+
+
+@app.post("/api/response/sinkhole")
+async def sinkhole_domain(body: dict):
+    """Sinkhole a domain to 127.0.0.1."""
+    engine = _state.get("response_engine")
+    if engine is None:
+        raise HTTPException(503, "Response engine not initialized")
+    if engine.dns_sinkhole is None:
+        raise HTTPException(503, "DNS sinkhole not initialized")
+    domain = body.get("domain", "")
+    if not domain:
+        raise HTTPException(400, "domain is required")
+    outcome = engine.dns_sinkhole.sinkhole(domain)
+    return {"status": outcome.result, "detail": outcome.detail}
+
+
+@app.post("/api/response/unsinkhole")
+async def unsinkhole_domain(body: dict):
+    """Remove a domain sinkhole."""
+    engine = _state.get("response_engine")
+    if engine is None:
+        raise HTTPException(503, "Response engine not initialized")
+    if engine.dns_sinkhole is None:
+        raise HTTPException(503, "DNS sinkhole not initialized")
+    domain = body.get("domain", "")
+    if not domain:
+        raise HTTPException(400, "domain is required")
+    outcome = engine.dns_sinkhole.restore(domain)
+    return {"status": outcome.result, "detail": outcome.detail}
+
+
+@app.post("/api/response/panic")
+async def activate_panic():
+    """Activate panic mode — block ALL network traffic except loopback."""
+    engine = _state.get("response_engine")
+    if engine is None:
+        raise HTTPException(503, "Response engine not initialized")
+    outcome = engine.network_isolator.panic_isolate()
+    return {"status": outcome.result.value, "detail": outcome.detail}
+
+
+@app.post("/api/response/panic/restore")
+async def deactivate_panic():
+    """Deactivate panic mode — restore network connectivity."""
+    engine = _state.get("response_engine")
+    if engine is None:
+        raise HTTPException(503, "Response engine not initialized")
+    outcome = engine.network_isolator.panic_restore()
+    return {"status": outcome.result.value, "detail": outcome.detail}
+
+
+@app.get("/api/response/network-status")
+async def get_network_status():
+    """Current network control status."""
+    engine = _state.get("response_engine")
+    if engine is None:
+        return {
+            "blocked_connections": [],
+            "sinkholed_domains": [],
+            "panic_active": False,
+            "isolated_pids": [],
+        }
+
+    blocked = []
+    for (ip, port), rule in engine.network_isolator.blocked_connections.items():
+        entry = {"ip": ip, "rule": rule}
+        if port is not None:
+            entry["port"] = port
+        blocked.append(entry)
+
+    sinkholed = []
+    if engine.dns_sinkhole:
+        sinkholed = sorted(engine.dns_sinkhole.sinkholed_domains)
+
+    return {
+        "blocked_connections": blocked,
+        "sinkholed_domains": sinkholed,
+        "panic_active": engine.network_isolator.panic_active,
+        "isolated_pids": sorted(engine.network_isolator.isolated_pids),
+    }
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 
@@ -610,6 +815,9 @@ def init_dashboard(
     settings,
     collector_names: list[str],
     ioc_db=None,
+    response_engine=None,
+    baseline=None,
+    allowlist=None,
 ) -> None:
     """Initialize dashboard state. Called once from main.py."""
     _state["queue"] = queue
@@ -618,6 +826,9 @@ def init_dashboard(
     _state["start_time"] = time.time()
     _state["collector_names"] = collector_names
     _state["ioc_db"] = ioc_db
+    _state["response_engine"] = response_engine
+    _state["baseline"] = baseline
+    _state["allowlist"] = allowlist
 
 
 def start_dashboard_server(port: int = 9200) -> threading.Thread:

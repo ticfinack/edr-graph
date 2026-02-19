@@ -71,6 +71,31 @@ RESPONSE_AUDIT_EVENT_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_response_audit_event ON response_audit (event_id)
 """
 
+BEHAVIOR_BASELINE_DDL = """
+CREATE TABLE IF NOT EXISTS behavior_baseline (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    process_name TEXT NOT NULL,
+    behavior_type TEXT NOT NULL,
+    target TEXT NOT NULL,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    hit_count INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL DEFAULT 'learning',
+    UNIQUE(process_name, behavior_type, target)
+)
+"""
+
+RESPONSE_ALLOWLIST_DDL = """
+CREATE TABLE IF NOT EXISTS response_allowlist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_type TEXT NOT NULL,
+    pattern TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
+    created_by TEXT NOT NULL DEFAULT 'user'
+)
+"""
+
 ALL_DDL = [
     EVENT_QUEUE_DDL,
     EVENT_QUEUE_INDEX,
@@ -80,6 +105,8 @@ ALL_DDL = [
     RESPONSE_AUDIT_DDL,
     RESPONSE_AUDIT_TIME_INDEX,
     RESPONSE_AUDIT_EVENT_INDEX,
+    BEHAVIOR_BASELINE_DDL,
+    RESPONSE_ALLOWLIST_DDL,
 ]
 
 # Migrations for existing databases (errors silently ignored if column exists)

@@ -23,18 +23,18 @@ class TestResponsePolicy:
         actions = policy.get_actions("medium")
         assert actions == [ResponseAction.ALERT]
 
-    def test_high_returns_alert_and_isolate(self):
+    def test_high_returns_alert_and_block_connection(self):
         policy = ResponsePolicy()
         actions = policy.get_actions("high")
         assert ResponseAction.ALERT in actions
-        assert ResponseAction.ISOLATE_NETWORK in actions
+        assert ResponseAction.BLOCK_CONNECTION in actions
 
-    def test_critical_returns_alert_suspend_isolate(self):
+    def test_critical_returns_alert_suspend_block_connection(self):
         policy = ResponsePolicy()
         actions = policy.get_actions("critical")
         assert ResponseAction.ALERT in actions
         assert ResponseAction.SUSPEND_PROCESS in actions
-        assert ResponseAction.ISOLATE_NETWORK in actions
+        assert ResponseAction.BLOCK_CONNECTION in actions
 
     def test_unknown_severity_defaults_to_log_only(self):
         policy = ResponsePolicy()

@@ -16,6 +16,7 @@ from pathlib import Path
 from agent import metrics
 from agent.response.actions import ResponseAction, ResponsePolicy
 from agent.response.approval import ApprovalManager, ApprovalStatus
+from agent.response.baseline import BehaviorBaseline, ResponseAllowlist
 from agent.response.file_quarantine import FileQuarantine, QuarantineResult
 from agent.response.network_control import NetworkControlResult, NetworkIsolator
 from agent.response.process_control import (
@@ -146,11 +147,15 @@ class ResponseEngine:
     5. Records everything in the audit trail
     """
 
+    VALID_MODES = {"learning", "active", "passive"}
+
     def __init__(
         self,
         policy: ResponsePolicy,
         audit_log: ResponseAuditLog,
         quarantine_dir: Path | None = None,
+        baseline: BehaviorBaseline | None = None,
+        allowlist: ResponseAllowlist | None = None,
     ) -> None:
         self.policy = policy
         self.audit_log = audit_log
@@ -159,6 +164,21 @@ class ResponseEngine:
         self.file_quarantine = FileQuarantine(
             quarantine_dir or Path("/var/edr-graph/quarantine")
         )
+        self.baseline = baseline
+        self.allowlist = allowlist
+        self._response_mode = "passive"
+        self.dns_sinkhole = None  # Set after DnsSinkhole is created
+
+    def set_mode(self, mode: str) -> None:
+        """Set the response mode. Validates input."""
+        if mode not in self.VALID_MODES:
+            raise ValueError(f"Invalid mode: {mode!r}. Must be one of {self.VALID_MODES}")
+        self._response_mode = mode
+        logger.info("Response mode set to: %s", mode)
+
+    @property
+    def response_mode(self) -> str:
+        return self._response_mode
 
     def respond(
         self,
@@ -168,11 +188,87 @@ class ResponseEngine:
         target_path: str | None = None,
         process_name: str | None = None,
         confidence: float = 0.0,
+        dst_ip: str = "",
+        domain: str = "",
+        finding_title: str = "",
     ) -> list[ResponseRecord]:
         """Execute the full response pipeline for a severity verdict.
 
         Returns a list of ResponseRecords documenting each action taken.
         """
+        # ── Learning mode: record baseline, never block ──
+        if self._response_mode == "learning":
+            if self.baseline and process_name:
+                target = dst_ip or domain or target_path or "unknown"
+                btype = "network" if dst_ip else "dns" if domain else "file"
+                self.baseline.record(process_name, btype, target)
+
+            record = ResponseRecord(
+                response_id=f"resp-{uuid.uuid4().hex[:12]}",
+                event_id=event_id,
+                timestamp=time.time(),
+                action_taken=ResponseAction.LOG_ONLY.value,
+                target_pid=target_pid,
+                target_path=target_path,
+                llm_severity=severity,
+                llm_confidence=confidence,
+                result="success",
+                approval_status="not_required",
+                result_detail="learning mode — behavior recorded",
+            )
+            self.audit_log.record(record)
+            return [record]
+
+        # ── Active mode: check allowlist then baseline ──
+        if self._response_mode == "active":
+            # Check allowlist
+            if self.allowlist:
+                matched, desc = self.allowlist.is_allowed(
+                    process_name=process_name or "",
+                    dst_ip=dst_ip,
+                    domain=domain,
+                    file_path=target_path or "",
+                    finding_title=finding_title,
+                )
+                if matched:
+                    record = ResponseRecord(
+                        response_id=f"resp-{uuid.uuid4().hex[:12]}",
+                        event_id=event_id,
+                        timestamp=time.time(),
+                        action_taken=ResponseAction.LOG_ONLY.value,
+                        target_pid=target_pid,
+                        target_path=target_path,
+                        llm_severity=severity,
+                        llm_confidence=confidence,
+                        result="success",
+                        approval_status="not_required",
+                        result_detail=f"allowlisted: {desc}",
+                    )
+                    self.audit_log.record(record)
+                    return [record]
+
+            # Check baseline
+            if self.baseline and process_name:
+                target = dst_ip or domain or target_path or "unknown"
+                btype = "network" if dst_ip else "dns" if domain else "file"
+                if self.baseline.is_baselined(process_name, btype, target):
+                    record = ResponseRecord(
+                        response_id=f"resp-{uuid.uuid4().hex[:12]}",
+                        event_id=event_id,
+                        timestamp=time.time(),
+                        action_taken=ResponseAction.LOG_ONLY.value,
+                        target_pid=target_pid,
+                        target_path=target_path,
+                        llm_severity=severity,
+                        llm_confidence=confidence,
+                        result="success",
+                        approval_status="not_required",
+                        result_detail="baselined behavior",
+                    )
+                    self.audit_log.record(record)
+                    return [record]
+
+        # ── Passive / Active (non-baselined): normal severity → actions ──
         actions = self.policy.get_actions(severity)
         records: list[ResponseRecord] = []
 
@@ -185,6 +281,7 @@ class ResponseEngine:
                 target_path=target_path,
                 process_name=process_name,
                 confidence=confidence,
+                dst_ip=dst_ip,
             )
             records.append(record)
 
@@ -199,6 +296,7 @@ class ResponseEngine:
         target_path: str | None,
         process_name: str | None,
         confidence: float,
+        dst_ip: str = "",
     ) -> ResponseRecord:
         """Execute a single response action with approval and audit."""
         response_id = f"resp-{uuid.uuid4().hex[:12]}"
@@ -271,7 +369,7 @@ class ResponseEngine:
             return record
 
         # Execute the action
-        self._do_execute(action, target_pid, target_path, record)
+        self._do_execute(action, target_pid, target_path, record, dst_ip=dst_ip)
         self.audit_log.record(record)
         metrics.response_actions_total.labels(
             action=action.value, result=record.result
@@ -284,6 +382,7 @@ class ResponseEngine:
         target_pid: int | None,
         target_path: str | None,
         record: ResponseRecord,
+        dst_ip: str = "",
     ) -> None:
         """Actually execute a response action and update the record."""
         if action == ResponseAction.SUSPEND_PROCESS:
@@ -319,6 +418,34 @@ class ResponseEngine:
                 record.result_detail = "No target path provided"
                 return
             outcome = self.file_quarantine.quarantine(target_path)
+            record.result = outcome.result.value
+            record.result_detail = outcome.detail
+
+        elif action == ResponseAction.BLOCK_CONNECTION:
+            if not dst_ip:
+                record.result = "failed"
+                record.result_detail = "No destination IP provided"
+                return
+            outcome = self.network_isolator.block_connection(dst_ip)
+            record.result = outcome.result.value
+            record.result_detail = outcome.detail
+
+        elif action == ResponseAction.DNS_SINKHOLE:
+            if self.dns_sinkhole is None:
+                record.result = "failed"
+                record.result_detail = "DNS sinkhole not initialized"
+                return
+            domain = target_path or ""
+            if not domain:
+                record.result = "failed"
+                record.result_detail = "No domain provided"
+                return
+            outcome = self.dns_sinkhole.sinkhole(domain)
+            record.result = outcome.result
+            record.result_detail = outcome.detail
+
+        elif action == ResponseAction.PANIC_ISOLATE:
+            outcome = self.network_isolator.panic_isolate()
             record.result = outcome.result.value
             record.result_detail = outcome.detail
 

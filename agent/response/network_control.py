@@ -50,6 +50,10 @@ class NetworkIsolator:
     def __init__(self) -> None:
         # Map of PID -> list of rule identifiers for cleanup
         self._isolated: dict[int, list[str]] = {}
+        # Blocked connections: (ip, port|None) -> rule identifier
+        self._blocked_connections: dict[tuple[str, int | None], str] = {}
+        # Panic mode state
+        self._panic_active: bool = False
 
     @property
     def isolated_pids(self) -> set[int]:
@@ -59,6 +63,16 @@ class NetworkIsolator:
     def is_isolated(self, pid: int) -> bool:
         """Check if a PID is currently network-isolated."""
         return pid in self._isolated
+
+    @property
+    def blocked_connections(self) -> dict[tuple[str, int | None], str]:
+        """Return the currently blocked IP:port pairs."""
+        return dict(self._blocked_connections)
+
+    @property
+    def panic_active(self) -> bool:
+        """Return whether panic mode is active."""
+        return self._panic_active
 
     def isolate(self, pid: int, exe_path: str | None = None) -> NetworkControlOutcome:
         """Block all network access for a process.
@@ -289,28 +303,81 @@ class NetworkIsolator:
     # --- macOS implementations ---
 
     def _isolate_macos(self, pid: int) -> NetworkControlOutcome:
-        """Use pf anchor rules to block network for a process on macOS.
+        """Block active remote connections of a process on macOS via pf.
 
-        Creates a pf anchor with block rules. Requires root.
+        Instead of the broken 'block drop quick all' (which blocks ALL host
+        traffic since pf has no PID matching), this discovers the process's
+        active remote connections via lsof and blocks each IP:port pair.
         """
         anchor_name = f"edr_block_{pid}"
-        rules: list[str] = [anchor_name]
 
         try:
-            # Create pf rules that block all traffic for this anchor
-            pf_rules = f"block drop quick all\n"
+            # Discover active remote connections for this PID
+            result = subprocess.run(
+                ["lsof", "-iTCP", "-iUDP", "-nP", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            remote_endpoints: list[tuple[str, str]] = []
+            for line in result.stdout.splitlines()[1:]:  # skip header
+                parts = line.split()
+                # lsof output: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+                if len(parts) >= 9:
+                    name = parts[8]
+                    # Look for remote end: "->1.2.3.4:443" or "->1.2.3.4:443 (ESTABLISHED)"
+                    if "->" in name:
+                        remote = name.split("->")[-1].split()[0]
+                        # Handle IPv4 and IPv6
+                        if remote.startswith("["):
+                            # IPv6: [::1]:443
+                            bracket_end = remote.index("]")
+                            ip = remote[1:bracket_end]
+                            port = remote[bracket_end + 2:] if bracket_end + 1 < len(remote) else ""
+                        else:
+                            last_colon = remote.rfind(":")
+                            ip = remote[:last_colon]
+                            port = remote[last_colon + 1:]
+                        if ip and port and not ip.startswith("127.") and ip != "::1":
+                            remote_endpoints.append((ip, port))
+
+            if not remote_endpoints:
+                self._isolated[pid] = [anchor_name]
+                return NetworkControlOutcome(
+                    result=NetworkControlResult.SUCCESS,
+                    pid=pid,
+                    action="isolate",
+                    rules_applied=[anchor_name],
+                    detail="No active remote connections found; anchor created empty",
+                )
+
+            # Build pf rules blocking each remote IP:port
+            pf_lines = []
+            for ip, port in remote_endpoints:
+                pf_lines.append(f"block drop quick from any to {ip} port {port}")
+                pf_lines.append(f"block drop quick from {ip} port {port} to any")
+            pf_rules = "\n".join(pf_lines) + "\n"
+
             _run_command(
                 ["pfctl", "-a", anchor_name, "-f", "-"],
                 input_data=pf_rules,
             )
 
-            self._isolated[pid] = rules
-            logger.info("Isolated PID %d via pf anchor %s", pid, anchor_name)
+            self._isolated[pid] = [anchor_name]
+            blocked_list = [f"{ip}:{port}" for ip, port in remote_endpoints]
+            logger.info(
+                "Isolated PID %d via pf anchor %s (%d connections blocked: %s)",
+                pid,
+                anchor_name,
+                len(remote_endpoints),
+                ", ".join(blocked_list),
+            )
             return NetworkControlOutcome(
                 result=NetworkControlResult.SUCCESS,
                 pid=pid,
                 action="isolate",
-                rules_applied=rules,
+                rules_applied=[anchor_name] + blocked_list,
+                detail=f"Blocked {len(remote_endpoints)} active connections",
             )
         except PermissionError:
             return NetworkControlOutcome(
@@ -353,6 +420,258 @@ class NetworkIsolator:
             pid=pid,
             action="restore",
             rules_applied=rules,
+        )
+
+
+    # --- Connection-level blocking ---
+
+    def block_connection(
+        self, ip: str, port: int | None = None
+    ) -> NetworkControlOutcome:
+        """Block traffic to a specific IP (optionally port).
+
+        macOS: pf anchor rule.  Linux: iptables rule.  Windows: netsh rule.
+        """
+        key = (ip, port)
+        if key in self._blocked_connections:
+            return NetworkControlOutcome(
+                result=NetworkControlResult.ALREADY_ISOLATED,
+                pid=0,
+                action="block_connection",
+                detail=f"Already blocking {ip}" + (f":{port}" if port else ""),
+            )
+
+        try:
+            if os.name == "nt":
+                rule_name = f"EDR-BLOCK-CONN-{ip}-{port or 'all'}"
+                cmd = [
+                    "netsh", "advfirewall", "firewall", "add", "rule",
+                    f"name={rule_name}", "dir=out", "action=block",
+                    f"remoteip={ip}",
+                ]
+                if port:
+                    cmd += [f"remoteport={port}", "protocol=tcp"]
+                _run_command(cmd)
+                self._blocked_connections[key] = rule_name
+            elif _is_linux():
+                rule_name = f"EDR-CONN-{ip}-{port or 'all'}"
+                cmd = ["iptables", "-A", "OUTPUT", "-d", ip]
+                if port:
+                    cmd += ["-p", "tcp", "--dport", str(port)]
+                cmd += ["-j", "DROP", "-m", "comment", "--comment", rule_name]
+                _run_command(cmd)
+                self._blocked_connections[key] = rule_name
+            else:
+                # macOS: pf anchor
+                anchor_name = f"edr_block_conn_{ip.replace('.', '_')}_{port or 'all'}"
+                if port:
+                    pf_rules = (
+                        f"block drop quick from any to {ip} port {port}\n"
+                        f"block drop quick from {ip} port {port} to any\n"
+                    )
+                else:
+                    pf_rules = (
+                        f"block drop quick from any to {ip}\n"
+                        f"block drop quick from {ip} to any\n"
+                    )
+                _run_command(
+                    ["pfctl", "-a", anchor_name, "-f", "-"],
+                    input_data=pf_rules,
+                )
+                self._blocked_connections[key] = anchor_name
+
+            target = f"{ip}:{port}" if port else ip
+            logger.info("Blocked connection to %s", target)
+            return NetworkControlOutcome(
+                result=NetworkControlResult.SUCCESS,
+                pid=0,
+                action="block_connection",
+                rules_applied=[self._blocked_connections[key]],
+                detail=f"Blocked traffic to {target}",
+            )
+        except PermissionError:
+            return NetworkControlOutcome(
+                result=NetworkControlResult.PERMISSION_DENIED,
+                pid=0,
+                action="block_connection",
+                detail="Root/admin privileges required",
+            )
+        except Exception as e:
+            return NetworkControlOutcome(
+                result=NetworkControlResult.FAILED,
+                pid=0,
+                action="block_connection",
+                detail=str(e),
+            )
+
+    def unblock_connection(
+        self, ip: str, port: int | None = None
+    ) -> NetworkControlOutcome:
+        """Remove a connection block for a specific IP (optionally port)."""
+        key = (ip, port)
+        if key not in self._blocked_connections:
+            return NetworkControlOutcome(
+                result=NetworkControlResult.NOT_ISOLATED,
+                pid=0,
+                action="unblock_connection",
+                detail=f"No block found for {ip}" + (f":{port}" if port else ""),
+            )
+
+        rule_id = self._blocked_connections[key]
+        try:
+            if os.name == "nt":
+                _run_command([
+                    "netsh", "advfirewall", "firewall", "delete", "rule",
+                    f"name={rule_id}",
+                ])
+            elif _is_linux():
+                cmd = ["iptables", "-D", "OUTPUT", "-d", ip]
+                if port:
+                    cmd += ["-p", "tcp", "--dport", str(port)]
+                cmd += ["-j", "DROP", "-m", "comment", "--comment", rule_id]
+                _run_command(cmd)
+            else:
+                _run_command(["pfctl", "-a", rule_id, "-F", "all"])
+
+            del self._blocked_connections[key]
+            target = f"{ip}:{port}" if port else ip
+            logger.info("Unblocked connection to %s", target)
+            return NetworkControlOutcome(
+                result=NetworkControlResult.SUCCESS,
+                pid=0,
+                action="unblock_connection",
+                rules_applied=[rule_id],
+                detail=f"Unblocked traffic to {target}",
+            )
+        except Exception as e:
+            return NetworkControlOutcome(
+                result=NetworkControlResult.FAILED,
+                pid=0,
+                action="unblock_connection",
+                detail=str(e),
+            )
+
+    # --- Panic mode ---
+
+    def panic_isolate(self) -> NetworkControlOutcome:
+        """Block ALL network traffic except loopback. Emergency use only."""
+        if self._panic_active:
+            return NetworkControlOutcome(
+                result=NetworkControlResult.ALREADY_ISOLATED,
+                pid=0,
+                action="panic_isolate",
+                detail="Panic mode is already active",
+            )
+
+        try:
+            if os.name == "nt":
+                _run_command([
+                    "netsh", "advfirewall", "firewall", "add", "rule",
+                    "name=EDR-PANIC-BLOCK", "dir=out", "action=block",
+                    "remoteip=0.0.0.0/0",
+                ])
+                _run_command([
+                    "netsh", "advfirewall", "firewall", "add", "rule",
+                    "name=EDR-PANIC-BLOCK-IN", "dir=in", "action=block",
+                    "remoteip=0.0.0.0/0",
+                ])
+            elif _is_linux():
+                _run_command([
+                    "iptables", "-A", "OUTPUT", "!", "-o", "lo",
+                    "-j", "DROP", "-m", "comment", "--comment", "EDR-PANIC",
+                ])
+                _run_command([
+                    "iptables", "-A", "INPUT", "!", "-i", "lo",
+                    "-j", "DROP", "-m", "comment", "--comment", "EDR-PANIC",
+                ])
+            else:
+                # macOS: pf anchor blocking everything except loopback
+                pf_rules = "block drop quick on ! lo0 all\n"
+                _run_command(
+                    ["pfctl", "-a", "edr_panic", "-f", "-"],
+                    input_data=pf_rules,
+                )
+
+            self._panic_active = True
+            logger.warning("PANIC MODE ACTIVATED — all network traffic blocked except loopback")
+            return NetworkControlOutcome(
+                result=NetworkControlResult.SUCCESS,
+                pid=0,
+                action="panic_isolate",
+                rules_applied=["edr_panic"],
+                detail="All network traffic blocked except loopback",
+            )
+        except PermissionError:
+            return NetworkControlOutcome(
+                result=NetworkControlResult.PERMISSION_DENIED,
+                pid=0,
+                action="panic_isolate",
+                detail="Root/admin privileges required",
+            )
+        except Exception as e:
+            return NetworkControlOutcome(
+                result=NetworkControlResult.FAILED,
+                pid=0,
+                action="panic_isolate",
+                detail=str(e),
+            )
+
+    def panic_restore(self) -> NetworkControlOutcome:
+        """Remove panic mode isolation. Restores network connectivity."""
+        if not self._panic_active:
+            return NetworkControlOutcome(
+                result=NetworkControlResult.NOT_ISOLATED,
+                pid=0,
+                action="panic_restore",
+                detail="Panic mode is not active",
+            )
+
+        errors: list[str] = []
+        try:
+            if os.name == "nt":
+                for name in ("EDR-PANIC-BLOCK", "EDR-PANIC-BLOCK-IN"):
+                    try:
+                        _run_command([
+                            "netsh", "advfirewall", "firewall", "delete", "rule",
+                            f"name={name}",
+                        ])
+                    except Exception as e:
+                        errors.append(str(e))
+            elif _is_linux():
+                for chain in ("OUTPUT", "INPUT"):
+                    try:
+                        iface_flag = "-o" if chain == "OUTPUT" else "-i"
+                        _run_command([
+                            "iptables", "-D", chain, "!", iface_flag, "lo",
+                            "-j", "DROP", "-m", "comment", "--comment", "EDR-PANIC",
+                        ])
+                    except Exception as e:
+                        errors.append(str(e))
+            else:
+                try:
+                    _run_command(["pfctl", "-a", "edr_panic", "-F", "all"])
+                except Exception as e:
+                    errors.append(str(e))
+        except Exception as e:
+            errors.append(str(e))
+
+        self._panic_active = False
+        if errors:
+            logger.warning("Panic mode restored with errors: %s", "; ".join(errors))
+            return NetworkControlOutcome(
+                result=NetworkControlResult.FAILED,
+                pid=0,
+                action="panic_restore",
+                detail=f"Partial restore: {'; '.join(errors)}",
+            )
+
+        logger.warning("PANIC MODE DEACTIVATED — network traffic restored")
+        return NetworkControlOutcome(
+            result=NetworkControlResult.SUCCESS,
+            pid=0,
+            action="panic_restore",
+            rules_applied=["edr_panic"],
+            detail="Network traffic restored",
         )
 
 

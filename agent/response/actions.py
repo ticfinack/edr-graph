@@ -14,6 +14,9 @@ class ResponseAction(Enum):
     TERMINATE_PROCESS = "terminate_process"
     ISOLATE_NETWORK = "isolate_network"
     QUARANTINE_FILE = "quarantine_file"
+    BLOCK_CONNECTION = "block_connection"
+    DNS_SINKHOLE = "dns_sinkhole"
+    PANIC_ISOLATE = "panic_isolate"
 
 
 # Processes that must NEVER be suspended or terminated.
@@ -59,11 +62,11 @@ class ResponsePolicy:
         "info": [ResponseAction.LOG_ONLY],
         "low": [ResponseAction.LOG_ONLY],
         "medium": [ResponseAction.ALERT],
-        "high": [ResponseAction.ALERT, ResponseAction.ISOLATE_NETWORK],
+        "high": [ResponseAction.ALERT, ResponseAction.BLOCK_CONNECTION],
         "critical": [
             ResponseAction.ALERT,
             ResponseAction.SUSPEND_PROCESS,
-            ResponseAction.ISOLATE_NETWORK,
+            ResponseAction.BLOCK_CONNECTION,
         ],
     }
 

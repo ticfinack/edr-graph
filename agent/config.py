@@ -64,6 +64,7 @@ class Settings(BaseModel):
     ]
 
     # Response engine settings
+    response_mode: str = "passive"  # "learning" (baseline only), "active" (enforce), "passive" (alert only)
     auto_respond: bool = False  # Auto-execute response actions for CRITICAL severity
     auto_terminate: bool = False  # Allow process termination without human approval
     quarantine_dir: Path = Field(
@@ -148,6 +149,7 @@ _YAML_KEY_MAP: dict[tuple[str, ...], str] = {
     ("analysis", "dga", "entropy_threshold"): "dga_entropy_threshold",
     ("analysis", "dga", "score_threshold"): "dga_score_threshold",
     ("analysis", "dga", "allowlist"): "dga_allowlist",
+    ("response", "mode"): "response_mode",
     ("response", "auto_respond"): "auto_respond",
     ("response", "auto_terminate"): "auto_terminate",
     ("response", "quarantine_dir"): "quarantine_dir",
@@ -283,6 +285,7 @@ analysis:
       - "microsoftonline.com"
 
 response:
+  mode: "passive"           # "learning" (baseline only), "active" (enforce), "passive" (alert only)
   auto_respond: false       # Auto-execute response for CRITICAL severity
   auto_terminate: false     # Allow process termination without approval
   # quarantine_dir: "/var/edr-graph/quarantine"  # Platform-dependent default
