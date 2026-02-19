@@ -1,0 +1,474 @@
+# EDR Graph Agent
+
+> **Disclaimer:** This software is provided for **educational and research purposes only**. It is not a certified or commercially supported security product. Use at your own risk. The authors assume no liability for any damage, data loss, or legal consequences resulting from the use or misuse of this software. By using this software, you agree that you are solely responsible for ensuring compliance with applicable laws and regulations in your jurisdiction. Always obtain proper authorization before deploying monitoring or response tools on any system.
+
+**An AI-powered Endpoint Detection & Response system that uses graph-based behavioral analysis and LLM reasoning to detect, investigate, and respond to threats in real time.**
+
+Built from scratch as a single-developer project. Combines real-time telemetry collection, a property graph database for attack chain correlation, an LLM-driven threat analyzer with tool-use investigation capabilities, and a response engine with human-in-the-loop approval — all orchestrated through a live dashboard.
+
+<!-- Screenshot: Dashboard overview showing status cards, recent findings, and event stream -->
+![Dashboard Overview](docs/screenshots/dashboard-overview.png)
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                           EDR Graph Agent                                    │
+│                                                                              │
+│  ┌─────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐  │
+│  │  Collectors  │──▶│  Normalizer  │──▶│  Processor   │──▶│  Graph DB    │  │
+│  │  (per-OS)   │   │  (OCSF)      │   │  (entities)  │   │  (Kuzu)      │  │
+│  └─────────────┘   └──────────────┘   └──────────────┘   └──────┬───────┘  │
+│        │                                                         │          │
+│        ▼                                                         ▼          │
+│  ┌─────────────┐   ┌──────────────────────────────────────────────────────┐ │
+│  │  SQLite     │   │                 LLM Analyzer                         │ │
+│  │  Queue      │   │  ┌──────────┐  ┌───────────┐  ┌──────────────────┐  │ │
+│  │  + Findings │   │  │ Preflight│─▶│ Tool-Use  │─▶│ Finding Builder  │  │ │
+│  │  + Audit    │   │  │ (novelty)│  │ Loop (5x) │  │ + Chain Context  │  │ │
+│  └─────────────┘   │  └──────────┘  └───────────┘  └──────────────────┘  │ │
+│                     │       │          │ ▲                                 │ │
+│                     │       │          ▼ │                                 │ │
+│                     │  ┌────────────────────────────────────┐             │ │
+│                     │  │ Tools: IP Geo │ WHOIS │ MITRE      │             │ │
+│                     │  │ AbuseIPDB │ VT │ Graph │ LOLBAS    │             │ │
+│                     │  └────────────────────────────────────┘             │ │
+│                     └────────────────────────────────────────────────────┘  │
+│                                          │                                  │
+│                                          ▼                                  │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                      Response Engine                                  │  │
+│  │  Severity ──▶ Baseline/Allow/Block ──▶ Approval ──▶ Execute ──▶ Audit │  │
+│  │                                                                       │  │
+│  │  Actions: Suspend │ Terminate │ Isolate Network │ Block IP            │  │
+│  │           Quarantine File │ DNS Sinkhole │ Panic Isolate              │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│  ┌──────────────┐  ┌────────────┐  ┌─────────────┐  ┌────────────────────┐ │
+│  │  Dashboard   │  │  Tray Icon │  │  Prometheus  │  │  Tamper Detection  │ │
+│  │  (FastAPI)   │  │  (macOS)   │  │  Metrics     │  │  (SHA-256 verify)  │ │
+│  └──────────────┘  └────────────┘  └─────────────┘  └────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Pipeline Flow
+
+1. **Collect** — Platform-native collectors gather process, network, file, DNS, and registry events
+2. **Normalize** — Raw events are standardized to OCSF (Open Cybersecurity Schema Framework)
+3. **Extract & Graph** — Entities (processes, IPs, domains, files) and relationships are written to a Kuzu property graph
+4. **Analyze** — An LLM with tool-use capabilities investigates novel behaviors using graph context, threat intel, and external APIs
+5. **Respond** — A policy engine maps severity to actions, checks baselines/allowlists, requests approval, executes, and audits everything
+
+---
+
+## Key Features
+
+### Graph-Based Attack Chain Correlation
+
+Every telemetry event is decomposed into entities and relationships in a [Kuzu](https://kuzudb.com) property graph. This enables reconstructing full attack chains — from initial process spawn to C2 communication — by walking graph edges rather than searching flat logs.
+
+**Graph Schema**: 6 node types, 12 relationship types:
+
+```
+(:User)-[:SPAWNED]->(:Process)-[:CONNECTED_TO]->(:IP)
+                              |-[:RESOLVED]->(:Domain)-[:RESOLVES_TO]->(:IP)
+                              |-[:CREATED_FILE|MODIFIED_FILE|DELETED_FILE]->(:File)
+                              |-[:CREATED_REG|MODIFIED_REG]->(:RegistryKey)
+```
+
+<!-- Attack chain view: process ancestry, findings with Allow/Block, code signing -->
+![Attack Chain](docs/screenshots/attack-chain.png)
+
+<!-- IOC feed match: threat intel finding with IOC-centric chain view -->
+![IOC Feed Match — Attack Chain](docs/screenshots/attack-chain-jsdelivr.png)
+
+
+### LLM Threat Analyzer with Agentic Tool Use
+
+The analyzer uses an LLM (Gemma3-27B via DeepInfra) in an agentic tool-use loop to investigate suspicious behaviors. Rather than simple pattern matching, the LLM reasons about process behavior in the context of full attack chains and iteratively calls investigation tools.
+
+**Investigation tools available to the LLM:**
+
+| Tier | Tool | Source |
+|------|------|--------|
+| 1 | `ip_geolocation` | Free API — country, ISP, ASN, proxy/hosting classification |
+| 1 | `reverse_dns` | Socket lookup |
+| 1 | `whois_lookup` | WHOIS registry |
+| 2 | `abuseipdb_check` | AbuseIPDB API (with graceful fallback) |
+| 2 | `virustotal_lookup` | VirusTotal API (with graceful fallback) |
+| 3 | `mitre_attack_lookup` | Local — bundled MITRE ATT&CK technique database |
+| 3 | `graph_context_query` | Local — query the Kuzu graph for entity relationships |
+| 3 | `lolbins_lookup` | Local — Living-off-the-Land binary detection |
+
+### Graph as LLM Gatekeeper
+
+A typical endpoint generates thousands of events per minute. Sending all of them to an LLM would be prohibitively expensive and slow. The graph database acts as a **gatekeeper** — only events that represent genuinely novel behavior pass through to the LLM.
+
+**How it works:** Before any event reaches the LLM, a preflight filter queries the Kuzu graph to check whether the behavior has been seen before:
+
+- **Process events** — Has this process name been spawned more than *N* times? (`MATCH (u:User)-[:SPAWNED]->(p:Process) WHERE p.name = $name`)
+- **Network events** — Has this process connected to this IP before? (`MATCH (p:Process)-[:CONNECTED_TO]->(ip:IP)`)
+- **Auth events** — Has this user authenticated from this source before?
+
+If the graph edge count exceeds a configurable threshold (default: 5), the event is routine and gets dropped silently. Only novel relationships — a process connecting to a never-before-seen IP, a new process spawning for the first time — are forwarded to the LLM for investigation.
+
+**Additional filtering layers:**
+- A per-platform baseline of ~80 known system processes (e.g. `launchd`, `sshd`, `svchost.exe`) is dropped before the graph query, unless the process has unusual command-line arguments
+- The agent's own processes are excluded via regex matching
+- Tool results within each LLM analysis session are cached to avoid redundant API calls
+
+**Result:** In practice, **~1-5% of events reach the LLM**. This keeps API costs minimal while ensuring that genuinely suspicious behavior — the first time `curl` pipes to `sh`, or a process connects to an IP in a threat intel feed — always gets investigated.
+
+### Multi-Platform Telemetry Collection
+
+| Platform | Collectors |
+|----------|-----------|
+| **macOS** | Unified Log, FSEvents, DNS interception (tcpdump), persistence polling (LaunchAgents/Daemons), process enrichment, Endpoint Security stub |
+| **Windows** | ETW (kernel events), Event Log (Security/System/Sysmon), registry monitoring |
+| **Linux** | auditd (syscall tracing), journald, syslog, auth.log |
+| **Cross-platform** | psutil (process/network polling), TLS SNI extraction, JA3 fingerprinting |
+
+All raw events are normalized to [OCSF](https://schema.ocsf.io/) event classes (ProcessActivity, NetworkActivity, DnsActivity, FileActivity, RegistryActivity, Authentication) before entering the pipeline.
+
+### Response Engine with Human-in-the-Loop
+
+A three-mode response engine that maps LLM severity verdicts to automated or supervised actions:
+
+| Mode | Behavior |
+|------|----------|
+| **Learning** | Records all observed behaviors to a baseline. Never blocks. |
+| **Passive** | Alerts on threats. No enforcement. |
+| **Active** | Enforces response actions with baseline/allowlist/blocklist filtering. |
+
+**Response actions:**
+
+| Action | Description | Platforms |
+|--------|-------------|-----------|
+| `ALERT` | Dashboard + tray notification | All |
+| `SUSPEND_PROCESS` | SIGSTOP / NtSuspendProcess | All |
+| `TERMINATE_PROCESS` | SIGKILL / TerminateProcess | All |
+| `ISOLATE_NETWORK` | Block all network for a PID | pf / iptables / netsh |
+| `BLOCK_CONNECTION` | Block specific IP:port | pf / iptables / netsh |
+| `QUARANTINE_FILE` | Move to quarantine, strip perms, log chain of custody | All |
+| `DNS_SINKHOLE` | Redirect domain to 127.0.0.1 | All |
+| `PANIC_ISOLATE` | Emergency: block all network traffic | All |
+
+**Active mode evaluation order:**
+1. **Blocklist** — force-respond even if baselined (e.g., known C2 indicators)
+2. **Allowlist** — skip response for known-good behaviors
+3. **Baseline** — skip response for behaviors observed during learning
+4. **Policy** — map severity to response actions, check protected process list, request approval
+
+**Protected process list** prevents the agent from terminating system-critical processes (`launchd`, `csrss.exe`, `systemd`, `sshd`, etc.) regardless of severity.
+
+### Chain-Aware Allowlisting
+
+Rules can be scoped to specific process ancestry chains, not just flat attributes. This prevents overly broad allowlists:
+
+```
+# Allow Claude to connect to Anthropic IPs — but ONLY through this chain
+Rule: dst_ip: 18.97.36.79  [chain: launchd > Claude]
+
+# A different process connecting to the same IP is NOT allowlisted
+malware > curl → 18.97.36.79  ← still triggers response
+```
+
+**Chain pattern syntax:**
+- `>` separates process steps
+- `*` matches exactly one process
+- `**` matches zero or more processes
+- Named steps use glob matching (case-insensitive)
+
+Examples:
+```
+Terminal > ** > caffeinate        # Terminal ancestry, any depth
+bash > curl                       # Direct parent
+launchd > * > bash > python*     # One hop from launchd, then bash, then python*
+```
+
+<!-- Allowlist rules with chain_filter scoping visible in Settings -->
+![Allowlist Rules](docs/screenshots/settings.png)
+
+### Real-Time Threat Intelligence
+
+Eight open-source IOC feeds are downloaded, cached, and matched against live telemetry:
+
+| Feed | Coverage |
+|------|----------|
+| **Feodo Tracker** | Botnet C2 server IPs |
+| **Stamparm IPsum** | Aggregated IP reputation (multi-source) |
+| **Blocklist.de** | Attack source IPs |
+| **C2 Tracker** | Active C2 framework IPs (Cobalt Strike, Sliver, etc.) |
+| **Emerging Threats** | Compromised host IPs |
+| **ThreatFox** | Recent malware IOCs (IPs, domains, URLs) |
+| **URLhaus** | Malware distribution URLs |
+| **MalBazaar** | Malware sample SHA-256 hashes |
+
+Feeds are refreshed every 4 hours (configurable). Matches are flagged before reaching the LLM and included as pre-enrichment context.
+
+### Lightweight Real-Time Detectors
+
+These run synchronously on every event (sub-millisecond) — no LLM needed:
+
+- **DGA Detection** — Entropy analysis, consonant-vowel ratios, and English bigram frequency scoring to identify algorithmically generated domains
+- **Persistence Detection** — Monitors LaunchAgent/LaunchDaemon creation (macOS), Registry Run keys (Windows), cron/systemd modifications (Linux)
+- **IOC Feed Matching** — Real-time comparison of IPs, domains, and file hashes against threat intelligence
+- **Code Signing Verification** — Apple certificate chain validation and notarization checks (macOS)
+
+### Dashboard
+
+A single-page web dashboard served by FastAPI on `localhost:9200`:
+
+- **Overview** — Status cards (uptime, event rate, queue depth), severity breakdown, recent findings
+- **Events** — Live event stream with type filtering
+- **Findings** — Severity-filtered finding list with full detail, evidence events, and IOC extraction
+- **Graph Investigation** — Attack chain visualization with process ancestry, network connections, file operations, and DNS resolutions
+- **Settings** — Response mode control, baseline statistics, allowlist/blocklist CRUD, network controls, DNS sinkhole management, panic mode
+
+<!-- Findings list with severity, MITRE ATT&CK mappings, timestamps -->
+![Findings](docs/screenshots/findings.png)
+
+<!-- Live event stream with type-colored badges and source filtering -->
+![Events](docs/screenshots/events.png)
+
+<!-- IOC/IOA tab: DNS queries, DGA scoring, domain-to-finding correlation -->
+![IOC/IOA](docs/screenshots/ioc-ioa.png)
+
+### Self-Protection
+
+- **Tamper Detection** — SHA-256 baseline of all agent source files at startup, verified every 60 seconds. Modifications trigger alerts.
+- **Protected Process List** — Agent and OS-critical processes cannot be terminated by the response engine.
+- **Watchdog/Heartbeat** — Separate heartbeat thread writes timestamps to disk. External watchdog can detect agent failure.
+
+### Observability
+
+Prometheus metrics exported on port 9100:
+
+```
+edr_events_processed_total{source, event_type}
+edr_events_dropped_total{source, reason}
+edr_event_processing_latency_seconds
+edr_llm_call_latency_seconds
+edr_llm_verdicts_total{severity}
+edr_dga_detections_total
+edr_persistence_detections_total{type}
+edr_response_actions_total{action, result}
+edr_tamper_detections_total{event_type}
+edr_agent_uptime_seconds
+edr_queue_depth
+```
+
+macOS system tray icon provides live status, native notifications for HIGH/CRITICAL findings, and quick controls (pause/resume, open dashboard).
+
+---
+
+## Security Framework
+
+```
+                        ┌─────────────────────────┐
+                        │    Threat Intelligence   │
+                        │  8 IOC feeds, refreshed  │
+                        │  every 4h (~50K indicators│
+                        └────────────┬────────────┘
+                                     │
+┌──────────────┐    ┌────────────────▼────────────────┐    ┌──────────────────┐
+│  Lightweight  │    │       LLM Threat Analyzer       │    │  Response Engine  │
+│  Detectors    │    │                                  │    │                  │
+│  ─────────── │    │  Pre-enrichment (IOC, geo, MITRE)│    │  Blocklist       │
+│  DGA scoring  │───▶│  Tool-use loop (up to 5 rounds) │───▶│  Allowlist       │
+│  Persistence  │    │  Graph context (attack chains)   │    │  Baseline        │
+│  IOC matching │    │  Severity verdict + findings     │    │  Approval gate   │
+│  Code signing │    │                                  │    │  Action executor │
+└──────────────┘    └──────────────────────────────────┘    │  Audit trail     │
+                                                            └──────────────────┘
+```
+
+**Defense-in-depth layers:**
+
+1. **Collection** — Native OS APIs for high-fidelity telemetry (ETW, auditd, FSEvents, Unified Log)
+2. **Normalization** — OCSF standardization ensures consistent analysis regardless of platform
+3. **Graph Correlation** — Entity relationships reveal multi-step attack patterns invisible in flat logs
+4. **Real-Time Detection** — DGA, persistence, and IOC detectors catch known patterns immediately
+5. **AI Reasoning** — LLM analyzes novel behaviors with graph context and external intelligence
+6. **Response Orchestration** — Graduated actions (log → alert → suspend → terminate → isolate) with approval gates
+7. **Behavioral Baseline** — Learning mode builds a profile of normal behavior; active mode only responds to deviations
+8. **Self-Protection** — Tamper detection, protected process list, heartbeat monitoring
+
+---
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Language | Python 3.13 |
+| Graph Database | [Kuzu](https://kuzudb.com) (embedded, columnar) |
+| Event Queue / Audit | SQLite (WAL mode, thread-safe) |
+| LLM | Gemma3-27B via DeepInfra (OpenAI-compatible API) |
+| Web Dashboard | FastAPI + vanilla JS SPA |
+| Metrics | Prometheus client |
+| Config | Pydantic + YAML |
+| Process Info | psutil |
+| macOS Tray | rumps |
+| Logging | structlog (JSON/text) |
+| Testing | pytest (~450 tests) |
+
+---
+
+## Quick Start
+
+```bash
+# Clone and set up
+git clone <repo-url> && cd edr-graph
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# Configure (optional — works with defaults)
+export DEEPINFRA_API_KEY="your-key-here"
+
+# Run (requires root for network capture)
+sudo .venv/bin/python3 -m agent.main --config config.yaml --log-level INFO
+```
+
+Dashboard opens at `http://localhost:9200`. The agent starts in **learning mode** by default — switch to **active** mode via the Settings tab when ready to enforce response actions.
+
+---
+
+## Project Structure
+
+```
+edr-graph/
+├── agent/
+│   ├── main.py                 # Pipeline orchestration, thread management
+│   ├── config.py               # Pydantic settings (YAML + env vars)
+│   ├── collectors/             # 10+ platform-native event sources
+│   ├── normalizer/             # OCSF normalization (6 event types)
+│   ├── schema/                 # Kuzu DDL, SQLite DDL, OCSF types
+│   ├── processor/              # Entity extraction → graph writes
+│   ├── graph/                  # Attack chain queries
+│   ├── analyzer/               # LLM tool-use analyzer + preflight
+│   ├── analysis/               # Lightweight detectors (DGA, persistence)
+│   ├── enrichment/             # Code signing, IP reputation, allowlisting
+│   ├── intel/                  # IOC feeds, MITRE ATT&CK, LOLBAS
+│   ├── response/               # Engine, actions, approval, baseline, network control
+│   ├── dashboard/              # FastAPI server + SPA frontend
+│   ├── platform/               # Tamper detection, Windows service
+│   └── tray/                   # macOS menu bar integration
+├── tests/                      # ~40 test modules, ~450 tests
+├── config.yaml                 # Runtime configuration
+└── README.md
+```
+
+---
+
+## Screenshots
+
+| View | Description |
+|------|-------------|
+| [Dashboard Overview](docs/screenshots/dashboard-overview.png) | Status cards, active collectors, threat intel feed stats, recent findings |
+| [Findings](docs/screenshots/findings.png) | Severity-filtered finding list with MITRE ATT&CK technique IDs |
+| [Attack Chain](docs/screenshots/attack-chain.png) | Process ancestry, code signing verification, Allow/Block per finding |
+| [IOC Feed Match](docs/screenshots/attack-chain-jsdelivr.png) | Threat intel feed hit with IOC-centric chain view and response actions |
+| [Events](docs/screenshots/events.png) | Live event stream with type filtering (file, network, DNS, process) |
+| [IOC/IOA](docs/screenshots/ioc-ioa.png) | DNS query log with DGA scoring and finding correlation |
+| [Settings](docs/screenshots/settings.png) | Response mode, baseline stats, allowlist rules with chain filters |
+
+---
+
+## Platform Support
+
+The agent builds and runs on macOS, Linux, and Windows. Each platform uses different OS-level telemetry sources and response mechanisms.
+
+### Telemetry Sources
+
+| Capability | macOS | Linux | Windows |
+|------------|-------|-------|---------|
+| **Process events** | Unified log + psutil | auditd (`execve`) + psutil | ETW Kernel-Process + Sysmon + psutil |
+| **Network connections** | Unified log + psutil | auditd (`connect`) + psutil | ETW Kernel-Network + Sysmon + psutil |
+| **DNS queries** | tcpdump (port 53) | — (via network events) | ETW DNS-Client |
+| **File I/O** | FSEvents (no PID) + persistence poller | auditd (file watches) | ETW Kernel-File |
+| **Registry** | N/A | N/A | ETW Kernel-Registry |
+| **Authentication** | Unified log (authd, securityd) | syslog (auth.log) + auditd | Event Log Security |
+| **TLS fingerprinting** | tcpdump (JA3 from ClientHello) | — | — |
+| **Command line args** | sysctl KERN_PROCARGS2 | auditd / /proc | Sysmon / ETW |
+
+### Response Actions
+
+| Action | macOS | Linux | Windows |
+|--------|-------|-------|---------|
+| **Process suspend/resume** | SIGSTOP / SIGCONT | SIGSTOP / SIGCONT | NtSuspendProcess / NtResumeProcess (ctypes) |
+| **Process terminate** | SIGKILL | SIGKILL | TerminateProcess (ctypes) |
+| **Network isolation** | pf anchor rules (per-IP via lsof) | iptables `--pid-owner` (xt_owner) | netsh advfirewall (per-program) |
+| **Connection blocking** | pf anchor rules | iptables destination match | netsh remoteip rules |
+| **DNS sinkhole** | /etc/hosts + `killall -HUP mDNSResponder` | /etc/hosts + `systemd-resolve --flush-caches` | /etc/hosts |
+| **Panic mode** | pf block-all except lo0 | iptables block-all except lo | netsh block-all except loopback |
+
+### Deployment
+
+| | macOS | Linux | Windows |
+|--|-------|-------|---------|
+| **Install** | Manual / LaunchDaemon | `deploy/install.sh` (systemd service) | `deploy/install.ps1` (Windows Service) |
+| **Runs as** | Root (for tcpdump, pf) | systemd service (edr-graph user) | Windows Service (SYSTEM) |
+| **Tray icon** | Menu bar via rumps | — | — |
+| **Requirements** | Python 3.11+ | Python 3.11+, auditd | Python 3.11+, pywin32 |
+
+### Known Platform Limitations
+
+**macOS**
+- File events from FSEvents do **not** include PID attribution. The Endpoint Security Framework (ESF) would provide this, but requires an Apple-issued `com.apple.developer.endpoint-security.client` entitlement only available to approved signed binaries. An ESF stub exists in the codebase but is not active.
+- pf (packet filter) does not support per-PID network blocking. The agent works around this by using `lsof` to discover a process's active connections and blocking those specific IP:port pairs.
+- No install script — intended to run directly or via a LaunchDaemon.
+
+**Linux**
+- Full auditd integration requires root or `CAP_AUDIT_READ` capability.
+- Per-PID network isolation via iptables requires the `xt_owner` kernel module.
+- No TLS fingerprinting (JA3) — currently macOS only.
+
+**Windows**
+- ETW (Event Tracing for Windows) provides the richest telemetry of all three platforms with kernel-level process, network, file, DNS, and registry events.
+- Requires pywin32 for Windows Service integration and win32evtlog for Event Log access.
+- Process suspend/resume uses undocumented `NtSuspendProcess`/`NtResumeProcess` via ctypes for forensic preservation of process state.
+
+---
+
+## Security Considerations
+
+This project was built as a research EDR agent. The following are known limitations and design tradeoffs — not vulnerabilities — documented here for transparency.
+
+### Dashboard Authentication
+
+The dashboard binds to `127.0.0.1` (localhost only) and has no authentication. This is acceptable for a single-host research agent but would require authentication (e.g. API tokens, mTLS) before exposing to a network.
+
+### Dashboard TLS
+
+The dashboard serves over plain HTTP on localhost. Add a TLS reverse proxy if the dashboard is exposed beyond the loopback interface.
+
+### LLM Tool URL Fetching
+
+The LLM analyzer has HTTP fetch tools that retrieve URLs during investigation. These are intentional by design (the agent needs to query threat intel APIs). The URLs are constrained to configured API endpoints, not arbitrary user input.
+
+### JA3 Fingerprinting Uses MD5
+
+JA3/JA3S TLS fingerprinting uses MD5 hashes. This is required by the [JA3 specification](https://github.com/salesforce/ja3) for compatibility with existing threat intel databases — it is not used for cryptographic security.
+
+### Firewall Rule Injection (Fixed)
+
+IP addresses passed to `pf`/`iptables`/`netsh` firewall commands are validated with `ipaddress.ip_address()` at both the API layer and the network control layer. Ports are validated to the 1-65535 range. This was identified during internal security testing and resolved prior to public release.
+
+### Security Testing
+
+The codebase has been scanned with:
+
+| Tool | Result |
+|------|--------|
+| **bandit** (SAST) | No actionable findings (all flagged items are false positives — JA3 MD5, temp dir monitoring, parameterized SQL) |
+| **pip-audit** | No vulnerable runtime dependencies |
+| **ruff** | 0 lint issues |
+| **Manual code review** | Parameterized SQL throughout, consistent XSS escaping, no `shell=True`, API keys from environment variables only |
+
+---
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE) for details.

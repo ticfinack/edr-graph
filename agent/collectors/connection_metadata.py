@@ -10,8 +10,7 @@ import socket
 import struct
 import subprocess
 import threading
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from .base import Collector, RawEvent

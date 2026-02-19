@@ -10,18 +10,16 @@ import logging
 import sqlite3
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from agent import metrics
 from agent.response.actions import ResponseAction, ResponsePolicy
 from agent.response.approval import ApprovalManager, ApprovalStatus
-from agent.response.baseline import BehaviorBaseline, ResponseAllowlist
-from agent.response.file_quarantine import FileQuarantine, QuarantineResult
-from agent.response.network_control import NetworkControlResult, NetworkIsolator
+from agent.response.baseline import BehaviorBaseline, ResponseAllowlist, ResponseBlocklist
+from agent.response.file_quarantine import FileQuarantine
+from agent.response.network_control import NetworkIsolator
 from agent.response.process_control import (
-    ProcessControlResult,
-    resume_process,
     suspend_process,
     terminate_process,
 )
@@ -156,6 +154,7 @@ class ResponseEngine:
         quarantine_dir: Path | None = None,
         baseline: BehaviorBaseline | None = None,
         allowlist: ResponseAllowlist | None = None,
+        blocklist: ResponseBlocklist | None = None,
     ) -> None:
         self.policy = policy
         self.audit_log = audit_log
@@ -166,6 +165,7 @@ class ResponseEngine:
         )
         self.baseline = baseline
         self.allowlist = allowlist
+        self.blocklist = blocklist
         self._response_mode = "passive"
         self.dns_sinkhole = None  # Set after DnsSinkhole is created
 
@@ -191,6 +191,7 @@ class ResponseEngine:
         dst_ip: str = "",
         domain: str = "",
         finding_title: str = "",
+        chain: list | None = None,
     ) -> list[ResponseRecord]:
         """Execute the full response pipeline for a severity verdict.
 
@@ -219,54 +220,71 @@ class ResponseEngine:
             self.audit_log.record(record)
             return [record]
 
-        # ── Active mode: check allowlist then baseline ──
+        # ── Active mode: blocklist → allowlist → baseline ──
         if self._response_mode == "active":
-            # Check allowlist
-            if self.allowlist:
-                matched, desc = self.allowlist.is_allowed(
+            # Check blocklist first (force respond even if baselined)
+            is_blocklisted = False
+            if self.blocklist:
+                blocked, block_desc = self.blocklist.is_blocked(
                     process_name=process_name or "",
                     dst_ip=dst_ip,
                     domain=domain,
                     file_path=target_path or "",
                     finding_title=finding_title,
+                    chain=chain,
                 )
-                if matched:
-                    record = ResponseRecord(
-                        response_id=f"resp-{uuid.uuid4().hex[:12]}",
-                        event_id=event_id,
-                        timestamp=time.time(),
-                        action_taken=ResponseAction.LOG_ONLY.value,
-                        target_pid=target_pid,
-                        target_path=target_path,
-                        llm_severity=severity,
-                        llm_confidence=confidence,
-                        result="success",
-                        approval_status="not_required",
-                        result_detail=f"allowlisted: {desc}",
-                    )
-                    self.audit_log.record(record)
-                    return [record]
+                if blocked:
+                    is_blocklisted = True
+                    logger.info("Blocklist matched: %s — skipping allowlist/baseline", block_desc)
 
-            # Check baseline
-            if self.baseline and process_name:
-                target = dst_ip or domain or target_path or "unknown"
-                btype = "network" if dst_ip else "dns" if domain else "file"
-                if self.baseline.is_baselined(process_name, btype, target):
-                    record = ResponseRecord(
-                        response_id=f"resp-{uuid.uuid4().hex[:12]}",
-                        event_id=event_id,
-                        timestamp=time.time(),
-                        action_taken=ResponseAction.LOG_ONLY.value,
-                        target_pid=target_pid,
-                        target_path=target_path,
-                        llm_severity=severity,
-                        llm_confidence=confidence,
-                        result="success",
-                        approval_status="not_required",
-                        result_detail="baselined behavior",
+            if not is_blocklisted:
+                # Check allowlist
+                if self.allowlist:
+                    matched, desc = self.allowlist.is_allowed(
+                        process_name=process_name or "",
+                        dst_ip=dst_ip,
+                        domain=domain,
+                        file_path=target_path or "",
+                        finding_title=finding_title,
+                        chain=chain,
                     )
-                    self.audit_log.record(record)
-                    return [record]
+                    if matched:
+                        record = ResponseRecord(
+                            response_id=f"resp-{uuid.uuid4().hex[:12]}",
+                            event_id=event_id,
+                            timestamp=time.time(),
+                            action_taken=ResponseAction.LOG_ONLY.value,
+                            target_pid=target_pid,
+                            target_path=target_path,
+                            llm_severity=severity,
+                            llm_confidence=confidence,
+                            result="success",
+                            approval_status="not_required",
+                            result_detail=f"allowlisted: {desc}",
+                        )
+                        self.audit_log.record(record)
+                        return [record]
+
+                # Check baseline
+                if self.baseline and process_name:
+                    target = dst_ip or domain or target_path or "unknown"
+                    btype = "network" if dst_ip else "dns" if domain else "file"
+                    if self.baseline.is_baselined(process_name, btype, target):
+                        record = ResponseRecord(
+                            response_id=f"resp-{uuid.uuid4().hex[:12]}",
+                            event_id=event_id,
+                            timestamp=time.time(),
+                            action_taken=ResponseAction.LOG_ONLY.value,
+                            target_pid=target_pid,
+                            target_path=target_path,
+                            llm_severity=severity,
+                            llm_confidence=confidence,
+                            result="success",
+                            approval_status="not_required",
+                            result_detail="baselined behavior",
+                        )
+                        self.audit_log.record(record)
+                        return [record]
 
         # ── Passive / Active (non-baselined): normal severity → actions ──
         actions = self.policy.get_actions(severity)

@@ -9,6 +9,7 @@ Tracks all rules added so they can be reverted.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import subprocess
@@ -432,6 +433,24 @@ class NetworkIsolator:
 
         macOS: pf anchor rule.  Linux: iptables rule.  Windows: netsh rule.
         """
+        # Validate IP to prevent injection into firewall commands
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            return NetworkControlOutcome(
+                result=NetworkControlResult.FAILED,
+                pid=0,
+                action="block_connection",
+                detail=f"Invalid IP address: {ip!r}",
+            )
+        if port is not None and not (1 <= port <= 65535):
+            return NetworkControlOutcome(
+                result=NetworkControlResult.FAILED,
+                pid=0,
+                action="block_connection",
+                detail=f"Invalid port: {port}",
+            )
+
         key = (ip, port)
         if key in self._blocked_connections:
             return NetworkControlOutcome(
@@ -508,6 +527,17 @@ class NetworkIsolator:
         self, ip: str, port: int | None = None
     ) -> NetworkControlOutcome:
         """Remove a connection block for a specific IP (optionally port)."""
+        # Validate IP to prevent injection into firewall commands
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            return NetworkControlOutcome(
+                result=NetworkControlResult.FAILED,
+                pid=0,
+                action="unblock_connection",
+                detail=f"Invalid IP address: {ip!r}",
+            )
+
         key = (ip, port)
         if key not in self._blocked_connections:
             return NetworkControlOutcome(

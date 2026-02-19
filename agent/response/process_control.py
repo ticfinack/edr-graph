@@ -182,7 +182,6 @@ def _suspend_windows(pid: int) -> ProcessControlOutcome:
     """Use NtSuspendProcess to freeze a process on Windows."""
     try:
         import ctypes
-        from ctypes import wintypes
 
         PROCESS_SUSPEND_RESUME = 0x0800
         kernel32 = ctypes.windll.kernel32

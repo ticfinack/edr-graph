@@ -11,11 +11,10 @@ Binds to 127.0.0.1 only (localhost). No authentication for v1.
 from __future__ import annotations
 
 import collections
-import json
+import ipaddress
 import logging
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +22,6 @@ import kuzu
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from prometheus_client import REGISTRY
 
 from agent import metrics
@@ -222,6 +220,108 @@ async def get_attack_chain(pid: int):
     return chain
 
 
+@app.get("/api/graph/ioc-chain/{finding_id}")
+async def get_ioc_chain(finding_id: str):
+    """Build an attack-chain-compatible view for IOC/feed findings without PIDs.
+
+    Uses the finding's own chain data + graph domain resolution to produce
+    a structure that renderChain() can display.
+    """
+    queue = _get_queue()
+    finding = None
+    for f in queue.get_findings(limit=500):
+        if f.id == finding_id:
+            finding = f
+            break
+    if finding is None:
+        raise HTTPException(404, "Finding not found")
+
+    conn = _get_conn()
+    iocs = finding.iocs or {}
+    chain = finding.chain or []
+
+    # Build process chain from finding's chain steps
+    process_chain = []
+    for step in chain:
+        s = step if isinstance(step, dict) else {
+            "entity_type": step.entity_type,
+            "entity_id": step.entity_id,
+            "entity_name": step.entity_name,
+            "pid": getattr(step, "pid", None),
+        }
+        if s.get("entity_type") == "process":
+            process_chain.append({
+                "name": s.get("entity_name", "?"),
+                "pid": s.get("pid") or 0,
+                "type": "process",
+            })
+
+    # Gather domain resolution data from graph
+    domains_data = []
+    for domain in iocs.get("domains", []):
+        history = gq.get_domain_resolution_history(conn, domain)
+        domains_data.append({
+            "name": domain,
+            "resolved_ips": history,
+        })
+
+    # Gather IP enrichment from graph
+    ips_data = []
+    for ip in iocs.get("ips", []):
+        try:
+            result = conn.execute(
+                "MATCH (i:IP {address: $ip}) "
+                "RETURN i.address, i.classification, i.provider_name, "
+                "i.isp, i.country, i.reverse_dns",
+                {"ip": ip},
+            )
+            if result.has_next():
+                row = result.get_next()
+                ips_data.append({
+                    "address": row[0],
+                    "classification": row[1] or "unclassified",
+                    "provider_name": row[2] or "",
+                    "isp": row[3] or "",
+                    "country": row[4] or "",
+                    "reverse_dns": row[5] or "",
+                })
+            else:
+                ips_data.append({"address": ip, "classification": "unclassified"})
+        except Exception:
+            ips_data.append({"address": ip, "classification": "unclassified"})
+
+    # Build attack-chain-compatible response
+    return {
+        "process_chain": process_chain,
+        "target_process": process_chain[0] if process_chain else None,
+        "child_processes": [],
+        "network_footprint": {
+            "domains": [{"name": d["name"], "is_dga_candidate": False} for d in domains_data],
+            "ips": [{"address": ip["address"], "port": None,
+                     "classification": ip.get("classification", ""),
+                     "provider_name": ip.get("provider_name", "")}
+                    for ip in ips_data],
+            "listening_ports": [],
+        },
+        "file_activity": [],
+        "risk_indicators": [],
+        "findings": [{
+            "id": finding.id,
+            "severity": finding.severity,
+            "title": finding.title,
+            "description": finding.description,
+            "recommendation": finding.recommendation,
+            "timestamp": finding.timestamp.isoformat(),
+            "affected_entities": finding.affected_entities,
+            "evidence_event_ids": finding.evidence_event_ids,
+            "iocs": iocs,
+        }],
+        # Extra fields for IOC-centric view
+        "ioc_domains": domains_data,
+        "ioc_ips": ips_data,
+    }
+
+
 @app.get("/api/graph/ioc-summary")
 async def get_ioc_summary():
     """Global IOC/IOA summary: all domains, external IPs, and file activity.
@@ -397,7 +497,6 @@ async def get_audit_trail(
     offset: int = Query(0, ge=0),
 ):
     """Response action audit trail."""
-    from agent.response.engine import ResponseAuditLog
     import sqlite3
 
     settings = _get_settings()
@@ -639,12 +738,15 @@ async def add_allowlist_rule(body: dict):
     rule_type = body.get("rule_type", "")
     pattern = body.get("pattern", "")
     description = body.get("description", "")
+    chain_filter = body.get("chain_filter", "")
     if not rule_type or not pattern:
         raise HTTPException(400, "rule_type and pattern are required")
     try:
-        rule_id = allowlist.add_rule(rule_type, pattern, description)
+        rule_id = allowlist.add_rule(rule_type, pattern, description, chain_filter=chain_filter)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Database error: {e}")
     return {"status": "ok", "rule_id": rule_id}
 
 
@@ -659,6 +761,47 @@ async def delete_allowlist_rule(rule_id: int):
     return {"status": "ok"}
 
 
+@app.get("/api/response/blocklist")
+async def get_blocklist():
+    """Get all blocklist rules."""
+    blocklist = _state.get("blocklist")
+    if blocklist is None:
+        return {"rules": []}
+    return {"rules": blocklist.get_rules()}
+
+
+@app.post("/api/response/blocklist")
+async def add_blocklist_rule(body: dict):
+    """Add a blocklist rule."""
+    blocklist = _state.get("blocklist")
+    if blocklist is None:
+        raise HTTPException(503, "Blocklist not initialized")
+    rule_type = body.get("rule_type", "")
+    pattern = body.get("pattern", "")
+    description = body.get("description", "")
+    chain_filter = body.get("chain_filter", "")
+    if not rule_type or not pattern:
+        raise HTTPException(400, "rule_type and pattern are required")
+    try:
+        rule_id = blocklist.add_rule(rule_type, pattern, description, chain_filter=chain_filter)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Database error: {e}")
+    return {"status": "ok", "rule_id": rule_id}
+
+
+@app.delete("/api/response/blocklist/{rule_id}")
+async def delete_blocklist_rule(rule_id: int):
+    """Delete a blocklist rule."""
+    blocklist = _state.get("blocklist")
+    if blocklist is None:
+        raise HTTPException(503, "Blocklist not initialized")
+    if not blocklist.remove_rule(rule_id):
+        raise HTTPException(404, "Rule not found")
+    return {"status": "ok"}
+
+
 @app.post("/api/response/block-connection")
 async def block_connection(body: dict):
     """Block traffic to a specific IP:port."""
@@ -669,8 +812,14 @@ async def block_connection(body: dict):
     port = body.get("port")
     if not ip:
         raise HTTPException(400, "ip is required")
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        raise HTTPException(400, f"Invalid IP address: {ip!r}")
     if port is not None:
         port = int(port)
+        if not (1 <= port <= 65535):
+            raise HTTPException(400, f"Invalid port: {port}")
     outcome = engine.network_isolator.block_connection(ip, port)
     return {"status": outcome.result.value, "detail": outcome.detail}
 
@@ -685,8 +834,14 @@ async def unblock_connection(body: dict):
     port = body.get("port")
     if not ip:
         raise HTTPException(400, "ip is required")
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        raise HTTPException(400, f"Invalid IP address: {ip!r}")
     if port is not None:
         port = int(port)
+        if not (1 <= port <= 65535):
+            raise HTTPException(400, f"Invalid port: {port}")
     outcome = engine.network_isolator.unblock_connection(ip, port)
     return {"status": outcome.result.value, "detail": outcome.detail}
 
@@ -818,6 +973,7 @@ def init_dashboard(
     response_engine=None,
     baseline=None,
     allowlist=None,
+    blocklist=None,
 ) -> None:
     """Initialize dashboard state. Called once from main.py."""
     _state["queue"] = queue
@@ -829,6 +985,7 @@ def init_dashboard(
     _state["response_engine"] = response_engine
     _state["baseline"] = baseline
     _state["allowlist"] = allowlist
+    _state["blocklist"] = blocklist
 
 
 def start_dashboard_server(port: int = 9200) -> threading.Thread:

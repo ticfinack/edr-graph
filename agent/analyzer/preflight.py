@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 
 import kuzu
@@ -109,8 +110,6 @@ _WINDOWS_SYSTEM_BASELINE: frozenset[str] = frozenset({
     "MsMpEng.exe", "NisSrv.exe",
 })
 
-
-import re
 
 # Patterns for the EDR agent's own processes and its launcher (Claude Code).
 # Claude Code's binary lives under ~/.local/share/claude/versions/<semver>

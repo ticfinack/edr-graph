@@ -18,6 +18,134 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _match_chain_pattern(chain_names: list[str], pattern_parts: list[str]) -> bool:
+    """Match a list of process names against a chain pattern.
+
+    Pattern parts are separated by '>' (already split and stripped).
+    Named steps match via fnmatch (case-insensitive).
+    '*' matches exactly one process in the chain.
+    '**' matches zero or more processes in the chain.
+
+    The pattern is anchored at the END of the chain (must consume through the
+    last chain element) but un-anchored at the start — it can begin matching
+    at any position.  E.g. ``bash > caffeinate`` matches the tail of
+    ``launchd > Terminal > … > bash > caffeinate``.
+    """
+    for start in range(len(chain_names)):
+        if _match_chain_recursive(chain_names, start, pattern_parts, 0):
+            return True
+    # Edge case: empty chain can match an all-** pattern
+    if not chain_names:
+        return _match_chain_recursive(chain_names, 0, pattern_parts, 0)
+    return False
+
+
+def _match_chain_recursive(
+    chain: list[str], ci: int, pattern: list[str], pi: int
+) -> bool:
+    # Base case: pattern exhausted
+    if pi == len(pattern):
+        return ci == len(chain)
+
+    part = pattern[pi]
+
+    if part == "**":
+        # '**' matches zero or more chain steps
+        # Try consuming 0, 1, 2, ... chain steps
+        for skip in range(ci, len(chain) + 1):
+            if _match_chain_recursive(chain, skip, pattern, pi + 1):
+                return True
+        return False
+
+    # Need at least one chain element to match
+    if ci >= len(chain):
+        return False
+
+    if part == "*":
+        # '*' matches exactly one chain step
+        return _match_chain_recursive(chain, ci + 1, pattern, pi + 1)
+
+    # Named step: match via fnmatch (case-insensitive)
+    if fnmatch.fnmatch(chain[ci].lower(), part.lower()):
+        return _match_chain_recursive(chain, ci + 1, pattern, pi + 1)
+
+    return False
+
+
+def _extract_chain_names(chain: list) -> list[str]:
+    """Extract process names from a chain (list of objects or dicts)."""
+    if not chain:
+        return []
+    if hasattr(chain[0], "entity_type"):
+        return [s.entity_name for s in chain if s.entity_type == "process"]
+    return [
+        s["entity_name"]
+        for s in chain
+        if s.get("entity_type") == "process"
+    ]
+
+
+def _match_rule(
+    rule: dict,
+    process_name: str = "",
+    dst_ip: str = "",
+    domain: str = "",
+    file_path: str = "",
+    finding_title: str = "",
+    chain: list | None = None,
+) -> bool:
+    """Shared matching logic for a single rule against the given attributes.
+
+    If the rule has a non-empty ``chain_filter``, the chain must also match
+    the filter pattern for the rule to apply.  This allows scoping IOC-based
+    rules (domain, dst_ip, …) to a specific process ancestry.
+
+    Returns True if the rule matches.
+    """
+    rt = rule["rule_type"]
+    pat = rule["pattern"]
+
+    # Check chain_filter first — if present, chain must match it
+    chain_filter = rule.get("chain_filter", "")
+    if chain_filter:
+        if chain is None:
+            return False
+        chain_names = _extract_chain_names(chain)
+        filter_parts = [p.strip() for p in chain_filter.split(">")]
+        if not _match_chain_pattern(chain_names, filter_parts):
+            return False
+
+    if rt == "chain_pattern" and chain is not None:
+        chain_names = _extract_chain_names(chain)
+        pattern_parts = [p.strip() for p in pat.split(">")]
+        return _match_chain_pattern(chain_names, pattern_parts)
+
+    if rt == "process_name" and process_name:
+        return fnmatch.fnmatch(process_name.lower(), pat.lower())
+
+    if rt == "dst_ip" and dst_ip:
+        return dst_ip == pat
+
+    if rt == "dst_cidr" and dst_ip:
+        try:
+            return ipaddress.ip_address(dst_ip) in ipaddress.ip_network(
+                pat, strict=False
+            )
+        except ValueError:
+            return False
+
+    if rt == "domain" and domain:
+        return domain.lower() == pat.lower()
+
+    if rt == "file_path" and file_path:
+        return fnmatch.fnmatch(file_path, pat)
+
+    if rt == "finding_title" and finding_title:
+        return fnmatch.fnmatch(finding_title, pat)
+
+    return False
+
+
 class BehaviorBaseline:
     """Records observed process→network/file behaviors. Thread-safe."""
 
@@ -120,32 +248,42 @@ class ResponseAllowlist:
         "domain",
         "file_path",
         "finding_title",
+        "chain_pattern",
     }
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = str(db_path)
+        self._migrated = False
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
+        if not self._migrated:
+            try:
+                conn.execute("ALTER TABLE response_allowlist ADD COLUMN chain_filter TEXT NOT NULL DEFAULT ''")
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
+            self._migrated = True
         return conn
 
-    def add_rule(self, rule_type: str, pattern: str, description: str = "") -> int:
+    def add_rule(self, rule_type: str, pattern: str, description: str = "", chain_filter: str = "") -> int:
         """Add an allowlist rule. Returns rule ID.
 
         rule_type: "process_name", "dst_ip", "dst_cidr", "domain", "file_path", "finding_title"
         pattern: glob for process/file/title, CIDR for dst_cidr, exact for domain/dst_ip
+        chain_filter: optional chain pattern that must also match for the rule to apply
         """
         if rule_type not in self.VALID_RULE_TYPES:
             raise ValueError(f"Invalid rule_type: {rule_type}")
         conn = self._conn()
         try:
             cur = conn.execute(
-                "INSERT INTO response_allowlist (rule_type, pattern, description) "
-                "VALUES (?, ?, ?)",
-                (rule_type, pattern, description),
+                "INSERT INTO response_allowlist (rule_type, pattern, description, chain_filter) "
+                "VALUES (?, ?, ?, ?)",
+                (rule_type, pattern, description, chain_filter),
             )
             conn.commit()
             return cur.lastrowid
@@ -171,6 +309,7 @@ class ResponseAllowlist:
         domain: str = "",
         file_path: str = "",
         finding_title: str = "",
+        chain: list | None = None,
     ) -> tuple[bool, str]:
         """Check if any allowlist rule matches. Returns (matched, rule_description)."""
         conn = self._conn()
@@ -182,33 +321,17 @@ class ResponseAllowlist:
             conn.close()
 
         for rule in rules:
-            rt = rule["rule_type"]
-            pat = rule["pattern"]
-            desc = rule["description"] or pat
-
-            if rt == "process_name" and process_name:
-                if fnmatch.fnmatch(process_name.lower(), pat.lower()):
-                    return True, desc
-            elif rt == "dst_ip" and dst_ip:
-                if dst_ip == pat:
-                    return True, desc
-            elif rt == "dst_cidr" and dst_ip:
-                try:
-                    if ipaddress.ip_address(dst_ip) in ipaddress.ip_network(
-                        pat, strict=False
-                    ):
-                        return True, desc
-                except ValueError:
-                    pass
-            elif rt == "domain" and domain:
-                if domain.lower() == pat.lower():
-                    return True, desc
-            elif rt == "file_path" and file_path:
-                if fnmatch.fnmatch(file_path, pat):
-                    return True, desc
-            elif rt == "finding_title" and finding_title:
-                if fnmatch.fnmatch(finding_title, pat):
-                    return True, desc
+            desc = rule["description"] or rule["pattern"]
+            if _match_rule(
+                dict(rule),
+                process_name=process_name,
+                dst_ip=dst_ip,
+                domain=domain,
+                file_path=file_path,
+                finding_title=finding_title,
+                chain=chain,
+            ):
+                return True, desc
 
         return False, ""
 
@@ -218,6 +341,114 @@ class ResponseAllowlist:
         try:
             rows = conn.execute(
                 "SELECT * FROM response_allowlist ORDER BY id"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+
+class ResponseBlocklist:
+    """User-defined rules that force response actions even if baselined.
+
+    Same structure as ResponseAllowlist but semantics are inverted:
+    a matched rule means "always respond to this behavior".
+    """
+
+    VALID_RULE_TYPES = {
+        "process_name",
+        "dst_ip",
+        "dst_cidr",
+        "domain",
+        "file_path",
+        "finding_title",
+        "chain_pattern",
+    }
+
+    def __init__(self, db_path: Path) -> None:
+        self._db_path = str(db_path)
+        self._migrated = False
+
+    def _conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        if not self._migrated:
+            try:
+                conn.execute("ALTER TABLE response_blocklist ADD COLUMN chain_filter TEXT NOT NULL DEFAULT ''")
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
+            self._migrated = True
+        return conn
+
+    def add_rule(self, rule_type: str, pattern: str, description: str = "", chain_filter: str = "") -> int:
+        """Add a blocklist rule. Returns rule ID."""
+        if rule_type not in self.VALID_RULE_TYPES:
+            raise ValueError(f"Invalid rule_type: {rule_type}")
+        conn = self._conn()
+        try:
+            cur = conn.execute(
+                "INSERT INTO response_blocklist (rule_type, pattern, description, chain_filter) "
+                "VALUES (?, ?, ?, ?)",
+                (rule_type, pattern, description, chain_filter),
+            )
+            conn.commit()
+            return cur.lastrowid
+        finally:
+            conn.close()
+
+    def remove_rule(self, rule_id: int) -> bool:
+        """Remove a rule by ID. Returns True if a rule was deleted."""
+        conn = self._conn()
+        try:
+            cur = conn.execute(
+                "DELETE FROM response_blocklist WHERE id = ?", (rule_id,)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def is_blocked(
+        self,
+        process_name: str = "",
+        dst_ip: str = "",
+        domain: str = "",
+        file_path: str = "",
+        finding_title: str = "",
+        chain: list | None = None,
+    ) -> tuple[bool, str]:
+        """Check if any blocklist rule matches. Returns (matched, rule_description)."""
+        conn = self._conn()
+        try:
+            rules = conn.execute(
+                "SELECT * FROM response_blocklist ORDER BY id"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        for rule in rules:
+            desc = rule["description"] or rule["pattern"]
+            if _match_rule(
+                dict(rule),
+                process_name=process_name,
+                dst_ip=dst_ip,
+                domain=domain,
+                file_path=file_path,
+                finding_title=finding_title,
+                chain=chain,
+            ):
+                return True, desc
+
+        return False, ""
+
+    def get_rules(self) -> list[dict]:
+        """Return all rules for dashboard display."""
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM response_blocklist ORDER BY id"
             ).fetchall()
             return [dict(r) for r in rows]
         finally:

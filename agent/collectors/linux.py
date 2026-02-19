@@ -133,7 +133,7 @@ class LinuxCollector(Collector):
         type_match = re.search(r"type=(\S+)", line)
         if type_match:
             fields["audit_type"] = type_match.group(1)
-        for match in re.finditer(r"(\w+)=(?:"([^"]*)"|([\S]+))", line):
+        for match in re.finditer(r'(\w+)=(?:"([^"]*)"|([\S]+))', line):
             key = match.group(1)
             value = match.group(2) if match.group(2) is not None else match.group(3)
             fields[key] = value

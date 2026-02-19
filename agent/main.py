@@ -15,7 +15,24 @@ import webbrowser
 
 import kuzu
 
+from agent import metrics
+from agent.analyzer.llm_analyzer import LlmAnalyzer
+from agent.analyzer.preflight import is_novel
+from agent.collectors import collect_all, get_collectors
+from agent.collectors.base import RawEvent
+from agent.config import Settings, load_settings
+from agent.health import start_health_server
 from agent.logging_setup import setup_logging
+from agent.normalizer import normalize
+from agent.platform.tamper_detection import TamperChecker
+from agent.processor.entity_extractor import extract_entities
+from agent.processor.graph_builder import GraphBuilder
+from agent.queue.sqlite_queue import SqliteQueue
+from agent.response.actions import ResponsePolicy
+from agent.response.baseline import BehaviorBaseline, ResponseAllowlist, ResponseBlocklist
+from agent.response.engine import ResponseAuditLog, ResponseEngine
+from agent.schema.kuzu_schema import init_graph_schema
+from agent.watchdog import write_heartbeat
 
 # macOS process enrichment (optional)
 _enrich_process = None
@@ -25,23 +42,6 @@ try:
         _enrich_process = enrich_process_event
 except ImportError:
     pass
-from agent.health import start_health_server
-from agent import metrics
-from agent.analyzer.llm_analyzer import LlmAnalyzer
-from agent.analyzer.preflight import is_novel
-from agent.collectors import collect_all, get_collectors
-from agent.collectors.base import RawEvent
-from agent.config import Settings, load_settings
-from agent.normalizer import normalize
-from agent.processor.entity_extractor import extract_entities
-from agent.processor.graph_builder import GraphBuilder
-from agent.queue.sqlite_queue import SqliteQueue
-from agent.platform.tamper_detection import TamperChecker
-from agent.response.actions import ResponsePolicy
-from agent.response.baseline import BehaviorBaseline, ResponseAllowlist
-from agent.response.engine import ResponseAuditLog, ResponseEngine
-from agent.schema.kuzu_schema import init_graph_schema
-from agent.watchdog import write_heartbeat
 
 logger = logging.getLogger("agent")
 
@@ -312,6 +312,7 @@ def _trigger_response(
         dst_ip=dst_ip,
         domain=domain,
         finding_title=finding.title,
+        chain=finding.chain,
     )
 
     for rec in records:
@@ -669,12 +670,14 @@ def main() -> None:
     audit_log = ResponseAuditLog(response_conn)
     baseline = BehaviorBaseline(settings.db_path)
     allowlist = ResponseAllowlist(settings.db_path)
+    blocklist = ResponseBlocklist(settings.db_path)
     response_engine = ResponseEngine(
         policy=policy,
         audit_log=audit_log,
         quarantine_dir=settings.quarantine_dir,
         baseline=baseline,
         allowlist=allowlist,
+        blocklist=blocklist,
     )
     response_engine.set_mode(settings.response_mode)
 
@@ -796,6 +799,7 @@ def main() -> None:
                 response_engine=response_engine,
                 baseline=baseline,
                 allowlist=allowlist,
+                blocklist=blocklist,
             )
             start_dashboard_server(port=settings.dashboard_port)
             logger.info("Dashboard server started on http://127.0.0.1:%d", settings.dashboard_port)

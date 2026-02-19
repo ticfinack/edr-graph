@@ -7,7 +7,7 @@ import plistlib
 import platform
 import subprocess
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)

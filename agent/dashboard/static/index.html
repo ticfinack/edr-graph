@@ -192,6 +192,7 @@ svg .edge-arrow{fill:var(--dim)}
     </span>
   </div>
   <div class="graph-container" id="graph-area"><div class="empty-state">Enter a PID to view its graph</div></div>
+  <div id="graph-ab-container"></div>
 </div>
 
 <!-- ── Events ────────────────────────────────────────────────────── -->
@@ -328,7 +329,7 @@ async function refreshOverview() {
         const ago = fmtAgo(f.timestamp);
         const isFeedMatch = f.title && (f.title.startsWith('Known Botnet') || f.title.startsWith('Known Malicious') || f.title.startsWith('Known Malware'));
         const feedBadge = isFeedMatch ? '<span class="feed-match-badge">Feed Match</span>' : '';
-        return '<div class="clickable" style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px" onclick="switchTab(\'findings\')">' +
+        return '<div class="clickable" style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px" onclick="navigateToFindingChain(\'' + f.id + '\')">' +
           '<span class="severity-badge severity-' + sev + '">' + sev + '</span>' + feedBadge +
           '<span style="flex:1">' + esc(f.title) + '</span>' +
           '<span style="color:var(--dim);font-size:12px">' + ago + '</span></div>';
@@ -376,7 +377,7 @@ async function refreshFindings() {
     const tech = (f.description||'').match(/T\d{4}(\.\d{3})?/)?.[0] || '—';
     const isFeedMatch = f.title && (f.title.startsWith('Known Botnet') || f.title.startsWith('Known Malicious') || f.title.startsWith('Known Malware'));
     const feedBadge = isFeedMatch ? '<span class="feed-match-badge">Feed Match</span>' : '';
-    return '<tr class="clickable" onclick="showFindingDetail(\'' + f.id + '\')">' +
+    return '<tr class="clickable" onclick="navigateToFindingChain(\'' + f.id + '\')">' +
       '<td><span class="severity-badge severity-' + sev + '">' + sev + '</span>' + feedBadge + '</td>' +
       '<td class="mono">' + time + '</td>' +
       '<td>' + esc(f.title) + '</td>' +
@@ -415,79 +416,60 @@ function renderFindingIOCs(iocs) {
   return html;
 }
 
-async function showFindingDetail(id) {
+async function navigateToFindingChain(id) {
   const f = await api('/api/findings/' + id);
   if (!f) return;
   currentFinding = f;
-  const sev = f.severity.toLowerCase();
-  const el = document.getElementById('findings-detail');
 
-  // Collect PIDs from chain steps, affected_pids, and affected_entities (filter out 0/null)
+  // Collect PIDs from chain steps, affected_pids, and affected_entities
   const pidSet = new Set();
   (f.chain||[]).forEach(s => { if (s.pid && s.pid > 0) pidSet.add(s.pid); });
   (f.affected_pids||[]).forEach(p => { if (p && p > 0) pidSet.add(p); });
-  // Extract PIDs from affected_entities strings like "pid:1234" or "hostname:1234:..."
   (f.affected_entities||[]).forEach(e => {
     const m = String(e).match(/(?:^pid:|:)(\d{2,})(?::|$)/);
     if (m) { const n = parseInt(m[1]); if (n > 0) pidSet.add(n); }
   });
   const pids = Array.from(pidSet);
 
-  // Collect process names from chain (for name-based lookup fallback)
-  const processNames = [];
-  (f.chain||[]).forEach(s => {
-    if (s.entity_type === 'process' && s.entity_name) processNames.push(s.entity_name);
-  });
-
-  // Build per-PID buttons — every finding should have at least one PID since
-  // every event flows through a process (user → shell → action)
-  let pidButtons = '<div style="margin-top:12px"><h4 style="color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Investigate Process</h4><div style="display:flex;flex-wrap:wrap;gap:6px">';
   if (pids.length > 0) {
-    pids.forEach(pid => {
-      const step = (f.chain||[]).find(s => s.pid === pid);
-      const label = step ? 'PID ' + pid + ': ' + esc(step.entity_name) : 'PID ' + pid;
-      pidButtons += '<button class="btn" onclick="loadGraphForPid(\'chain\',' + pid + ')">' + label + '</button>';
-    });
+    loadGraphForPid('chain', pids[0]);
+    return;
   }
-  // Always offer name-based lookup for process names not already covered by PIDs
-  const coveredNames = new Set(pids.map(pid => { const s = (f.chain||[]).find(s => s.pid === pid); return s ? s.entity_name : null; }).filter(Boolean));
-  const uncoveredNames = [...new Set(processNames)].filter(n => !coveredNames.has(n));
-  uncoveredNames.forEach(name => {
-    pidButtons += '<button class="btn" onclick="lookupProcessByName(\'' + esc(name) + '\')">' + esc(name) + ' (find PID)</button>';
-  });
-  if (pids.length === 0 && uncoveredNames.length === 0) {
-    pidButtons += '<span style="color:var(--dim);font-size:12px">No process info — enter a PID on the Graph tab</span>';
-  }
-  pidButtons += '</div></div>';
 
-  // Graph action buttons
-  let graphBtns = '<div style="margin-top:16px;display:flex;gap:8px;align-items:center">';
-  if (pids.length > 0) {
-    graphBtns += '<button class="btn btn-primary" onclick="loadGraphForPid(\'chain\',' + pids[0] + ')">View Attack Chain</button>';
-    graphBtns += '<button class="btn" onclick="loadGraphForPid(\'tree\',' + pids[0] + ')">View Process Tree</button>';
-    graphBtns += '<button class="btn" onclick="loadGraphForPid(\'network\',' + pids[0] + ')">View Network</button>';
-  } else if (uncoveredNames.length > 0) {
-    graphBtns += '<button class="btn btn-primary" onclick="lookupProcessByName(\'' + esc(uncoveredNames[0]) + '\')">View Attack Chain (' + esc(uncoveredNames[0]) + ')</button>';
+  // Fallback: try name-based lookup (skip PID 0 matches)
+  const processNames = (f.chain||[]).filter(s => s.entity_type === 'process' && s.entity_name).map(s => s.entity_name);
+  if (processNames.length > 0) {
+    const data = await api('/api/graph/process-by-name/' + encodeURIComponent(processNames[0]));
+    if (data && data.matches) {
+      const validMatch = data.matches.find(m => m.pid && m.pid > 0);
+      if (validMatch) {
+        loadGraphForPid('chain', validMatch.pid);
+        return;
+      }
+    }
   }
-  graphBtns += '</div>';
 
-  el.innerHTML = '<div class="detail-panel">' +
-    '<div style="display:flex;justify-content:space-between;align-items:center">' +
-      '<span class="severity-badge severity-' + sev + '" style="font-size:14px;padding:4px 12px">' + sev.toUpperCase() + '</span>' +
-      '<button class="btn" onclick="document.getElementById(\'findings-detail\').innerHTML=\'\';currentFinding=null;">&times; Close</button></div>' +
-    '<h3 style="margin-top:12px;font-size:16px">' + esc(f.title) + '</h3>' +
-    '<div class="detail-grid" style="margin-top:12px">' +
-      '<dt>Time</dt><dd class="mono">' + new Date(f.timestamp).toLocaleString() + '</dd>' +
-      '<dt>Entities</dt><dd>' + (f.affected_entities||[]).join(', ') + '</dd>' +
-      '<dt>Evidence IDs</dt><dd class="mono">' + (f.evidence_event_ids||[]).join(', ') + '</dd>' +
-      (pids.length > 0 ? '<dt>PIDs</dt><dd class="mono">' + pids.join(', ') + '</dd>' : '') +
-    '</div>' +
-    '<div class="detail-section"><h4>Description</h4><pre>' + esc(f.description||'') + '</pre></div>' +
-    (f.recommendation ? '<div class="detail-section"><h4>Recommendation</h4><pre>' + esc(f.recommendation) + '</pre></div>' : '') +
-    renderFindingIOCs(f.iocs || {}) +
-    pidButtons +
-    graphBtns +
-    '</div>';
+  // IOC/feed finding — load IOC-centric chain view
+  switchTab('graph');
+  graphMode = 'chain';
+  document.querySelectorAll('.graph-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === 'chain'));
+  const area = document.getElementById('graph-area');
+  const abContainer = document.getElementById('graph-ab-container');
+  area.innerHTML = '<div class="empty-state">Loading...</div>';
+  if (abContainer) abContainer.innerHTML = '';
+  const iocData = await api('/api/graph/ioc-chain/' + id);
+  if (iocData) {
+    renderChain(area, iocData);
+    if (abContainer) {
+      let abHtml = '<div style="margin-top:12px;display:flex;gap:8px;align-items:center">';
+      abHtml += '<button class="btn" style="background:rgba(34,197,94,0.15);color:var(--low);border-color:var(--low)" onclick="showAllowBlockForm(currentFinding,\'allow\')">Allow This Behavior</button>';
+      abHtml += '<button class="btn" style="background:rgba(239,68,68,0.15);color:var(--critical);border-color:var(--critical)" onclick="showAllowBlockForm(currentFinding,\'block\')">Block This Behavior</button>';
+      abHtml += '</div>';
+      abContainer.innerHTML = abHtml;
+    }
+  } else {
+    area.innerHTML = '<div class="empty-state">No graph data available for this finding.</div>';
+  }
 }
 
 async function lookupProcessByName(name) {
@@ -515,7 +497,10 @@ async function loadGraph() {
   const pid = parseInt(document.getElementById('graph-pid').value);
   if (!pid || isNaN(pid)) return;
   const area = document.getElementById('graph-area');
+  const abContainer = document.getElementById('graph-ab-container');
   area.innerHTML = '<div class="empty-state">Loading...</div>';
+  if (abContainer) abContainer.innerHTML = '';
+  window._graphProcessChain = [];
 
   if (graphMode === 'tree') {
     const data = await api('/api/graph/process-tree/' + pid);
@@ -527,7 +512,17 @@ async function loadGraph() {
     else area.innerHTML = '<div class="empty-state">No data</div>';
   } else {
     const data = await api('/api/graph/attack-chain/' + pid);
-    if (data) renderChain(area, data);
+    if (data) {
+      renderChain(area, data);
+      // If we navigated here from a finding, show Allow/Block for that finding
+      if (currentFinding && abContainer) {
+        let abHtml = '<div style="margin-top:12px;display:flex;gap:8px;align-items:center">';
+        abHtml += '<button class="btn" style="background:rgba(34,197,94,0.15);color:var(--low);border-color:var(--low)" onclick="showAllowBlockForm(currentFinding,\'allow\')">Allow This Behavior</button>';
+        abHtml += '<button class="btn" style="background:rgba(239,68,68,0.15);color:var(--critical);border-color:var(--critical)" onclick="showAllowBlockForm(currentFinding,\'block\')">Block This Behavior</button>';
+        abHtml += '</div>';
+        abContainer.innerHTML = abHtml;
+      }
+    }
     else area.innerHTML = '<div class="empty-state">No data</div>';
   }
 }
@@ -642,7 +637,7 @@ function renderChain(area, data) {
   const findings = data.findings || [];
   if (findings.length > 0) {
     let html = '';
-    findings.forEach(f => {
+    findings.forEach((f, fi) => {
       const sev = f.severity.toLowerCase();
       const time = new Date(f.timestamp).toLocaleString();
       html += '<div style="padding:10px;margin-bottom:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg)">';
@@ -663,17 +658,28 @@ function renderChain(area, data) {
       if (iocParts.length > 0) {
         html += '<div style="margin-top:4px;font-size:12px;color:var(--dim)"><strong>IOCs:</strong> <span class="mono">' + iocParts.join(', ') + '</span></div>';
       }
+      // Allow / Block buttons per finding
+      html += '<div style="margin-top:8px;display:flex;gap:6px">';
+      html += '<button class="btn" style="font-size:11px;padding:3px 10px;background:rgba(34,197,94,0.15);color:var(--low);border-color:var(--low)" onclick="allowBlockFromChain(' + fi + ',\'allow\')">Allow</button>';
+      html += '<button class="btn" style="font-size:11px;padding:3px 10px;background:rgba(239,68,68,0.15);color:var(--critical);border-color:var(--critical)" onclick="allowBlockFromChain(' + fi + ',\'block\')">Block</button>';
+      html += '</div>';
+      html += '<div id="chain-ab-slot-' + fi + '"></div>';
       html += '</div>';
     });
     parts.push({title:'Assessment Summary (' + findings.length + ' finding' + (findings.length !== 1 ? 's' : '') + ')', content: html});
+    // Store findings for Allow/Block actions
+    window._chainFindings = findings;
   } else {
     parts.push({title:'Assessment Summary', content: '<div style="color:var(--dim);font-size:13px">No findings for this process.</div>'});
+    window._chainFindings = [];
   }
 
   if (data.target_process && data.target_process.name) {
     const t = data.target_process;
     parts.push({title:'Target Process', content:'<dl class="detail-grid"><dt>Name</dt><dd>' + esc(t.name) + signBadge(t) + '</dd><dt>PID</dt><dd class="mono">' + (t.pid||'?') + '</dd><dt>Command</dt><dd class="mono">' + esc(t.command_line||'—') + '</dd><dt>User</dt><dd>' + esc(t.user||'—') + '</dd>' + (t.parent_pid ? '<dt>Parent PID</dt><dd class="mono">' + t.parent_pid + '</dd>' : '') + '</dl>'});
   }
+  // Store the graph-derived process chain for Allow/Block pattern suggestions
+  window._graphProcessChain = data.process_chain || [];
   if (data.process_chain && data.process_chain.length > 0) {
     const chainHtml = data.process_chain.map(p => {
       const name = p.name || p.type || '?';
@@ -775,7 +781,7 @@ function renderFindingRef(f) {
   if (pid) {
     return '<span class="severity-badge ' + cls + ' clickable" style="font-size:10px;padding:1px 4px" onclick="loadGraphForPid(\'chain\',' + pid + ')" title="View attack chain for PID ' + pid + '">' + esc(f.title) + ' →</span>';
   }
-  return '<span class="severity-badge ' + cls + ' clickable" style="font-size:10px;padding:1px 4px" onclick="showFindingDetail(\'' + f.id + '\')" title="View finding detail">' + esc(f.title) + '</span>';
+  return '<span class="severity-badge ' + cls + ' clickable" style="font-size:10px;padding:1px 4px" onclick="navigateToFindingChain(\'' + f.id + '\')" title="View attack chain">' + esc(f.title) + '</span>';
 }
 
 async function refreshIOC() {
@@ -878,12 +884,13 @@ async function approveAction(id, action) {
 
 // ── Settings ───────────────────────────────────────────────────
 async function refreshSettings() {
-  const [data, iocStats, modeData, baselineStats, allowlistData, netStatus] = await Promise.all([
+  const [data, iocStats, modeData, baselineStats, allowlistData, blocklistData, netStatus] = await Promise.all([
     api('/api/settings'),
     api('/api/intel/ioc-stats'),
     api('/api/response/mode'),
     api('/api/response/baseline/stats'),
     api('/api/response/allowlist'),
+    api('/api/response/blocklist'),
     api('/api/response/network-status'),
   ]);
   if (!data || Object.keys(data).length === 0) { document.getElementById('settings-content').innerHTML = '<div class="empty-state">Settings not available</div>'; return; }
@@ -926,8 +933,9 @@ async function refreshSettings() {
   html += '<div class="settings-group"><h3>Response Allowlist</h3>';
   html += '<div class="card" style="padding:16px;margin-bottom:16px">';
   html += '<div class="inline-form" id="allowlist-add-form">';
-  html += '<select id="al-rule-type"><option value="process_name">process_name</option><option value="dst_ip">dst_ip</option><option value="dst_cidr">dst_cidr</option><option value="domain">domain</option><option value="file_path">file_path</option><option value="finding_title">finding_title</option></select>';
+  html += '<select id="al-rule-type"><option value="process_name">process_name</option><option value="dst_ip">dst_ip</option><option value="dst_cidr">dst_cidr</option><option value="domain">domain</option><option value="file_path">file_path</option><option value="finding_title">finding_title</option><option value="chain_pattern">chain_pattern</option></select>';
   html += '<input type="text" id="al-pattern" placeholder="Pattern..." style="flex:1">';
+  html += '<input type="text" id="al-chain-filter" placeholder="Chain filter (optional)..." style="width:200px" title="Optional chain pattern to scope this rule, e.g. Terminal > ** > curl">';
   html += '<input type="text" id="al-desc" placeholder="Description..." style="width:200px">';
   html += '<button class="btn btn-primary" onclick="addAllowlistRule()">+ Add Rule</button>';
   html += '</div>';
@@ -937,8 +945,33 @@ async function refreshSettings() {
   } else {
     rules.forEach(function(r) {
       html += '<div class="rule-row"><div class="rule-info"><span class="rule-type-badge">' + esc(r.rule_type) + '</span><span class="mono">' + esc(r.pattern) + '</span>';
+      if (r.chain_filter) html += '<span style="color:var(--accent);font-size:11px;margin-left:6px">[chain: <span class="mono">' + esc(r.chain_filter) + '</span>]</span>';
       if (r.description) html += '<span style="color:var(--dim);font-size:12px"> — ' + esc(r.description) + '</span>';
       html += '</div><button class="btn btn-danger" style="font-size:11px;padding:2px 8px" onclick="deleteAllowlistRule(' + r.id + ')">Delete</button></div>';
+    });
+  }
+  html += '</div></div>';
+
+  // ── Blocklist section ──
+  html += '<div class="settings-group"><h3>Response Blocklist</h3>';
+  html += '<div class="card" style="padding:16px;margin-bottom:16px">';
+  html += '<div style="color:var(--dim);font-size:12px;margin-bottom:8px">Blocklist rules force response actions even if the behavior is baselined or allowlisted.</div>';
+  html += '<div class="inline-form" id="blocklist-add-form">';
+  html += '<select id="bl-rule-type"><option value="process_name">process_name</option><option value="dst_ip">dst_ip</option><option value="dst_cidr">dst_cidr</option><option value="domain">domain</option><option value="file_path">file_path</option><option value="finding_title">finding_title</option><option value="chain_pattern">chain_pattern</option></select>';
+  html += '<input type="text" id="bl-pattern" placeholder="Pattern..." style="flex:1">';
+  html += '<input type="text" id="bl-chain-filter" placeholder="Chain filter (optional)..." style="width:200px" title="Optional chain pattern to scope this rule, e.g. Terminal > ** > curl">';
+  html += '<input type="text" id="bl-desc" placeholder="Description..." style="width:200px">';
+  html += '<button class="btn btn-danger" onclick="addBlocklistRule()">+ Add Rule</button>';
+  html += '</div>';
+  const blockRules = (blocklistData && blocklistData.rules) || [];
+  if (blockRules.length === 0) {
+    html += '<div style="color:var(--dim);font-size:13px;padding:8px 0">No blocklist rules configured</div>';
+  } else {
+    blockRules.forEach(function(r) {
+      html += '<div class="rule-row"><div class="rule-info"><span class="rule-type-badge" style="background:rgba(239,68,68,0.15);color:var(--critical)">' + esc(r.rule_type) + '</span><span class="mono">' + esc(r.pattern) + '</span>';
+      if (r.chain_filter) html += '<span style="color:var(--accent);font-size:11px;margin-left:6px">[chain: <span class="mono">' + esc(r.chain_filter) + '</span>]</span>';
+      if (r.description) html += '<span style="color:var(--dim);font-size:12px"> — ' + esc(r.description) + '</span>';
+      html += '</div><button class="btn btn-danger" style="font-size:11px;padding:2px 8px" onclick="deleteBlocklistRule(' + r.id + ')">Delete</button></div>';
     });
   }
   html += '</div></div>';
@@ -1047,10 +1080,12 @@ async function clearBaseline() {
 async function addAllowlistRule() {
   const ruleType = document.getElementById('al-rule-type').value;
   const pattern = document.getElementById('al-pattern').value.trim();
+  const chainFilter = (document.getElementById('al-chain-filter') || {}).value || '';
   const desc = document.getElementById('al-desc').value.trim();
   if (!pattern) { alert('Pattern is required'); return; }
-  await fetch(API + '/api/response/allowlist', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rule_type:ruleType,pattern:pattern,description:desc})});
+  await fetch(API + '/api/response/allowlist', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rule_type:ruleType,pattern:pattern,description:desc,chain_filter:chainFilter.trim()})});
   document.getElementById('al-pattern').value = '';
+  document.getElementById('al-chain-filter').value = '';
   document.getElementById('al-desc').value = '';
   refreshSettings();
 }
@@ -1095,6 +1130,166 @@ async function panicActivate() {
 
 async function panicRestore() {
   await fetch(API + '/api/response/panic/restore', {method:'POST'});
+  refreshSettings();
+}
+
+// ── Allow/Block from finding detail ────────────────────────────
+function buildSuggestedChainPattern(chain) {
+  // Prefer the graph-derived process chain (full ancestry from the graph DB)
+  // over the finding's sparse chain which often has minimal/unknown entries
+  const graphChain = window._graphProcessChain || [];
+  let names = [];
+  if (graphChain.length > 0) {
+    names = graphChain.map(p => p.name || p.type).filter(n => n && n !== '?');
+  }
+  if (names.length === 0) {
+    // Fallback: use the finding's chain steps
+    names = (chain||[]).filter(s => s.entity_type === 'process').map(s => s.entity_name).filter(n => n && n !== 'unknown');
+  }
+  if (names.length === 0) return '';
+  if (names.length === 1) return names[0];
+  // For short chains (2-3 steps), use exact path — no wildcards
+  // For longer chains, keep first and last with ** in the middle
+  if (names.length <= 3) return names.join(' > ');
+  return names[0] + ' > ** > ' + names[names.length - 1];
+}
+
+function allowBlockFromChain(findingIndex, mode) {
+  // Called from Allow/Block buttons inside the renderChain Assessment Summary.
+  const findings = window._chainFindings || [];
+  if (findingIndex >= findings.length) return;
+  const f = findings[findingIndex];
+  const finding = {
+    title: f.title,
+    chain: (f.affected_entities||[]).map(e => ({entity_type:'process',entity_name:e})),
+    iocs: f.iocs || {},
+  };
+  if (currentFinding && currentFinding.title === f.title) {
+    finding.chain = currentFinding.chain || finding.chain;
+  }
+  showAllowBlockForm(finding, mode, 'chain-ab-slot-' + findingIndex);
+}
+
+function showAllowBlockForm(finding, mode, targetId) {
+  // mode: 'allow' or 'block'
+  // targetId: optional DOM element ID to inject the form into (defaults to 'graph-ab-container')
+  const containerId = 'finding-ab-form';
+  const existing = document.getElementById(containerId);
+  if (existing) existing.remove();
+
+  const chain = finding.chain || [];
+  const suggestedChain = buildSuggestedChainPattern(chain);
+  const domains = (finding.iocs && finding.iocs.domains) || [];
+  const ips = (finding.iocs && finding.iocs.ips) || [];
+  const files = (finding.iocs && finding.iocs.files) || [];
+
+  const isAllow = mode === 'allow';
+  const endpoint = isAllow ? '/api/response/allowlist' : '/api/response/blocklist';
+  const label = isAllow ? 'Allow' : 'Block';
+  const btnClass = isAllow ? 'btn-primary' : 'btn-danger';
+  const borderColor = isAllow ? 'var(--low)' : 'var(--critical)';
+
+  let html = '<div id="' + containerId + '" class="card" style="margin-top:12px;padding:16px;border-color:' + borderColor + '">';
+  html += '<h4 style="margin-bottom:10px;color:' + borderColor + '">' + label + ' Rule</h4>';
+
+  // Chain scope field
+  html += '<div style="margin-bottom:10px">';
+  html += '<label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Chain scope <span style="font-size:11px">(only applies when this process chain matches)</span></label>';
+  html += '<input type="text" id="ab-chain-filter" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 10px;color:var(--text);font-family:monospace;font-size:13px" value="' + esc(suggestedChain) + '">';
+  html += '</div>';
+
+  // IOC checkboxes — select which behaviors to allow/block for this chain
+  const hasIOCs = domains.length > 0 || ips.length > 0 || files.length > 0;
+  if (hasIOCs) {
+    html += '<div style="margin-bottom:10px">';
+    html += '<label style="font-size:12px;color:var(--dim);display:block;margin-bottom:6px">Select IOCs to ' + label.toLowerCase() + ':</label>';
+    let iocIdx = 0;
+    domains.forEach(function(d) {
+      html += '<label style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:13px;cursor:pointer">';
+      html += '<input type="checkbox" class="ab-ioc-cb" data-type="domain" data-value="' + esc(d) + '" checked>';
+      html += '<span class="rule-type-badge" style="font-size:10px">domain</span><span class="mono">' + esc(d) + '</span></label>';
+      iocIdx++;
+    });
+    ips.forEach(function(ip) {
+      html += '<label style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:13px;cursor:pointer">';
+      html += '<input type="checkbox" class="ab-ioc-cb" data-type="dst_ip" data-value="' + esc(ip) + '" checked>';
+      html += '<span class="rule-type-badge" style="font-size:10px">dst_ip</span><span class="mono">' + esc(ip) + '</span></label>';
+      iocIdx++;
+    });
+    files.forEach(function(fp) {
+      html += '<label style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:13px;cursor:pointer">';
+      html += '<input type="checkbox" class="ab-ioc-cb" data-type="file_path" data-value="' + esc(fp) + '" checked>';
+      html += '<span class="rule-type-badge" style="font-size:10px">file_path</span><span class="mono">' + esc(fp) + '</span></label>';
+      iocIdx++;
+    });
+    html += '</div>';
+  }
+
+  // Always include finding_title as an option
+  html += '<div style="margin-bottom:10px">';
+  html += '<label style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:13px;cursor:pointer">';
+  html += '<input type="checkbox" class="ab-ioc-cb" data-type="finding_title" data-value="' + esc(finding.title || '') + '"' + (hasIOCs ? '' : ' checked') + '>';
+  html += '<span class="rule-type-badge" style="font-size:10px">finding_title</span><span class="mono">' + esc(finding.title || '') + '</span></label>';
+  html += '</div>';
+
+  // Description + submit
+  html += '<div style="display:flex;gap:8px;align-items:center">';
+  html += '<input type="text" id="ab-desc" placeholder="Description..." style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 10px;color:var(--text);font-size:13px" value="' + esc(finding.title || '') + '">';
+  html += '<button class="btn ' + btnClass + '" onclick="submitAbRules(\'' + endpoint + '\')">' + label + ' Selected</button>';
+  html += '<button class="btn" onclick="document.getElementById(\'' + containerId + '\').remove()">Cancel</button>';
+  html += '</div></div>';
+
+  const target = document.getElementById(targetId || 'graph-ab-container');
+  if (target) {
+    target.innerHTML = html;
+    const formEl = document.getElementById(containerId);
+    if (formEl) formEl.scrollIntoView({behavior:'smooth', block:'nearest'});
+  }
+}
+
+async function submitAbRules(endpoint) {
+  // Collect chain_filter and all checked IOCs, create one rule per checked IOC
+  const chainFilter = (document.getElementById('ab-chain-filter') || {}).value || '';
+  const desc = (document.getElementById('ab-desc') || {}).value || '';
+  const checkboxes = document.querySelectorAll('.ab-ioc-cb:checked');
+  if (checkboxes.length === 0) { alert('Select at least one IOC to create a rule for.'); return; }
+
+  let ok = 0, fail = 0;
+  for (const cb of checkboxes) {
+    const ruleType = cb.getAttribute('data-type');
+    const pattern = cb.getAttribute('data-value');
+    if (!pattern) continue;
+    const body = {rule_type: ruleType, pattern: pattern, description: desc, chain_filter: chainFilter.trim()};
+    const resp = await fetch(API + endpoint, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if (resp.ok) ok++; else fail++;
+  }
+  const formEl = document.getElementById('finding-ab-form');
+  if (formEl) {
+    if (fail === 0) {
+      formEl.innerHTML = '<div style="color:var(--low);padding:8px">' + ok + ' rule' + (ok !== 1 ? 's' : '') + ' added successfully.</div>';
+    } else {
+      formEl.innerHTML = '<div style="color:var(--high);padding:8px">' + ok + ' added, ' + fail + ' failed.</div>';
+    }
+  }
+}
+
+// ── Blocklist management (settings) ────────────────────────────
+async function addBlocklistRule() {
+  const ruleType = document.getElementById('bl-rule-type').value;
+  const pattern = document.getElementById('bl-pattern').value.trim();
+  const chainFilter = (document.getElementById('bl-chain-filter') || {}).value || '';
+  const desc = document.getElementById('bl-desc').value.trim();
+  if (!pattern) { alert('Pattern is required'); return; }
+  await fetch(API + '/api/response/blocklist', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rule_type:ruleType,pattern:pattern,description:desc,chain_filter:chainFilter.trim()})});
+  document.getElementById('bl-pattern').value = '';
+  document.getElementById('bl-chain-filter').value = '';
+  document.getElementById('bl-desc').value = '';
+  refreshSettings();
+}
+
+async function deleteBlocklistRule(id) {
+  if (!confirm('Delete this blocklist rule?')) return;
+  await fetch(API + '/api/response/blocklist/' + id, {method:'DELETE'});
   refreshSettings();
 }
 

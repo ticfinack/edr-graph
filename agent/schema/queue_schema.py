@@ -91,6 +91,19 @@ CREATE TABLE IF NOT EXISTS response_allowlist (
     rule_type TEXT NOT NULL,
     pattern TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+    chain_filter TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
+    created_by TEXT NOT NULL DEFAULT 'user'
+)
+"""
+
+RESPONSE_BLOCKLIST_DDL = """
+CREATE TABLE IF NOT EXISTS response_blocklist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_type TEXT NOT NULL,
+    pattern TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    chain_filter TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
     created_by TEXT NOT NULL DEFAULT 'user'
 )
@@ -107,12 +120,15 @@ ALL_DDL = [
     RESPONSE_AUDIT_EVENT_INDEX,
     BEHAVIOR_BASELINE_DDL,
     RESPONSE_ALLOWLIST_DDL,
+    RESPONSE_BLOCKLIST_DDL,
 ]
 
 # Migrations for existing databases (errors silently ignored if column exists)
 SQLITE_MIGRATIONS = [
     "ALTER TABLE findings ADD COLUMN affected_pids TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE findings ADD COLUMN iocs TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE response_allowlist ADD COLUMN chain_filter TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE response_blocklist ADD COLUMN chain_filter TEXT NOT NULL DEFAULT ''",
 ]
 
 

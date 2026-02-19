@@ -20,12 +20,10 @@ import ctypes.util
 import logging
 import sys
 import time
-from typing import Optional
 
 if sys.platform != "darwin":
     raise ImportError("Process enricher is macOS-only")
 
-from agent import metrics
 
 logger = logging.getLogger(__name__)
 

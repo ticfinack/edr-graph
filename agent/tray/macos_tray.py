@@ -10,10 +10,9 @@ Must run on the main thread (macOS AppKit constraint).
 
 from __future__ import annotations
 
-import base64
 import collections
 import logging
-import threading
+import os
 import time
 import webbrowser
 from typing import Any, Callable
@@ -78,8 +77,8 @@ def _icon_path(data: bytes, name: str) -> str:
     rumps needs a file path, not raw bytes.
     """
     import tempfile
-    path = tempfile.mktemp(prefix=f"edr_icon_{name}_", suffix=".png")
-    with open(path, "wb") as f:
+    fd, path = tempfile.mkstemp(prefix=f"edr_icon_{name}_", suffix=".png")
+    with os.fdopen(fd, "wb") as f:
         f.write(data)
     return path
 

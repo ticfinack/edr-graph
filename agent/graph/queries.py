@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import time
-from collections import deque
 
 import kuzu
 
@@ -792,8 +790,8 @@ def serialize_attack_chain(chain: dict, max_tokens: int = 2000) -> str:
     listening = net.get("listening_ports", [])
     if listening:
         listen_strs = [
-            f"{l.get('address', '?')}:{l.get('port', '?')}/{l.get('protocol', '?')}"
-            for l in listening[:5]
+            f"{ep.get('address', '?')}:{ep.get('port', '?')}/{ep.get('protocol', '?')}"
+            for ep in listening[:5]
         ]
         parts.append(f"Listening on: {', '.join(listen_strs)}")
 

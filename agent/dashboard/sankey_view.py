@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -37,7 +36,7 @@ def create(queue: SqliteQueue, refresh_interval: float = 10.0) -> None:
             hours_back = ui.number(
                 label="Hours back", value=24, min=1, max=168, step=1
             ).classes("w-32")
-            refresh_btn = ui.button("Refresh", on_click=lambda: refresh())
+            ui.button("Refresh", on_click=lambda: refresh())
 
         plot_container = ui.column().classes("w-full")
 
