@@ -354,8 +354,8 @@ class NetworkIsolator:
             # Build pf rules blocking each remote IP:port
             pf_lines = []
             for ip, port in remote_endpoints:
-                pf_lines.append(f"block drop quick from any to {ip} port {port}")
-                pf_lines.append(f"block drop quick from {ip} port {port} to any")
+                pf_lines.append(f"block drop quick proto {{ tcp udp }} from any to {ip} port {port}")
+                pf_lines.append(f"block drop quick proto {{ tcp udp }} from {ip} port {port} to any")
             pf_rules = "\n".join(pf_lines) + "\n"
 
             _run_command(
@@ -466,8 +466,8 @@ class NetworkIsolator:
                 anchor_name = f"edr_block_conn_{ip.replace('.', '_')}_{port or 'all'}"
                 if port:
                     pf_rules = (
-                        f"block drop quick from any to {ip} port {port}\n"
-                        f"block drop quick from {ip} port {port} to any\n"
+                        f"block drop quick proto {{ tcp udp }} from any to {ip} port {port}\n"
+                        f"block drop quick proto {{ tcp udp }} from {ip} port {port} to any\n"
                     )
                 else:
                     pf_rules = (
