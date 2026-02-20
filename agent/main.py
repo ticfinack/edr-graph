@@ -50,6 +50,9 @@ _shutdown = threading.Event()
 # Tray icon instance (set in main() if tray is enabled)
 _tray_app = None
 
+# Fleet forwarder instance (set in main() if fleet is enabled)
+_fleet_forwarder = None
+
 
 def collector_thread(
     settings: Settings,
@@ -94,6 +97,8 @@ def processor_thread(
 ) -> None:
     """Process queued events: normalize, extract entities, write to graph."""
     builder = GraphBuilder(kuzu_db)
+    _last_prune = time.monotonic()
+    _PRUNE_INTERVAL = 300.0  # Run retention pruning every 5 minutes
 
     # Initialize port mapper for connection context enrichment
     port_mapper = None
@@ -180,6 +185,17 @@ def processor_thread(
                 queue.mark_processed(event_ids)
                 logger.debug("Processed %d events", len(event_ids))
 
+            # Periodic retention pruning
+            now = time.monotonic()
+            if now - _last_prune >= _PRUNE_INTERVAL:
+                _last_prune = now
+                try:
+                    pruned = queue.prune_old_events(settings.event_retention_hours)
+                    if pruned:
+                        logger.info("Pruned %d old events (retention=%dh)", pruned, settings.event_retention_hours)
+                except Exception:
+                    logger.debug("Event pruning failed", exc_info=True)
+
         except Exception:
             logger.exception("Processor cycle failed")
             _shutdown.wait(timeout=settings.processor_poll_interval)
@@ -235,6 +251,13 @@ def analyzer_thread(
                 for finding in findings:
                     queue.store_finding(finding)
 
+                    # Queue finding for fleet forwarding
+                    if _fleet_forwarder is not None:
+                        try:
+                            _fleet_forwarder.forward_finding(finding)
+                        except Exception:
+                            logger.debug("Fleet forward failed for finding %s", finding.id, exc_info=True)
+
                     # Push finding to tray notification queue
                     _push_finding_notification(finding)
 
@@ -254,6 +277,29 @@ def analyzer_thread(
 
         except Exception:
             logger.exception("Analyzer cycle failed")
+
+
+def forwarder_thread(
+    settings: Settings,
+    forwarder,
+) -> None:
+    """Periodically drain the forwarding queue and send heartbeats to the fleet server."""
+    logger.info("Started forwarder thread")
+    last_heartbeat = 0.0
+
+    while not _shutdown.is_set():
+        try:
+            if not _is_paused():
+                forwarder.drain_queue()
+
+                now = time.monotonic()
+                if now - last_heartbeat >= settings.fleet_heartbeat_interval:
+                    forwarder.send_heartbeat()
+                    last_heartbeat = now
+        except Exception:
+            logger.exception("Forwarder cycle failed")
+
+        _shutdown.wait(timeout=settings.fleet_forward_interval)
 
 
 def _trigger_response(
@@ -576,6 +622,24 @@ def main() -> None:
         action="store_true",
         help="Print default config.yaml to stdout and exit",
     )
+    parser.add_argument(
+        "--fleet-url",
+        type=str,
+        default=None,
+        help="Fleet server gRPC address (host:port)",
+    )
+    parser.add_argument(
+        "--fleet-enabled",
+        action="store_true",
+        default=None,
+        help="Enable fleet forwarding to central server",
+    )
+    parser.add_argument(
+        "--agent-id",
+        type=str,
+        default=None,
+        help="Agent UUID for fleet registration",
+    )
     args = parser.parse_args()
 
     # Generate config and exit
@@ -608,6 +672,12 @@ def main() -> None:
         settings.tamper_check_enabled = False
     if args.no_tray:
         settings.tray_enabled = False
+    if args.fleet_url:
+        settings.fleet_url = args.fleet_url
+    if args.fleet_enabled:
+        settings.fleet_enabled = True
+    if args.agent_id:
+        settings.fleet_agent_id = args.agent_id
     settings.ensure_dirs()
 
     logger.info("Starting edr-graph, data dir: %s", settings.data_dir)
@@ -772,6 +842,27 @@ def main() -> None:
     )
     t.start()
     threads.append(t)
+
+    # Fleet forwarder thread (optional)
+    global _fleet_forwarder
+    if settings.fleet_enabled and settings.fleet_url:
+        try:
+            from agent.fleet.forwarder import FleetForwarder
+
+            _fleet_forwarder = FleetForwarder(settings=settings, queue=queue)
+            _fleet_forwarder.register()
+
+            t = threading.Thread(
+                target=forwarder_thread,
+                args=(settings, _fleet_forwarder),
+                daemon=True,
+                name="forwarder",
+            )
+            t.start()
+            threads.append(t)
+            logger.info("Fleet forwarder started (url=%s)", settings.fleet_url)
+        except Exception:
+            logger.warning("Fleet forwarder initialization failed", exc_info=True)
 
     logger.info("All pipeline threads started")
 

@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package edr.fleet;
+
+// Fleet management service for centralized EDR telemetry collection.
+// Agents forward findings and OCSF events to the central server via gRPC with mTLS.
+service FleetService {
+  // Register an agent with the fleet server. Called once on startup.
+  rpc RegisterAgent(RegisterAgentRequest) returns (RegisterAgentResponse);
+
+  // Forward security findings from the agent's LLM analyzer.
+  rpc SendFindings(SendFindingsRequest) returns (SendFindingsResponse);
+
+  // Forward normalized OCSF events for cross-host correlation.
+  rpc SendEvents(SendEventsRequest) returns (SendEventsResponse);
+
+  // Periodic heartbeat to report agent health.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+// --- Agent Identity ---
+
+message AgentInfo {
+  string agent_id = 1;       // UUID assigned to this agent
+  string hostname = 2;
+  string platform = 3;       // "darwin", "linux", "win32"
+  string os_version = 4;
+  string agent_version = 5;
+  string ip_address = 6;     // Primary IP of the host
+  int64 registered_at = 7;   // Unix timestamp
+}
+
+// --- Security Findings ---
+
+message ChainStep {
+  string entity_type = 1;    // "user", "process", "ip", "domain", "file"
+  string entity_id = 2;
+  string entity_name = 3;
+  int32 pid = 4;             // 0 if not applicable
+  int64 timestamp = 5;       // Unix timestamp, 0 if not set
+}
+
+message SecurityFinding {
+  string id = 1;             // UUID
+  int64 timestamp = 2;       // Unix timestamp
+  string severity = 3;       // "critical", "high", "medium", "low", "info"
+  string title = 4;
+  string description = 5;
+  repeated string affected_entities = 6;
+  repeated int32 evidence_event_ids = 7;
+  string recommendation = 8;
+  repeated ChainStep chain = 9;
+  repeated int32 affected_pids = 10;
+  string iocs_json = 11;     // JSON-serialized IOC dict
+}
+
+// --- OCSF Events ---
+
+message OcsfEvent {
+  int32 class_uid = 1;       // OCSF class identifier
+  string event_json = 2;     // Full OCSF event as JSON (avoids duplicating 6+ type hierarchies)
+}
+
+// --- RPC Messages ---
+
+message RegisterAgentRequest {
+  AgentInfo agent_info = 1;
+}
+
+message RegisterAgentResponse {
+  bool accepted = 1;
+  string agent_id = 2;       // Confirmed or server-assigned UUID
+  string message = 3;
+}
+
+message SendFindingsRequest {
+  string agent_id = 1;
+  repeated SecurityFinding findings = 2;
+}
+
+message SendFindingsResponse {
+  int32 accepted_count = 1;
+  string message = 2;
+}
+
+message SendEventsRequest {
+  string agent_id = 1;
+  repeated OcsfEvent events = 2;
+}
+
+message SendEventsResponse {
+  int32 accepted_count = 1;
+  string message = 2;
+}
+
+message HeartbeatRequest {
+  string agent_id = 1;
+  int64 timestamp = 2;       // Unix timestamp
+  int32 queue_depth = 3;     // Events pending in local queue
+  int32 findings_count = 4;  // Total findings generated
+  string status = 5;         // "healthy", "degraded", "error"
+}
+
+message HeartbeatResponse {
+  bool acknowledged = 1;
+  string message = 2;
+}

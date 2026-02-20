@@ -109,6 +109,23 @@ CREATE TABLE IF NOT EXISTS response_blocklist (
 )
 """
 
+FORWARDING_QUEUE_DDL = """
+CREATE TABLE IF NOT EXISTS forwarding_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    last_retry_at TEXT,
+    status TEXT NOT NULL DEFAULT 'pending'
+)
+"""
+
+FORWARDING_QUEUE_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_forwarding_pending
+ON forwarding_queue (status, id) WHERE status = 'pending'
+"""
+
 ALL_DDL = [
     EVENT_QUEUE_DDL,
     EVENT_QUEUE_INDEX,
@@ -121,6 +138,8 @@ ALL_DDL = [
     BEHAVIOR_BASELINE_DDL,
     RESPONSE_ALLOWLIST_DDL,
     RESPONSE_BLOCKLIST_DDL,
+    FORWARDING_QUEUE_DDL,
+    FORWARDING_QUEUE_INDEX,
 ]
 
 # Migrations for existing databases (errors silently ignored if column exists)

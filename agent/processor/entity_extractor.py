@@ -41,6 +41,53 @@ def _ensure_identity_import():
             _get_process_identity = False  # Mark as unavailable
 
 _ppid_cache: dict[int, int] = {}  # pid -> parent_pid, populated once per PID
+_create_time_cache: dict[int, float] = {}  # pid -> create_time epoch, populated once per PID
+
+
+def _resolve_start_time(pid: int, fallback: datetime) -> datetime:
+    """Return a stable process creation time for the given PID.
+
+    Uses psutil to look up the real process creation time and caches it.
+    This ensures that all events referencing the same PID produce the same
+    Process node ID, preventing duplicate nodes in the graph.
+
+    Handles PID reuse: if the live process create_time differs from the
+    cached value, the cache entry is refreshed (the old PID was recycled).
+
+    Falls back to the provided timestamp only when the process is genuinely
+    unknown (dead before we ever saw it).
+    """
+    if pid <= 0:
+        return fallback
+
+    try:
+        import psutil
+        p = psutil.Process(pid)
+        ct = p.create_time()
+        if ct and ct > 0:
+            cached = _create_time_cache.get(pid)
+            if cached is not None and cached > 0 and abs(cached - ct) < 1.0:
+                # Same process, use cached value
+                return datetime.fromtimestamp(cached)
+            # New or changed — update cache (handles PID reuse)
+            _create_time_cache[pid] = ct
+            # Also invalidate ppid cache on PID reuse
+            if cached is not None and cached > 0 and abs(cached - ct) >= 1.0:
+                _ppid_cache.pop(pid, None)
+            return datetime.fromtimestamp(ct)
+    except Exception:
+        pass
+
+    # Process is dead — use cached value if we had one
+    if pid in _create_time_cache:
+        epoch = _create_time_cache[pid]
+        if epoch > 0:
+            return datetime.fromtimestamp(epoch)
+        return fallback
+
+    # Never seen this PID and it's already dead — mark unresolvable
+    _create_time_cache[pid] = 0
+    return fallback
 
 def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
     """Enrich a ProcessNode with identity and parent_pid via psutil if available."""
@@ -165,7 +212,7 @@ def _extract_process_activity(
     proc = event.process
     hostname = event.device.hostname
 
-    start_time = proc.created_time or now
+    start_time = proc.created_time or _resolve_start_time(proc.pid, now)
     proc_id = f"{hostname}:{proc.pid}:{int(start_time.timestamp())}"
 
     proc_node = ProcessNode(
@@ -214,7 +261,7 @@ def _extract_network_activity(
     if event.process:
         proc = event.process
         hostname = event.device.hostname
-        start_time = proc.created_time or now
+        start_time = proc.created_time or _resolve_start_time(proc.pid, now)
         proc_id = f"{hostname}:{proc.pid}:{int(start_time.timestamp())}"
 
         proc_node = ProcessNode(
@@ -338,7 +385,7 @@ def _extract_dns_activity(
 
     if event.process:
         proc = event.process
-        start_time = proc.created_time or now
+        start_time = proc.created_time or _resolve_start_time(proc.pid, now)
         proc_id = f"{hostname}:{proc.pid}:{int(start_time.timestamp())}"
         proc_node = ProcessNode(
             id=proc_id,
@@ -428,7 +475,7 @@ def _extract_file_activity(
 
     if event.process:
         proc = event.process
-        start_time = proc.created_time or now
+        start_time = proc.created_time or _resolve_start_time(proc.pid, now)
         proc_id = f"{hostname}:{proc.pid}:{int(start_time.timestamp())}"
         proc_node = ProcessNode(
             id=proc_id,
@@ -483,7 +530,7 @@ def _extract_registry_activity(
 
     if event.process:
         proc = event.process
-        start_time = proc.created_time or now
+        start_time = proc.created_time or _resolve_start_time(proc.pid, now)
         proc_id = f"{hostname}:{proc.pid}:{int(start_time.timestamp())}"
         entities.processes.append(
             ProcessNode(

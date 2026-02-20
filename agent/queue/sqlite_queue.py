@@ -259,6 +259,79 @@ class SqliteQueue:
         ).fetchone()
         return row["cnt"]
 
+    def prune_old_events(self, retention_hours: int = 24) -> int:
+        """Delete processed events older than retention_hours. Returns count deleted."""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "DELETE FROM event_queue WHERE processed = 1 "
+            "AND created_at < strftime('%Y-%m-%dT%H:%M:%f', 'now', ?)",
+            (f"-{retention_hours} hours",),
+        )
+        conn.commit()
+        deleted = cursor.rowcount
+        return deleted
+
+    # --- Forwarding Queue ---
+
+    def push_forwarding(self, item_type: str, payload: str) -> int:
+        """Queue an item for fleet forwarding. Returns row ID."""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "INSERT INTO forwarding_queue (item_type, payload) VALUES (?, ?)",
+            (item_type, payload),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+    def pop_forwarding_batch(self, batch_size: int = 50) -> list[tuple[int, str, str]]:
+        """Pop a batch of pending forwarding items. Returns [(id, item_type, payload)]."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, item_type, payload FROM forwarding_queue "
+            "WHERE status = 'pending' ORDER BY id ASC LIMIT ?",
+            (batch_size,),
+        ).fetchall()
+        return [(row["id"], row["item_type"], row["payload"]) for row in rows]
+
+    def mark_forwarded(self, item_ids: list[int]) -> None:
+        """Mark forwarding items as sent (delete them)."""
+        if not item_ids:
+            return
+        conn = self._get_conn()
+        placeholders = ",".join("?" for _ in item_ids)
+        conn.execute(
+            f"DELETE FROM forwarding_queue WHERE id IN ({placeholders})",
+            item_ids,
+        )
+        conn.commit()
+
+    def mark_forward_failed(self, item_ids: list[int], max_retries: int = 5) -> None:
+        """Increment retry count. Items exceeding max_retries are deleted."""
+        if not item_ids:
+            return
+        conn = self._get_conn()
+        placeholders = ",".join("?" for _ in item_ids)
+        conn.execute(
+            f"UPDATE forwarding_queue SET retry_count = retry_count + 1, "
+            f"last_retry_at = strftime('%Y-%m-%dT%H:%M:%f', 'now') "
+            f"WHERE id IN ({placeholders})",
+            item_ids,
+        )
+        conn.execute(
+            f"DELETE FROM forwarding_queue WHERE retry_count > ? "
+            f"AND id IN ({placeholders})",
+            [max_retries, *item_ids],
+        )
+        conn.commit()
+
+    def forwarding_queue_depth(self) -> int:
+        """Count pending items in the forwarding queue."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM forwarding_queue WHERE status = 'pending'"
+        ).fetchone()
+        return row["cnt"]
+
     def close(self) -> None:
         if hasattr(self._local, "conn") and self._local.conn:
             self._local.conn.close()

@@ -118,9 +118,8 @@ def get_process_children(conn: kuzu.Connection, pid: int) -> list[dict]:
 def _get_pid_network(conn: kuzu.Connection, pid: int) -> list[dict]:
     """Compact network info for all Process nodes sharing this PID.
 
-    Activity events (network, DNS) may create Process nodes with different
-    IDs than the original process event (missing created_time leads to a
-    different timestamp component).  Querying by PID catches all of them.
+    Queries by PID rather than node ID to tolerate any historical duplicate
+    Process nodes that may exist from before the create-time cache fix.
     """
     items = []
     try:

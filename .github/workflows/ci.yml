@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install linters
+        run: pip install ruff bandit
+      - name: Ruff lint
+        run: ruff check agent/ server/
+      - name: Bandit security scan
+        run: bandit -r agent/ server/ -c pyproject.toml -q
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+          pip install grpcio-tools
+      - name: Generate proto stubs
+        run: |
+          python -m grpc_tools.protoc \
+            --proto_path=proto \
+            --python_out=agent/fleet/proto \
+            --grpc_python_out=agent/fleet/proto \
+            --pyi_out=agent/fleet/proto \
+            proto/fleet.proto
+          sed -i 's/^import fleet_pb2/from agent.fleet.proto import fleet_pb2/' \
+            agent/fleet/proto/fleet_pb2_grpc.py
+      - name: Run tests
+        run: pytest tests/ -v --tb=short

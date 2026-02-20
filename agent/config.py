@@ -33,10 +33,13 @@ class Settings(BaseModel):
     deepinfra_model: str = "google/gemma-3-27b-it"
     deepinfra_base_url: str = "https://api.deepinfra.com/v1/openai"
 
-    collector_poll_interval: float = 0.5  # seconds
+    collector_poll_interval: float = 1.0  # seconds
     processor_poll_interval: float = 2.0  # seconds
     analyzer_interval: float = 60.0  # seconds
     processor_batch_size: int = 500
+
+    # Retention settings
+    event_retention_hours: int = 24  # Auto-prune processed events older than this
 
     dashboard_port: int = 9200
     dashboard_refresh_interval: float = 5.0  # seconds
@@ -123,6 +126,21 @@ class Settings(BaseModel):
         default_factory=lambda: os.environ.get("VIRUSTOTAL_API_KEY", "")
     )
 
+    # Fleet forwarding settings
+    fleet_enabled: bool = False
+    fleet_url: str = ""  # Central server address, e.g. "fleet.example.com:50051"
+    fleet_agent_id: str = Field(
+        default_factory=lambda: os.environ.get("EDR_AGENT_ID", "")
+    )
+    fleet_ca_cert: str = ""       # Path to CA certificate for mTLS
+    fleet_client_cert: str = ""   # Path to client certificate
+    fleet_client_key: str = ""    # Path to client private key
+    fleet_forward_interval: float = 10.0   # Seconds between forwarding cycles
+    fleet_forward_events: bool = False     # Forward raw OCSF events (high volume)
+    fleet_heartbeat_interval: float = 30.0  # Seconds between heartbeats
+    fleet_queue_max_size: int = 10000      # Max items buffered in forwarding queue
+    fleet_retry_max: int = 5               # Max retries per queued item
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "queue.db"
@@ -144,6 +162,7 @@ _YAML_KEY_MAP: dict[tuple[str, ...], str] = {
     ("agent", "log_format"): "_log_format",
     ("collector", "poll_interval"): "collector_poll_interval",
     ("collector", "buffer_size"): "processor_batch_size",
+    ("collector", "event_retention_hours"): "event_retention_hours",
     ("analysis", "llm", "model"): "deepinfra_model",
     ("analysis", "llm", "api_key_env"): "_api_key_env",
     ("analysis", "dga", "entropy_threshold"): "dga_entropy_threshold",
@@ -172,6 +191,17 @@ _YAML_KEY_MAP: dict[tuple[str, ...], str] = {
     ("enrichment", "allowlist", "custom_entries"): "allowlist_custom_entries",
     ("enrichment", "connection_metadata", "enabled"): "connection_metadata_enabled",
     ("enrichment", "connection_metadata", "retention_hours"): "connection_metadata_retention_hours",
+    ("fleet", "enabled"): "fleet_enabled",
+    ("fleet", "url"): "fleet_url",
+    ("fleet", "agent_id"): "fleet_agent_id",
+    ("fleet", "ca_cert"): "fleet_ca_cert",
+    ("fleet", "client_cert"): "fleet_client_cert",
+    ("fleet", "client_key"): "fleet_client_key",
+    ("fleet", "forward_interval"): "fleet_forward_interval",
+    ("fleet", "forward_events"): "fleet_forward_events",
+    ("fleet", "heartbeat_interval"): "fleet_heartbeat_interval",
+    ("fleet", "queue_max_size"): "fleet_queue_max_size",
+    ("fleet", "retry_max"): "fleet_retry_max",
 }
 
 
@@ -265,8 +295,9 @@ agent:
   data_dir: "./edr_data"
 
 collector:
-  poll_interval: 5.0       # seconds between collection cycles
+  poll_interval: 1.0       # seconds between collection cycles
   buffer_size: 500          # max events per processing batch
+  event_retention_hours: 24  # Auto-prune processed events older than this
 
 analysis:
   llm:
@@ -309,4 +340,17 @@ tray:
   notification_cooldown_seconds: 60
   notify_on_high: true
   notify_on_critical: true
+
+fleet:
+  enabled: false              # Enable fleet forwarding to central server
+  url: ""                     # Central server gRPC address (host:port)
+  # agent_id: ""              # Auto-generated UUID if empty
+  # ca_cert: ""               # Path to CA certificate for mTLS
+  # client_cert: ""           # Path to client certificate
+  # client_key: ""            # Path to client private key
+  forward_interval: 10        # Seconds between forwarding cycles
+  forward_events: false       # Forward raw OCSF events (high volume)
+  heartbeat_interval: 30      # Seconds between heartbeats
+  queue_max_size: 10000       # Max items buffered locally
+  retry_max: 5                # Max retries per queued item
 """

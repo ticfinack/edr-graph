@@ -1,16 +1,19 @@
 # edr-graph.spec — PyInstaller spec file
-# Bundles NiceGUI's web assets which are required for the dashboard
-import os
-import nicegui
-
 a = Analysis(
-    ['edr_graph/main.py'],
+    ['agent/main.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        (os.path.dirname(nicegui.__file__), 'nicegui'),
+    datas=[],
+    hiddenimports=[
+        'kuzu',
+        'psutil',
+        'pydantic',
+        'fastapi',
+        'uvicorn',
+        'structlog',
+        'grpcio',
+        'google.protobuf',
     ],
-    hiddenimports=['nicegui', 'plotly', 'kuzu', 'psutil', 'pydantic'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -29,6 +32,6 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,
+    console=True,
     disable_windowed_traceback=False,
 )

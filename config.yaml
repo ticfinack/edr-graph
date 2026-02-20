@@ -8,8 +8,9 @@ agent:
   data_dir: "./edr_data"
 
 collector:
-  poll_interval: 5.0       # seconds between collection cycles
+  poll_interval: 1.0       # seconds between collection cycles
   buffer_size: 500          # max events per processing batch
+  event_retention_hours: 24  # Auto-prune processed events older than this
 
 analysis:
   llm:
@@ -44,3 +45,14 @@ metrics:
 dashboard:
   port: 8080
   refresh_interval: 5.0
+
+fleet:
+  enabled: false              # Enable fleet forwarding to central server
+  url: ""                     # Central server gRPC address (host:port)
+  # agent_id: ""              # Auto-generated UUID if empty
+  # ca_cert: ""               # Path to CA certificate for mTLS
+  # client_cert: ""           # Path to client certificate
+  # client_key: ""            # Path to client private key
+  forward_interval: 10        # Seconds between forwarding cycles
+  forward_events: false       # Forward raw OCSF events (high volume)
+  heartbeat_interval: 30      # Seconds between heartbeats

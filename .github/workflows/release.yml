@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: edr-graph-linux
+          - os: macos-latest
+            artifact: edr-graph-macos
+          - os: windows-latest
+            artifact: edr-graph-windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+          pip install grpcio-tools
+      - name: Generate proto stubs
+        run: |
+          python -m grpc_tools.protoc --proto_path=proto --python_out=agent/fleet/proto --grpc_python_out=agent/fleet/proto --pyi_out=agent/fleet/proto proto/fleet.proto
+        shell: bash
+      - name: Fix proto imports (Unix)
+        if: runner.os != 'Windows'
+        run: sed -i 's/^import fleet_pb2/from agent.fleet.proto import fleet_pb2/' agent/fleet/proto/fleet_pb2_grpc.py
+      - name: Fix proto imports (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          (Get-Content agent/fleet/proto/fleet_pb2_grpc.py) -replace '^import fleet_pb2', 'from agent.fleet.proto import fleet_pb2' | Set-Content agent/fleet/proto/fleet_pb2_grpc.py
+        shell: pwsh
+      - name: Build binary
+        run: pyinstaller edr-graph.spec
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            edr-graph-linux/**
+            edr-graph-macos/**
+            edr-graph-windows/**
+          generate_release_notes: true

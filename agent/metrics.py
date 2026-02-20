@@ -77,3 +77,27 @@ queue_depth = Gauge(
     "edr_queue_depth",
     "Number of unprocessed events in the queue",
 )
+
+# Fleet forwarding metrics
+fleet_items_forwarded = Counter(
+    "edr_fleet_items_forwarded_total",
+    "Total items forwarded to fleet server",
+    ["item_type"],
+)
+
+fleet_forwarding_errors = Counter(
+    "edr_fleet_forwarding_errors_total",
+    "Total forwarding errors",
+    ["error_type"],
+)
+
+fleet_forwarding_queue_depth = Gauge(
+    "edr_fleet_forwarding_queue_depth",
+    "Number of items pending in the forwarding queue",
+)
+
+fleet_forwarding_latency = Histogram(
+    "edr_fleet_forwarding_latency_seconds",
+    "Time to forward a batch to fleet server",
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+)

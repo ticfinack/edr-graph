@@ -167,7 +167,7 @@ class TestGenerateDefaultConfig:
 class TestSettingsDefaults:
     def test_settings_have_sensible_defaults(self):
         s = Settings()
-        assert s.collector_poll_interval == 5.0
+        assert s.collector_poll_interval == 1.0
         assert s.processor_poll_interval == 2.0
         assert s.analyzer_interval == 60.0
         assert s.dashboard_port == 9200
