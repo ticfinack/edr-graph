@@ -52,10 +52,7 @@ def _match_chain_recursive(
     if part == "**":
         # '**' matches zero or more chain steps
         # Try consuming 0, 1, 2, ... chain steps
-        for skip in range(ci, len(chain) + 1):
-            if _match_chain_recursive(chain, skip, pattern, pi + 1):
-                return True
-        return False
+        return any(_match_chain_recursive(chain, skip, pattern, pi + 1) for skip in range(ci, len(chain) + 1))
 
     # Need at least one chain element to match
     if ci >= len(chain):

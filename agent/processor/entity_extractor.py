@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import logging
 from datetime import datetime
@@ -9,7 +10,6 @@ from datetime import datetime
 from agent import metrics
 from agent.analysis.dga_detector import analyze_domain
 from agent.analysis.persistence_detector import check_persistence
-
 from agent.schema.graph_types import (
     DomainNode,
     FileNode,
@@ -112,10 +112,8 @@ def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
                     except (psutil.AccessDenied, psutil.ZombieProcess):
                         pass
                 if not proc_node.exe_path:
-                    try:
+                    with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
                         proc_node.exe_path = p.exe()
-                    except (psutil.AccessDenied, psutil.ZombieProcess):
-                        pass
             except Exception:
                 _ppid_cache[pid] = 0  # Don't retry for dead processes
 

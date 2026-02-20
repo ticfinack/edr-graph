@@ -4,11 +4,11 @@ import struct
 from datetime import datetime
 
 from agent.collectors.auditd_collector import (
-    AuditdCollector,
-    _parse_audit_kv,
     _NLMSG_HDR,
     AUDIT_EXECVE,
     AUDIT_SYSCALL,
+    AuditdCollector,
+    _parse_audit_kv,
 )
 from agent.collectors.base import RawEvent
 from agent.normalizer import normalize

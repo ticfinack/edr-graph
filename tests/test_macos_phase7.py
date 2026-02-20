@@ -14,7 +14,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ============================================================================
 # FSEvents Collector Tests
 # ============================================================================
@@ -527,6 +526,7 @@ class TestNormalizerIntegration:
         assert isinstance(ocsf, FileActivity)
         assert ocsf.activity_id == 4  # Delete
 
+    @patch("sys.platform", "darwin")
     def test_persistence_detection_on_fsevents_launchagent(self):
         """FSEvents file_create in LaunchAgents path triggers persistence detection."""
         from agent.collectors.base import RawEvent

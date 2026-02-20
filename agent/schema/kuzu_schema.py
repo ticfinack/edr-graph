@@ -1,5 +1,7 @@
 """Kuzu graph database DDL statements."""
 
+import contextlib
+
 NODE_TABLES = [
     """
     CREATE NODE TABLE IF NOT EXISTS User(
@@ -206,7 +208,5 @@ def init_graph_schema(conn) -> None:
 
     # Apply schema migrations for existing databases
     for migration in MIGRATIONS:
-        try:
+        with contextlib.suppress(RuntimeError):
             conn.execute(migration)
-        except RuntimeError:
-            pass  # Column already exists

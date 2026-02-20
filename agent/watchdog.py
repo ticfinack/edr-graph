@@ -21,6 +21,7 @@ watchdog's heartbeat via check_watchdog_alive().
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -252,10 +253,8 @@ class Watchdog:
         """Clean up PID and heartbeat files."""
         for name in (WATCHDOG_PID_FILE, WATCHDOG_HEARTBEAT_FILE):
             path = self.heartbeat_dir / name
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 path.unlink()
-            except FileNotFoundError:
-                pass
 
     def _handle_signal(self, signum, frame):
         self._log("Received signal %d", signum)

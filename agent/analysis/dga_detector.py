@@ -140,7 +140,7 @@ def analyze_domain(
 
     # Composite score (weighted average)
     weights = [0.30, 0.15, 0.15, 0.25, 0.15]  # entropy, cv, length, bigram, numeric
-    composite = sum(s * w for s, w in zip(scores, weights))
+    composite = sum(s * w for s, w in zip(scores, weights, strict=False))
 
     return DGAResult(
         domain=domain,

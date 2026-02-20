@@ -33,10 +33,7 @@ KERN_PROCARGS2 = 49
 
 # Load libc
 _libc_path = ctypes.util.find_library("c")
-if _libc_path:
-    _libc = ctypes.CDLL(_libc_path)
-else:
-    _libc = None
+_libc = ctypes.CDLL(_libc_path) if _libc_path else None
 
 # Prometheus metrics for enrichment tracking
 try:

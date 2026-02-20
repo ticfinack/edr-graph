@@ -1,5 +1,7 @@
 """SQLite schema and pragmas for event queue and findings tables."""
 
+import contextlib
+
 PRAGMAS = [
     "PRAGMA journal_mode=WAL",
     "PRAGMA synchronous=NORMAL",
@@ -158,8 +160,6 @@ def init_queue_db(conn) -> None:
     for ddl in ALL_DDL:
         conn.execute(ddl)
     for migration in SQLITE_MIGRATIONS:
-        try:
+        with contextlib.suppress(Exception):
             conn.execute(migration)
-        except Exception:
-            pass  # Column already exists
     conn.commit()

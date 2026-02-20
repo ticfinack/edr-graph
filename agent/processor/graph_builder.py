@@ -491,6 +491,7 @@ def backfill_parent_pids(db: kuzu.Database) -> int:
     Returns the number of processes updated or created.
     """
     import socket
+
     import psutil
 
     conn = kuzu.Connection(db)

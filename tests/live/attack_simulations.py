@@ -13,6 +13,7 @@ Run this while the agent is running (use run_live_tests.py first).
 from __future__ import annotations
 
 import base64
+import contextlib
 import os
 import socket
 import subprocess
@@ -525,10 +526,8 @@ def test_kill_chain() -> None:
             "b3x7n2k9m5p1.net",
         ]
         for domain in dga_domains:
-            try:
+            with contextlib.suppress(socket.gaierror):
                 socket.getaddrinfo(domain, 443)
-            except socket.gaierror:
-                pass
             time.sleep(0.5)
         time.sleep(2)
 
@@ -567,10 +566,8 @@ def test_kill_chain() -> None:
         print(f"  {RED}Kill chain error: {e}{RESET}")
         # Best-effort cleanup
         if persistence_cleanup:
-            try:
+            with contextlib.suppress(Exception):
                 persistence_cleanup()
-            except Exception:
-                pass
 
     print()
     print_banner("Kill Chain Complete — Expected Detections")

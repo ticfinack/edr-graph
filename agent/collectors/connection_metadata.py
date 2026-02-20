@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import re
-import sqlite3
 import socket
+import sqlite3
 import struct
 import subprocess
 import threading
@@ -475,8 +476,6 @@ class ConnectionMetadataCollector(Collector):
             self._proc.terminate()
             self._proc = None
         if self._db_conn:
-            try:
+            with contextlib.suppress(Exception):
                 self._db_conn.close()
-            except Exception:
-                pass
             self._db_conn = None

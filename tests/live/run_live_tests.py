@@ -12,6 +12,7 @@ Ctrl+C to shut down.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import signal
@@ -109,10 +110,8 @@ def sum_metric_values(metrics_text: str, metric_name: str) -> float:
         if line.startswith(metric_name + "{") or line.startswith(metric_name + " "):
             parts = line.split()
             if len(parts) >= 2:
-                try:
+                with contextlib.suppress(ValueError):
                     total += float(parts[-1])
-                except ValueError:
-                    pass
     return total
 
 

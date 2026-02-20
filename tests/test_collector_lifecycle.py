@@ -1,6 +1,6 @@
 """Tests for collector lifecycle (start/stop) methods."""
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from agent.collectors.base import Collector, RawEvent
 from agent.collectors.psutil_collector import PsutilCollector
@@ -17,7 +17,10 @@ class TestDefaultLifecycle:
         collector = PsutilCollector()
         collector.stop()  # should not raise
 
-    def test_psutil_lifecycle_roundtrip(self):
+    @patch("agent.collectors.psutil_collector.psutil")
+    def test_psutil_lifecycle_roundtrip(self, mock_psutil):
+        mock_psutil.process_iter.return_value = []
+        mock_psutil.net_connections.return_value = []
         collector = PsutilCollector()
         collector.start()
         events = collector.collect()

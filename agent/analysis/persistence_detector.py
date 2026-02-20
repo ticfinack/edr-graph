@@ -145,9 +145,8 @@ def check_persistence(event: OcsfEvent) -> PersistenceResult | None:
     if isinstance(event, RegistryActivity):
         if event.activity_id in (1, 3):  # Create or Modify
             return _check_registry_persistence(event)
-    elif isinstance(event, FileActivity):
-        if event.activity_id in (1, 3):  # Create or Modify
-            return _check_file_persistence(event)
+    elif isinstance(event, FileActivity) and event.activity_id in (1, 3):  # Create or Modify
+        return _check_file_persistence(event)
     return None
 
 

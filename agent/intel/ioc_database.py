@@ -25,11 +25,10 @@ import logging
 import re
 import threading
 import time
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from urllib.parse import urlparse
-
 import urllib.request
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +73,6 @@ _DOMAIN_ALLOWLIST = frozenset({
     "web.archive.org",
     "archive.org",
     "img1.wsimg.com",
-    "sites.google.com",
     "wordpress.com",
     "blogspot.com",
     "weebly.com",
@@ -206,9 +204,9 @@ class IocDatabase:
             last_refresh_iso = None
             if self._last_refresh > 0:
                 elapsed = time.monotonic() - self._last_refresh
-                wall = datetime.now(timezone.utc).timestamp() - elapsed
+                wall = datetime.now(UTC).timestamp() - elapsed
                 last_refresh_iso = datetime.fromtimestamp(
-                    wall, tz=timezone.utc
+                    wall, tz=UTC
                 ).isoformat()
 
             return {

@@ -10,10 +10,10 @@ from datetime import datetime, timedelta
 import pytest
 
 from agent.collectors.connection_metadata import (
+    _SYN_RE,
     KNOWN_JA3,
     ConnectionMetadata,
     ConnectionMetadataCollector,
-    _SYN_RE,
     cleanup_old_metadata,
     compute_ja3,
     extract_sni_from_client_hello,

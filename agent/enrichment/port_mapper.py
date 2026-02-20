@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from dataclasses import dataclass
@@ -89,10 +90,8 @@ class PortMapper:
                 # Get identity for the listener
                 identity = None
                 if exe:
-                    try:
+                    with contextlib.suppress(Exception):
                         identity = get_process_identity(conn.pid, exe)
-                    except Exception:
-                        pass
 
                 service = ListeningService(
                     port=port,

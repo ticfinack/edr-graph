@@ -6,14 +6,14 @@ import urllib.request
 import pytest
 from prometheus_client import CollectorRegistry
 
+from agent.health import start_health_server
 from agent.metrics import (
-    events_processed_total,
-    events_dropped_total,
     event_processing_latency,
+    events_dropped_total,
+    events_processed_total,
     llm_verdicts,
     queue_depth,
 )
-from agent.health import start_health_server
 
 
 class TestMetricDefinitions:

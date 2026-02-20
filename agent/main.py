@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import multiprocessing
 import os
-from pathlib import Path
 import signal
 import sys
 import threading
 import time
 import webbrowser
+from pathlib import Path
 
 import kuzu
 
@@ -376,13 +377,13 @@ def _check_ioc_matches(ioc_db, ocsf, event_id: int) -> list:
 
     Returns a list of SecurityFinding objects for any matches (usually 0-1).
     """
+    from agent.schema.graph_types import ChainStep, SecurityFinding
     from agent.schema.ocsf_types import (
         Authentication,
         DnsActivity,
         FileActivity,
         NetworkActivity,
     )
-    from agent.schema.graph_types import ChainStep, SecurityFinding
 
     matches = []
 
@@ -538,10 +539,8 @@ def _push_finding_notification(finding) -> None:
 
     # Push to tray icon notification queue
     if _tray_app is not None:
-        try:
+        with contextlib.suppress(Exception):
             _tray_app.push_finding(finding)
-        except Exception:
-            pass
 
 
 def main() -> None:

@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sqlite3
@@ -191,10 +192,8 @@ def check_dga_detected(ctx: ValidationContext) -> None:
         if line.startswith("edr_dga_detections_total "):
             parts = line.split()
             if len(parts) >= 2:
-                try:
+                with contextlib.suppress(ValueError):
                     dga_count = int(float(parts[-1]))
-                except ValueError:
-                    pass
 
     # Also check graph for DGA domains
     stats = ctx.api_get("/api/graph/stats")
@@ -341,10 +340,8 @@ def check_ephemeral_processes(ctx: ValidationContext) -> None:
         if line.startswith("edr_events_processed_total{") and "ProcessActivity" in line:
             parts = line.split()
             if len(parts) >= 2:
-                try:
+                with contextlib.suppress(ValueError):
                     process_events += int(float(parts[-1]))
-                except ValueError:
-                    pass
 
     if process_events >= 20:
         print_pass(name, f"{process_events} ProcessActivity events captured")
@@ -440,10 +437,8 @@ def check_no_dropped_events(ctx: ValidationContext) -> None:
         if line.startswith("edr_events_dropped_total{"):
             parts = line.split()
             if len(parts) >= 2:
-                try:
+                with contextlib.suppress(ValueError):
                     total_dropped += float(parts[-1])
-                except ValueError:
-                    pass
 
     if total_dropped == 0:
         print_pass(name, "events_dropped_total = 0")
@@ -573,8 +568,8 @@ def run_validation(data_dir: Path, metrics_port: int, dashboard_port: int) -> No
 
     for check_fn in checks:
         # Count results by capturing output
-        import io
         import contextlib
+        import io
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):

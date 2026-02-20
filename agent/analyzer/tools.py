@@ -6,6 +6,7 @@ dispatches calls to external APIs (Tier 1/2) and local data (Tier 3).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -336,11 +337,7 @@ def _is_sensitive_path(path: str) -> bool:
     if resolved in _SENSITIVE_PATHS:
         return True
 
-    for pattern in _SENSITIVE_PATTERNS:
-        if pattern in resolved:
-            return True
-
-    return False
+    return any(pattern in resolved for pattern in _SENSITIVE_PATTERNS)
 
 
 def get_active_tools(settings: Settings) -> list[dict[str, Any]]:
@@ -391,10 +388,7 @@ class ToolExecutor:
 
         try:
             handler = getattr(self, f"_handle_{tool_name}", None)
-            if handler is None:
-                result = json.dumps({"error": f"Unknown tool: {tool_name}"})
-            else:
-                result = handler(**arguments)
+            result = json.dumps({"error": f"Unknown tool: {tool_name}"}) if handler is None else handler(**arguments)
         except Exception as exc:
             logger.warning("Tool %s failed: %s", tool_name, exc)
             result = json.dumps({"error": str(exc)})
@@ -667,26 +661,16 @@ class ToolExecutor:
             "status": proc.status(),
         }
 
-        try:
+        with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
             result["exe"] = proc.exe()
-        except (psutil.AccessDenied, psutil.ZombieProcess):
-            pass
-        try:
+        with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
             result["cmdline"] = proc.cmdline()
-        except (psutil.AccessDenied, psutil.ZombieProcess):
-            pass
-        try:
+        with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
             result["ppid"] = proc.ppid()
-        except (psutil.AccessDenied, psutil.ZombieProcess):
-            pass
-        try:
+        with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
             result["username"] = proc.username()
-        except (psutil.AccessDenied, psutil.ZombieProcess):
-            pass
-        try:
+        with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
             result["create_time"] = proc.create_time()
-        except (psutil.AccessDenied, psutil.ZombieProcess):
-            pass
 
         # Network connections
         try:
@@ -761,10 +745,8 @@ class ToolExecutor:
             # Get process name
             proc_name = ""
             if c.pid:
-                try:
+                with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
                     proc_name = psutil.Process(c.pid).name()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
 
             connections.append({
                 "pid": c.pid,

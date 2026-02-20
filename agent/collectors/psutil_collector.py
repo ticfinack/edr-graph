@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import socket
@@ -123,10 +124,8 @@ class PsutilCollector(Collector):
             if self._initialized and conn_key not in self._prev_conns and (conn.pid or 0) not in self._agent_pids:
                 proc_name = ""
                 if conn.pid:
-                    try:
+                    with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
                         proc_name = psutil.Process(conn.pid).name()
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
 
                 events.append(
                     RawEvent(

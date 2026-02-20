@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import json
 import logging
@@ -13,13 +14,12 @@ import kuzu
 from openai import OpenAI
 
 from agent import metrics
-
 from agent.config import Settings
 from agent.enrichment.ip_reputation import classify_ip
+from agent.graph.queries import build_attack_chain, serialize_attack_chain
 from agent.intel.prompt_builder import build_intel_prompt
 from agent.processor.graph_builder import GraphBuilder
 from agent.schema.graph_types import ChainStep, IpNode, SecurityFinding
-from agent.graph.queries import build_attack_chain, serialize_attack_chain
 from agent.schema.ocsf_types import (
     Authentication,
     DnsActivity,
@@ -263,10 +263,8 @@ class LlmAnalyzer:
 
                 # Parse GeoIP JSON and classify
                 geo_data = {}
-                try:
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
                     geo_data = json.loads(geo_raw) if geo_raw else {}
-                except (json.JSONDecodeError, TypeError):
-                    pass
 
                 if geo_data:
                     reputation = classify_ip(geo_data, rdns_str)
@@ -317,9 +315,8 @@ class LlmAnalyzer:
                         process_cmds[name] = event.process.cmd_line
                 if event.actor:
                     users.add(event.actor.user.name)
-            if isinstance(event, NetworkActivity) and event.process:
-                if event.process.name:
-                    process_names.add(event.process.name)
+            if isinstance(event, NetworkActivity) and event.process and event.process.name:
+                process_names.add(event.process.name)
 
         if process_names:
             lines = ["## Pre-enrichment: Process intelligence\n"]
@@ -548,10 +545,8 @@ class LlmAnalyzer:
                     pass
 
             # Connection metadata (SNI, JA3) from SQLite
-            try:
+            with contextlib.suppress(Exception):
                 self._append_connection_metadata(lines, event)
-            except Exception:
-                pass
 
         except Exception:
             logger.debug("Network enrichment failed", exc_info=True)
@@ -565,6 +560,7 @@ class LlmAnalyzer:
 
         try:
             import sqlite3
+
             from agent.collectors.connection_metadata import get_connection_metadata
 
             db_path = str(self._settings.db_path)
@@ -605,11 +601,10 @@ class LlmAnalyzer:
 
         for _, event in events:
             pid = None
-            if isinstance(event, ProcessActivity):
+            if isinstance(event, ProcessActivity) or (
+                isinstance(event, (NetworkActivity, DnsActivity, FileActivity, RegistryActivity)) and event.process
+            ):
                 pid = event.process.pid
-            elif isinstance(event, (NetworkActivity, DnsActivity, FileActivity, RegistryActivity)):
-                if event.process:
-                    pid = event.process.pid
 
             if pid and pid not in seen_pids:
                 seen_pids.add(pid)
@@ -696,11 +691,10 @@ class LlmAnalyzer:
         # Build PID lookup from events: entity_name -> pid
         pid_lookup: dict[str, int] = {}
         for _, event in events:
-            if isinstance(event, ProcessActivity):
+            if isinstance(event, ProcessActivity) or (
+                isinstance(event, (NetworkActivity, DnsActivity, FileActivity, RegistryActivity)) and event.process
+            ):
                 pid_lookup[event.process.name] = event.process.pid
-            elif isinstance(event, (NetworkActivity, DnsActivity, FileActivity, RegistryActivity)):
-                if event.process:
-                    pid_lookup[event.process.name] = event.process.pid
 
         batch_pids = self._collect_batch_pids(events)
 
@@ -866,7 +860,6 @@ class LlmAnalyzer:
             if isinstance(event, ProcessActivity):
                 if event.process.pid > 0:
                     pids.add(event.process.pid)
-            elif isinstance(event, (NetworkActivity, DnsActivity, FileActivity, RegistryActivity)):
-                if event.process and event.process.pid > 0:
-                    pids.add(event.process.pid)
+            elif isinstance(event, (NetworkActivity, DnsActivity, FileActivity, RegistryActivity)) and event.process and event.process.pid > 0:
+                pids.add(event.process.pid)
         return list(pids)

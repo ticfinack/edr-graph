@@ -124,26 +124,26 @@ def _build_sankey(findings: list[SecurityFinding]) -> go.Figure:
         data=[
             go.Sankey(
                 arrangement="snap",
-                node=dict(
-                    pad=15,
-                    thickness=20,
-                    line=dict(color="rgba(255,255,255,0.3)", width=0.5),
-                    label=node_labels,
-                    color=node_colors,
-                ),
-                link=dict(
-                    source=sources,
-                    target=targets,
-                    value=values,
-                    color=link_colors,
-                ),
+                node={
+                    "pad": 15,
+                    "thickness": 20,
+                    "line": {"color": "rgba(255,255,255,0.3)", "width": 0.5},
+                    "label": node_labels,
+                    "color": node_colors,
+                },
+                link={
+                    "source": sources,
+                    "target": targets,
+                    "value": values,
+                    "color": link_colors,
+                },
             )
         ]
     )
 
     fig.update_layout(
         title="Finding Chains: User → Process → IP",
-        font=dict(size=12, color="white"),
+        font={"size": 12, "color": "white"},
         paper_bgcolor="rgba(30,30,30,1)",
         plot_bgcolor="rgba(30,30,30,1)",
         height=600,

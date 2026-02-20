@@ -9,6 +9,7 @@ Tracks all rules added so they can be reverted.
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import logging
 import os
@@ -732,18 +733,16 @@ def _run_command(
                 f"Command {cmd[0]} failed (exit {result.returncode}): {result.stderr.strip()}"
             )
         return result
-    except FileNotFoundError:
-        raise RuntimeError(f"Command not found: {cmd[0]}")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"Command timed out: {' '.join(cmd)}")
+    except FileNotFoundError as e:
+        raise RuntimeError(f"Command not found: {cmd[0]}") from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"Command timed out: {' '.join(cmd)}") from e
 
 
 def _try_delete_netsh_rule(rule_name: str) -> None:
     """Best-effort delete a netsh firewall rule."""
-    try:
+    with contextlib.suppress(Exception):
         _run_command([
             "netsh", "advfirewall", "firewall", "delete", "rule",
             f"name={rule_name}",
         ])
-    except Exception:
-        pass

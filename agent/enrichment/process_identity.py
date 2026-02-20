@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-import plistlib
 import platform
+import plistlib
 import subprocess
 from collections import OrderedDict
 from dataclasses import dataclass

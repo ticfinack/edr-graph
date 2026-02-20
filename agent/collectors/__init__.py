@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import platform
 import logging
+import platform
 
 from .base import Collector, RawEvent
 from .psutil_collector import PsutilCollector

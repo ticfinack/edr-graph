@@ -2,14 +2,14 @@
 
 import sys
 from datetime import datetime
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
+from agent.collectors.base import RawEvent
 from agent.collectors.etw_collector import (
     EtwCollector,
     _classify_event,
     _extract_fields,
 )
-from agent.collectors.base import RawEvent
 
 
 class TestEtwCollector:

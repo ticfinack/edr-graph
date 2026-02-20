@@ -96,7 +96,7 @@ class EtwCollector(Collector):
             import pywintrace  # noqa: F811
 
             self._session = pywintrace.TraceSession("edr-agent-etw")
-            for provider_name, category in _PROVIDERS.items():
+            for provider_name, _category in _PROVIDERS.items():
                 self._session.enable_provider(provider_name)
 
             def _on_event(event_data):

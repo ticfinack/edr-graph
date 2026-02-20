@@ -688,7 +688,7 @@ async def set_response_mode(body: dict):
     try:
         engine.set_mode(mode)
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     return {"mode": engine.response_mode}
 
 
@@ -744,9 +744,9 @@ async def add_allowlist_rule(body: dict):
     try:
         rule_id = allowlist.add_rule(rule_type, pattern, description, chain_filter=chain_filter)
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     except Exception as e:
-        raise HTTPException(500, f"Database error: {e}")
+        raise HTTPException(500, f"Database error: {e}") from e
     return {"status": "ok", "rule_id": rule_id}
 
 
@@ -785,9 +785,9 @@ async def add_blocklist_rule(body: dict):
     try:
         rule_id = blocklist.add_rule(rule_type, pattern, description, chain_filter=chain_filter)
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     except Exception as e:
-        raise HTTPException(500, f"Database error: {e}")
+        raise HTTPException(500, f"Database error: {e}") from e
     return {"status": "ok", "rule_id": rule_id}
 
 
@@ -814,8 +814,8 @@ async def block_connection(body: dict):
         raise HTTPException(400, "ip is required")
     try:
         ipaddress.ip_address(ip)
-    except ValueError:
-        raise HTTPException(400, f"Invalid IP address: {ip!r}")
+    except ValueError as e:
+        raise HTTPException(400, f"Invalid IP address: {ip!r}") from e
     if port is not None:
         port = int(port)
         if not (1 <= port <= 65535):
@@ -836,8 +836,8 @@ async def unblock_connection(body: dict):
         raise HTTPException(400, "ip is required")
     try:
         ipaddress.ip_address(ip)
-    except ValueError:
-        raise HTTPException(400, f"Invalid IP address: {ip!r}")
+    except ValueError as e:
+        raise HTTPException(400, f"Invalid IP address: {ip!r}") from e
     if port is not None:
         port = int(port)
         if not (1 <= port <= 65535):

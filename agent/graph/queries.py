@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 
@@ -496,14 +497,10 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
                 import psutil
                 p = psutil.Process(pid)
                 target_info["name"] = p.name()
-                try:
+                with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
                     target_info["command_line"] = " ".join(p.cmdline())
-                except (psutil.AccessDenied, psutil.ZombieProcess):
-                    pass
-                try:
+                with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
                     target_info["parent_pid"] = p.ppid()
-                except (psutil.AccessDenied, psutil.ZombieProcess):
-                    pass
             except Exception:
                 pass
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
 from datetime import datetime
@@ -50,10 +51,8 @@ def normalize_process(raw: RawEvent) -> ProcessActivity | None:
 
     create_time = None
     if fields.get("create_time"):
-        try:
+        with contextlib.suppress(ValueError):
             create_time = datetime.fromisoformat(fields["create_time"])
-        except ValueError:
-            pass
 
     actor = None
     if username:

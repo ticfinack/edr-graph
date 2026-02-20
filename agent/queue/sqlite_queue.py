@@ -229,10 +229,7 @@ class SqliteQueue:
 
         # Merge evidence_event_ids (union, no duplicates)
         existing_ids = json.loads(row["evidence_event_ids"])
-        if new_evidence_ids:
-            merged = list(dict.fromkeys(existing_ids + new_evidence_ids))
-        else:
-            merged = existing_ids
+        merged = list(dict.fromkeys(existing_ids + new_evidence_ids)) if new_evidence_ids else existing_ids
 
         description = new_description if new_description else row["description"]
 

@@ -25,11 +25,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.collectors.base import RawEvent
 from agent.config import Settings
-from agent.normalizer import normalize
-from agent.processor.entity_extractor import extract_entities
-from agent.processor.graph_builder import GraphBuilder
-from agent.queue.sqlite_queue import SqliteQueue
-from agent.schema.kuzu_schema import init_graph_schema
 from agent.graph.queries import (
     build_attack_chain,
     get_process_chain,
@@ -37,6 +32,11 @@ from agent.graph.queries import (
     get_process_tree,
     serialize_attack_chain,
 )
+from agent.normalizer import normalize
+from agent.processor.entity_extractor import extract_entities
+from agent.processor.graph_builder import GraphBuilder
+from agent.queue.sqlite_queue import SqliteQueue
+from agent.schema.kuzu_schema import init_graph_schema
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

@@ -352,8 +352,7 @@ class ResponseEngine:
             return record
 
         # Check protected process list for process-targeting actions
-        if action in (ResponseAction.SUSPEND_PROCESS, ResponseAction.TERMINATE_PROCESS):
-            if process_name and self.policy.is_protected(process_name):
+        if action in (ResponseAction.SUSPEND_PROCESS, ResponseAction.TERMINATE_PROCESS) and process_name and self.policy.is_protected(process_name):
                 record.result = "blocked_protected"
                 record.result_detail = f"Process '{process_name}' is protected"
                 record.approval_status = "not_required"
@@ -474,6 +473,6 @@ class ResponseEngine:
 
 def _ts_to_iso(ts: float) -> str:
     """Convert a Unix timestamp to ISO 8601 string."""
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
 
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(ts, tz=UTC).isoformat()

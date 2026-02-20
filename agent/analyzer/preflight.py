@@ -43,12 +43,12 @@ _MACOS_SYSTEM_BASELINE: frozenset[str] = frozenset({
     "apsd", "identityservicesd", "wirelessproxd", "bluetoothd",
     "bluetoothaudiod", "WiFiAgent", "airportd",
     # Security / Auth
-    "securityd", "trustd", "opendirectoryd", "AuthenticationServicesAgent",
+    "securityd", "opendirectoryd", "AuthenticationServicesAgent",
     # Power / Hardware
     "powerd", "thermalmonitord", "coreduetd", "ioreportMacScheduler",
     "syslogd", "systemstats", "diagnosticd",
     # iCloud / Apple services
-    "cloudd", "bird", "nsurlsessiond", "mediaremoted",
+    "cloudd", "bird", "mediaremoted",
     "callservicesd", "akd", "amsaccountsd",
     # User apps (routine)
     "Safari", "Finder", "Mail", "Messages", "Calendar", "Notes",

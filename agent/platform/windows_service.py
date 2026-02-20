@@ -19,6 +19,7 @@ Requires: pywin32 (only available on Windows)
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sys
 
@@ -100,10 +101,8 @@ def _get_service_class():
             # Run main() in a thread so we can wait for the stop event
             def agent_main():
                 sys.argv = [sys.argv[0], "--no-dashboard", "--log-format", "json"]
-                try:
+                with contextlib.suppress(SystemExit):
                     main()
-                except SystemExit:
-                    pass
 
             self._agent_thread = threading.Thread(
                 target=agent_main, daemon=True, name="agent-main"

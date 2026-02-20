@@ -20,9 +20,9 @@ import kuzu
 import pytest
 
 from agent.enrichment.process_identity import ProcessIdentity, clear_cache
+from agent.queue.sqlite_queue import SqliteQueue
 from agent.schema.graph_types import ChainStep, ProcessNode, SecurityFinding
 from agent.schema.kuzu_schema import init_graph_schema
-from agent.queue.sqlite_queue import SqliteQueue
 
 
 @pytest.fixture(autouse=True)
@@ -223,6 +223,7 @@ class TestConnectionMetadataStorage:
 
     def test_store_and_query(self, tmp_path):
         import sqlite3
+
         from agent.collectors.connection_metadata import (
             ConnectionMetadata,
             get_connection_metadata,

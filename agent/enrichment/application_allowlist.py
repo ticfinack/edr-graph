@@ -335,16 +335,12 @@ def _match_pattern(
     """Check if a connection matches a specific NetworkPattern."""
     if pattern.pattern_type == "localhost_ipc":
         if dest_ip in ("127.0.0.1", "::1", "localhost") or dest_ip.startswith("127."):
-            if pattern.ports and dest_port not in pattern.ports:
-                return False
-            return True
+            return not (pattern.ports and dest_port not in pattern.ports)
         return False
 
     elif pattern.pattern_type == "domain":
         hostname = tls_sni or http_host
-        if hostname and fnmatch.fnmatch(hostname, pattern.value):
-            return True
-        return False
+        return bool(hostname and fnmatch.fnmatch(hostname, pattern.value))
 
     elif pattern.pattern_type == "ip_range":
         try:

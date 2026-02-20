@@ -10,6 +10,7 @@ Requires root or ``CAP_AUDIT_READ`` capability.
 from __future__ import annotations
 
 import collections
+import contextlib
 import logging
 import re
 import socket
@@ -79,10 +80,8 @@ class AuditdCollector(Collector):
         """Signal the consumer to stop and close the socket."""
         self._stop_event.set()
         if self._sock is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._sock.close()
-            except Exception:
-                pass
             self._sock = None
         self._thread = None
 
@@ -109,7 +108,7 @@ class AuditdCollector(Collector):
                     if not data:
                         continue
                     self._parse_netlink_messages(data)
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 except OSError:
                     if self._stop_event.is_set():

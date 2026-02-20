@@ -18,7 +18,7 @@ import socket
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .base import Collector, RawEvent
 
@@ -137,7 +137,7 @@ class _FSEventsHandler(FileSystemEventHandler):
                 }
 
         raw = RawEvent(
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             source=event_type,
             message=f"{event_type}: {path}",
             fields={

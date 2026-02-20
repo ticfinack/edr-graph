@@ -11,6 +11,7 @@ the LaunchAgent/Daemon actually does.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -19,7 +20,7 @@ import socket
 import sys
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .base import Collector, RawEvent
 
@@ -147,10 +148,8 @@ class MacOSPersistencePoller(Collector):
         # Get recently seen paths from FSEvents for deduplication
         fsevents_recent: set[str] = set()
         if self._fsevents_collector is not None:
-            try:
+            with contextlib.suppress(Exception):
                 fsevents_recent = self._fsevents_collector.get_recent_paths()
-            except Exception:
-                pass
 
         for d in self._directories:
             expanded = os.path.expanduser(d)
@@ -257,7 +256,7 @@ class MacOSPersistencePoller(Collector):
     def _emit(self, event_type: str, path: str, fields: dict) -> None:
         """Create and buffer a RawEvent."""
         raw = RawEvent(
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             source=event_type,
             message=f"{event_type}: {path}",
             fields=fields,

@@ -52,6 +52,7 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py311"
 line-length = 120
+exclude = ["agent/fleet/proto"]
 
 [tool.ruff.lint]
 select = [
@@ -73,11 +74,16 @@ ignore = [
     "N803",   # argument name lowercase (gRPC generated code)
     "N806",   # variable in function should be lowercase
     "UP035",  # deprecated typing imports (compatibility)
+    "UP042",  # str+Enum inheritance (StrEnum requires careful migration)
+    "B027",   # empty methods in ABC without @abstractmethod (intentional no-op defaults)
+    "A002",   # builtin shadowing in function args (e.g. log_message format param)
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S106"]
 "agent/fleet/proto/**" = ["E501", "F401", "N802", "N803", "N806"]
+"server/tests/test_grpc_service.py" = ["F401"]
+"server/tests/test_neo4j_client.py" = ["I001"]
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv", "agent/fleet/proto"]

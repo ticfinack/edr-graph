@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from agent.enrichment.application_allowlist import (
-    AllowlistEntry,
     BUILTIN_ALLOWLIST,
+    AllowlistEntry,
     NetworkPattern,
     _rebuild_indexes,
     check_allowlist,

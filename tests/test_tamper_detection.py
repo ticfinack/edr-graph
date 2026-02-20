@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from agent.platform.tamper_detection import (
-    TamperCheckResult,
     TamperChecker,
+    TamperCheckResult,
     TamperEvent,
     compute_file_hash,
     scan_agent_files,

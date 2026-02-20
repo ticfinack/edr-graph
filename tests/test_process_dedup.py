@@ -297,3 +297,15 @@ class TestProcessNodeDedup:
         assert entities1.processes[0].id == entities2.processes[0].id
         expected_id = f"test-host:42:{int(1700000000.0)}"
         assert entities1.processes[0].id == expected_id
+
+
+def teardown_module():
+    """Restore original sys.modules entries after all tests in this module."""
+    if _original_psutil is not None:
+        sys.modules["psutil"] = _original_psutil
+    else:
+        sys.modules.pop("psutil", None)
+    if _original_kuzu is not None:
+        sys.modules["kuzu"] = _original_kuzu
+    else:
+        sys.modules.pop("kuzu", None)

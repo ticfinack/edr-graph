@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import platform
 
-from .lolbins import GTFOBINS_BINARIES, LOOBINS_BINARIES, LOLBAS_BINARIES
+from .lolbins import GTFOBINS_BINARIES, LOLBAS_BINARIES, LOOBINS_BINARIES
 from .process_hierarchy import LINUX_HIERARCHY, MACOS_HIERARCHY, WINDOWS_HIERARCHY
 
 

@@ -50,6 +50,7 @@ class TestDashboardServer:
     def test_index_serves_html(self):
         """GET / should serve the index.html file."""
         from fastapi.testclient import TestClient
+
         from agent.dashboard.server import app
 
         client = TestClient(app)
@@ -82,6 +83,7 @@ class TestDashboardServer:
     def test_api_status(self):
         """GET /api/status should return agent status."""
         from fastapi.testclient import TestClient
+
         from agent.dashboard.server import app
 
         client = TestClient(app)
@@ -97,7 +99,8 @@ class TestDashboardServer:
     def test_api_status_paused(self):
         """GET /api/status should reflect paused state."""
         from fastapi.testclient import TestClient
-        from agent.dashboard.server import app, _state
+
+        from agent.dashboard.server import _state, app
 
         _state["paused"] = True
         client = TestClient(app)
@@ -108,6 +111,7 @@ class TestDashboardServer:
     def test_api_findings_empty(self):
         """GET /api/findings should return empty list when no findings."""
         from fastapi.testclient import TestClient
+
         from agent.dashboard.server import app
 
         client = TestClient(app)
@@ -120,6 +124,7 @@ class TestDashboardServer:
     def test_api_events_recent(self):
         """GET /api/events/recent should return recent events."""
         from fastapi.testclient import TestClient
+
         from agent.dashboard.server import app, append_recent_event
 
         # Add some test events
@@ -135,6 +140,7 @@ class TestDashboardServer:
     def test_api_events_filter_by_source(self):
         """GET /api/events/recent should filter by source."""
         from fastapi.testclient import TestClient
+
         from agent.dashboard.server import app, append_recent_event
 
         append_recent_event({"source": "dns", "event_type": "dns_resolve"})
@@ -150,7 +156,8 @@ class TestDashboardServer:
     def test_api_pause_resume(self):
         """POST /api/pause and /api/resume should toggle pause state."""
         from fastapi.testclient import TestClient
-        from agent.dashboard.server import app, _state
+
+        from agent.dashboard.server import _state, app
 
         client = TestClient(app)
 
@@ -169,6 +176,7 @@ class TestDashboardServer:
     def test_api_metrics(self):
         """GET /api/metrics should return Prometheus metrics as JSON."""
         from fastapi.testclient import TestClient
+
         from agent.dashboard.server import app
 
         client = TestClient(app)
@@ -180,6 +188,7 @@ class TestDashboardServer:
     def test_api_graph_stats_no_db(self):
         """GET /api/graph/stats should return 503 when no graph DB."""
         from fastapi.testclient import TestClient
+
         from agent.dashboard.server import app
 
         client = TestClient(app)
@@ -189,6 +198,7 @@ class TestDashboardServer:
     def test_api_settings_no_settings(self):
         """GET /api/settings should return empty dict when no settings."""
         from fastapi.testclient import TestClient
+
         from agent.dashboard.server import app
 
         client = TestClient(app)
@@ -213,6 +223,7 @@ class TestDashboardServer:
     def test_append_recent_event_thread_safe(self):
         """append_recent_event should be thread-safe."""
         import threading
+
         from agent.dashboard.server import append_recent_event, recent_events
 
         errors = []
@@ -236,7 +247,7 @@ class TestDashboardServer:
 
     def test_init_dashboard(self):
         """init_dashboard should set shared state."""
-        from agent.dashboard.server import init_dashboard, _state
+        from agent.dashboard.server import _state, init_dashboard
 
         mock_queue = MagicMock()
         mock_db = MagicMock()
@@ -417,7 +428,7 @@ class TestIconGeneration:
 
     def test_all_icon_colors(self):
         """All four icon colors should produce valid PNGs."""
-        from agent.tray.macos_tray import _ICON_GREEN, _ICON_ORANGE, _ICON_RED, _ICON_GRAY
+        from agent.tray.macos_tray import _ICON_GRAY, _ICON_GREEN, _ICON_ORANGE, _ICON_RED
 
         for icon in [_ICON_GREEN, _ICON_ORANGE, _ICON_RED, _ICON_GRAY]:
             assert icon[:8] == b"\x89PNG\r\n\x1a\n"
