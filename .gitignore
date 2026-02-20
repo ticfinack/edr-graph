@@ -17,3 +17,8 @@ certs/
 
 # Neo4j data (Docker volume)
 neo4j_data/
+
+# Local development artifacts
+.claude/
+test-results/
+phase9-traffic-context-prompt.md
