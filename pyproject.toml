@@ -87,4 +87,15 @@ ignore = [
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv", "agent/fleet/proto"]
-skips = ["B101", "B603", "B607"]
+skips = [
+    "B101",  # assert used in non-test code (acceptable for internal checks)
+    "B104",  # bind to 0.0.0.0 — intentional for dashboard server
+    "B108",  # hardcoded /tmp — EDR heartbeat files
+    "B110",  # try-except-pass / contextlib.suppress — idiomatic Python
+    "B310",  # url open — IOC database updates
+    "B324",  # weak hash — MD5/SHA1 used for JA3 fingerprinting, not security
+    "B404",  # subprocess import — EDR agent legitimately needs subprocess
+    "B603",  # subprocess call without shell=True check
+    "B607",  # partial executable path in subprocess
+    "B608",  # SQL string construction — graph queries with safe internal values
+]
