@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import sys
 import time
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -95,9 +93,7 @@ class MetricsParser:
         """Get a single metric value, optionally filtered by labels."""
         entries = self._cache.get(name, [])
         for entry_labels, value in entries:
-            if labels is None or all(
-                entry_labels.get(k) == v for k, v in labels.items()
-            ):
+            if labels is None or all(entry_labels.get(k) == v for k, v in labels.items()):
                 return value
         return None
 
@@ -112,9 +108,7 @@ class MetricsParser:
         """Get all (labels, value) pairs for a metric."""
         return self._cache.get(name, [])
 
-    def get_histogram_quantile(
-        self, name: str, quantile: float
-    ) -> float | None:
+    def get_histogram_quantile(self, name: str, quantile: float) -> float | None:
         """Estimate a histogram quantile from bucket data."""
         buckets = self.get_all(name + "_bucket")
         if not buckets:
@@ -124,10 +118,7 @@ class MetricsParser:
         sorted_buckets = []
         for labels, count in buckets:
             le = labels.get("le", "+Inf")
-            if le == "+Inf":
-                le_val = float("inf")
-            else:
-                le_val = float(le)
+            le_val = float("inf") if le == "+Inf" else float(le)
             sorted_buckets.append((le_val, count))
         sorted_buckets.sort(key=lambda x: x[0])
 
@@ -228,10 +219,7 @@ def print_dashboard(
     p50 = metrics.get_histogram_quantile("edr_event_processing_latency_seconds", 0.5)
     p95 = metrics.get_histogram_quantile("edr_event_processing_latency_seconds", 0.95)
     p99 = metrics.get_histogram_quantile("edr_event_processing_latency_seconds", 0.99)
-    print(
-        f"  Event processing (p50/p95/p99): "
-        f"{format_latency(p50)} / {format_latency(p95)} / {format_latency(p99)}"
-    )
+    print(f"  Event processing (p50/p95/p99): {format_latency(p50)} / {format_latency(p95)} / {format_latency(p99)}")
 
     # LLM latency
     llm_p50 = metrics.get_histogram_quantile("edr_llm_call_latency_seconds", 0.5)
@@ -243,17 +231,10 @@ def print_dashboard(
     )
 
     # Attack chain latency
-    chain_p50 = metrics.get_histogram_quantile(
-        "edr_attack_chain_build_latency_seconds", 0.5
-    )
-    chain_p95 = metrics.get_histogram_quantile(
-        "edr_attack_chain_build_latency_seconds", 0.95
-    )
+    chain_p50 = metrics.get_histogram_quantile("edr_attack_chain_build_latency_seconds", 0.5)
+    chain_p95 = metrics.get_histogram_quantile("edr_attack_chain_build_latency_seconds", 0.95)
     if chain_p50 is not None or chain_p95 is not None:
-        print(
-            f"  Attack chain build (p50/p95):    "
-            f"{format_latency(chain_p50)} / {format_latency(chain_p95)}"
-        )
+        print(f"  Attack chain build (p50/p95):    {format_latency(chain_p50)} / {format_latency(chain_p95)}")
 
     # LLM verdicts
     print(f"\n  {BOLD}--- LLM Verdicts ---{RESET}")
@@ -287,10 +268,7 @@ def print_dashboard(
     tamper_checks = metrics.get("edr_tamper_checks_total") or 0
     tamper_detections = metrics.sum("edr_tamper_detections_total")
     if tamper_checks > 0 or tamper_detections > 0:
-        print(
-            f"  Tamper checks: {tamper_checks:.0f}  "
-            f"detections: {tamper_detections:.0f}"
-        )
+        print(f"  Tamper checks: {tamper_checks:.0f}  detections: {tamper_detections:.0f}")
 
     # Event sources breakdown
     print(f"\n  {BOLD}--- Event Sources ---{RESET}")
@@ -333,10 +311,7 @@ def main() -> None:
             health_data = fetch_health(args.port)
 
             if metrics_text is None:
-                print(
-                    f"  {RED}Cannot reach metrics endpoint on port {args.port}. "
-                    f"Is the agent running?{RESET}"
-                )
+                print(f"  {RED}Cannot reach metrics endpoint on port {args.port}. Is the agent running?{RESET}")
                 time.sleep(args.interval)
                 continue
 

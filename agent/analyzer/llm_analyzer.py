@@ -51,9 +51,7 @@ class LlmAnalyzer:
         else:
             self._tools = []
 
-        self._system_prompt = build_intel_prompt(
-            tools=self._tools if self._tools else None
-        )
+        self._system_prompt = build_intel_prompt(tools=self._tools if self._tools else None)
         logger.info(
             "Intel prompt built: ~%d chars, %d tools active",
             len(self._system_prompt),
@@ -66,9 +64,7 @@ class LlmAnalyzer:
                 base_url=settings.deepinfra_base_url,
             )
 
-    def analyze_batch(
-        self, events: list[tuple[int, OcsfEvent]]
-    ) -> list[SecurityFinding]:
+    def analyze_batch(self, events: list[tuple[int, OcsfEvent]]) -> list[SecurityFinding]:
         """Analyze a batch of novel OCSF events. Returns security findings."""
         if not events:
             return []
@@ -95,9 +91,7 @@ class LlmAnalyzer:
             logger.exception("LLM analysis failed")
             return []
 
-    def _analyze_single_shot(
-        self, batch_context: str, events: list[tuple[int, OcsfEvent]]
-    ) -> list[SecurityFinding]:
+    def _analyze_single_shot(self, batch_context: str, events: list[tuple[int, OcsfEvent]]) -> list[SecurityFinding]:
         """Original single-call path (no tools)."""
         t0 = time.monotonic()
         response = self._client.chat.completions.create(
@@ -115,9 +109,7 @@ class LlmAnalyzer:
             metrics.llm_verdicts.labels(severity=f.severity).inc()
         return findings
 
-    def _analyze_with_tools(
-        self, batch_context: str, events: list[tuple[int, OcsfEvent]]
-    ) -> list[SecurityFinding]:
+    def _analyze_with_tools(self, batch_context: str, events: list[tuple[int, OcsfEvent]]) -> list[SecurityFinding]:
         """Tool-use loop: LLM can call tools up to max_iterations rounds."""
         cache = ToolCache()
         executor = ToolExecutor(self._settings, self._kuzu_db, cache)
@@ -142,8 +134,7 @@ class LlmAnalyzer:
             # If model finished without tool calls, parse the result
             if choice.finish_reason == "stop":
                 logger.info(
-                    "Tool-use loop completed after %d iteration(s), "
-                    "cache: {entries: %d}",
+                    "Tool-use loop completed after %d iteration(s), cache: {entries: %d}",
                     iteration,
                     cache.size,
                 )
@@ -157,8 +148,7 @@ class LlmAnalyzer:
             if not tool_calls:
                 # No tool calls and not "stop" — treat as final answer
                 logger.info(
-                    "Tool-use loop completed after %d iteration(s) (no tool calls), "
-                    "cache: {entries: %d}",
+                    "Tool-use loop completed after %d iteration(s) (no tool calls), cache: {entries: %d}",
                     iteration,
                     cache.size,
                 )
@@ -177,30 +167,30 @@ class LlmAnalyzer:
                     fn_args = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
                     fn_args = {}
-                logger.debug(
-                    "Tool call [iter %d]: %s(%s)", iteration, fn_name, fn_args
-                )
+                logger.debug("Tool call [iter %d]: %s(%s)", iteration, fn_name, fn_args)
                 result = executor.execute(fn_name, fn_args)
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": result,
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result,
+                    }
+                )
 
         # Exhausted iterations — force a final answer without tools
         logger.warning(
-            "Tool-use loop exhausted %d iterations, forcing final answer. "
-            "cache: {entries: %d}",
+            "Tool-use loop exhausted %d iterations, forcing final answer. cache: {entries: %d}",
             max_iter,
             cache.size,
         )
-        messages.append({
-            "role": "user",
-            "content": (
-                "You have used all available investigation rounds. "
-                "Please produce your final findings JSON now."
-            ),
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "You have used all available investigation rounds. Please produce your final findings JSON now."
+                ),
+            }
+        )
         t0 = time.monotonic()
         response = self._client.chat.completions.create(
             model=self._settings.deepinfra_model,
@@ -329,27 +319,35 @@ class LlmAnalyzer:
                 )
                 lines.append(f"Graph history: {ctx}")
                 # MITRE lookup for the process name
-                mitre = executor.execute(
-                    "mitre_attack_lookup", {"query": proc}
-                )
+                mitre = executor.execute("mitre_attack_lookup", {"query": proc})
                 if '"error"' not in mitre:
                     lines.append(f"MITRE ATT&CK: {mitre}")
                 # If we have a command line, also look up key commands in it
                 cmd = process_cmds.get(proc, "")
                 if cmd:
                     # Extract interesting keywords from command line
-                    for keyword in ("curl", "wget", "ssh", "nc", "base64",
-                                    "chmod", "chown", "sudo", "osascript",
-                                    "python", "perl", "ruby", "shell",
-                                    "keychain", "security", "launchctl"):
+                    for keyword in (
+                        "curl",
+                        "wget",
+                        "ssh",
+                        "nc",
+                        "base64",
+                        "chmod",
+                        "chown",
+                        "sudo",
+                        "osascript",
+                        "python",
+                        "perl",
+                        "ruby",
+                        "shell",
+                        "keychain",
+                        "security",
+                        "launchctl",
+                    ):
                         if keyword in cmd.lower() and keyword != proc.lower():
-                            mitre_cmd = executor.execute(
-                                "mitre_attack_lookup", {"query": keyword}
-                            )
+                            mitre_cmd = executor.execute("mitre_attack_lookup", {"query": keyword})
                             if '"error"' not in mitre_cmd:
-                                lines.append(
-                                    f"MITRE ATT&CK ({keyword} in cmd): {mitre_cmd}"
-                                )
+                                lines.append(f"MITRE ATT&CK ({keyword} in cmd): {mitre_cmd}")
                             break  # one keyword match is enough
                 lines.append("")
             sections.append("\n".join(lines))
@@ -376,9 +374,7 @@ class LlmAnalyzer:
             for ip in sorted(public_ips):
                 match = self._ioc_db.check_ip(ip)
                 if match:
-                    ioc_lines.append(
-                        f"IOC FEED MATCH: {ip} — {match.feed_name}: {match.description}"
-                    )
+                    ioc_lines.append(f"IOC FEED MATCH: {ip} — {match.feed_name}: {match.description}")
                     has_match = True
                     ioc_matches_found += 1
 
@@ -391,9 +387,7 @@ class LlmAnalyzer:
             for domain in sorted(dns_domains):
                 match = self._ioc_db.check_domain(domain)
                 if match:
-                    ioc_lines.append(
-                        f"IOC FEED MATCH: {domain} — {match.feed_name}: {match.description}"
-                    )
+                    ioc_lines.append(f"IOC FEED MATCH: {domain} — {match.feed_name}: {match.description}")
                     has_match = True
                     ioc_matches_found += 1
 
@@ -406,8 +400,7 @@ class LlmAnalyzer:
 
         enrichment = "\n\n".join(sections)
         logger.info(
-            "Pre-enriched %d IP(s), %d process(es), %d user(s), "
-            "%d IOC feed match(es), cache: {entries: %d}",
+            "Pre-enriched %d IP(s), %d process(es), %d user(s), %d IOC feed match(es), cache: {entries: %d}",
             len(public_ips),
             len(process_names),
             len(users),
@@ -435,9 +428,7 @@ class LlmAnalyzer:
                 if event.process:
                     lines.append(f"Process: {event.process.name}")
                 if event.dst_endpoint:
-                    lines.append(
-                        f"Destination: {event.dst_endpoint.ip}:{event.dst_endpoint.port}"
-                    )
+                    lines.append(f"Destination: {event.dst_endpoint.ip}:{event.dst_endpoint.port}")
                 # Add enrichment context for network events
                 self._append_network_enrichment(lines, event)
             elif isinstance(event, Authentication):
@@ -460,9 +451,7 @@ class LlmAnalyzer:
                 if event.process:
                     lines.append(f"Process: {event.process.name}")
                 op_names = {1: "Create", 3: "Modify", 4: "Delete"}
-                lines.append(
-                    f"Registry {op_names.get(event.activity_id, 'Op')}: {event.reg_path}"
-                )
+                lines.append(f"Registry {op_names.get(event.activity_id, 'Op')}: {event.reg_path}")
                 if event.reg_value_name:
                     lines.append(f"Value: {event.reg_value_name} = {event.reg_value_data}")
             lines.append("")
@@ -498,9 +487,7 @@ class LlmAnalyzer:
 
         return "\n".join(lines)
 
-    def _append_network_enrichment(
-        self, lines: list[str], event: NetworkActivity
-    ) -> None:
+    def _append_network_enrichment(self, lines: list[str], event: NetworkActivity) -> None:
         """Append process identity and allowlist context for a NetworkActivity event."""
         try:
             if not event.process or not event.dst_endpoint:
@@ -511,12 +498,13 @@ class LlmAnalyzer:
             if event.process.exe_path:
                 try:
                     from agent.enrichment.process_identity import get_process_identity
+
                     identity = get_process_identity(event.process.pid, event.process.exe_path)
                     if identity and identity.code_signed:
                         notarized = "notarized" if identity.is_notarized else "not notarized"
                         lines.append(
                             f"Identity: {identity.bundle_id or 'N/A'}, "
-                            f"signed by \"{identity.signing_authority or 'unknown'}\", "
+                            f'signed by "{identity.signing_authority or "unknown"}", '
                             f"{notarized}"
                         )
                 except ImportError:
@@ -526,6 +514,7 @@ class LlmAnalyzer:
             if self._settings.allowlist_enabled:
                 try:
                     from agent.enrichment.application_allowlist import check_allowlist
+
                     result = check_allowlist(
                         process_identity=identity,
                         dest_ip=event.dst_endpoint.ip or "",
@@ -534,13 +523,10 @@ class LlmAnalyzer:
                     )
                     if result.is_allowed:
                         lines.append(
-                            f"Allowlist: MATCH — \"{result.matched_pattern.description}\" "
-                            f"({result.risk_reduction})"
+                            f'Allowlist: MATCH — "{result.matched_pattern.description}" ({result.risk_reduction})'
                         )
                     elif result.matched_entry:
-                        lines.append(
-                            f"Allowlist: NO MATCH — {result.explanation}"
-                        )
+                        lines.append(f"Allowlist: NO MATCH — {result.explanation}")
                 except ImportError:
                     pass
 
@@ -551,9 +537,7 @@ class LlmAnalyzer:
         except Exception:
             logger.debug("Network enrichment failed", exc_info=True)
 
-    def _append_connection_metadata(
-        self, lines: list[str], event: NetworkActivity
-    ) -> None:
+    def _append_connection_metadata(self, lines: list[str], event: NetworkActivity) -> None:
         """Look up connection metadata (SNI, JA3) from SQLite for this event."""
         if not event.dst_endpoint:
             return
@@ -585,6 +569,7 @@ class LlmAnalyzer:
                     lines.append(f"TLS SNI: {sni}")
                 if ja3:
                     from agent.collectors.connection_metadata import KNOWN_JA3
+
                     ja3_info = KNOWN_JA3.get(ja3)
                     if ja3_info:
                         lines.append(f"JA3: {ja3} ({ja3_info['app']}, risk: {ja3_info['risk']})")
@@ -668,9 +653,7 @@ class LlmAnalyzer:
 
         return "\n".join(lines)
 
-    def _parse_findings(
-        self, content: str, events: list[tuple[int, OcsfEvent]]
-    ) -> list[SecurityFinding]:
+    def _parse_findings(self, content: str, events: list[tuple[int, OcsfEvent]]) -> list[SecurityFinding]:
         """Parse LLM response into SecurityFinding objects."""
         # Extract JSON from the response
         content = content.strip()
@@ -696,18 +679,26 @@ class LlmAnalyzer:
             ):
                 pid_lookup[event.process.name] = event.process.pid
 
-        batch_pids = self._collect_batch_pids(events)
-
         findings = []
         for raw in raw_findings:
             try:
+                # Validate required fields before processing
+                title = raw.get("title", "").strip()
+                description = raw.get("description", "").strip()
+                if not title or not description:
+                    logger.warning(
+                        "Skipping malformed LLM finding: missing title or description (keys: %s)",
+                        list(raw.keys()),
+                    )
+                    continue
+
                 # Check if this is an update to an existing finding
                 finding_id = raw.get("id")
                 if finding_id and self._queue and self._is_existing_finding(finding_id):
                     self._queue.update_finding(
                         finding_id,
                         new_evidence_ids=raw.get("evidence_event_ids"),
-                        new_description=raw.get("description"),
+                        new_description=description,
                         new_severity=raw.get("severity"),
                     )
                     logger.info("Updated existing finding %s", finding_id)
@@ -739,16 +730,13 @@ class LlmAnalyzer:
                         if step.pid is not None:
                             finding_pids.add(step.pid)
 
-                # Build affected_pids: prefer LLM-provided, then chain-extracted,
-                # then all PIDs from the batch.  Filter to real ints > 0.
+                # Build affected_pids: prefer LLM-provided, then chain-extracted.
+                # Filter to real ints >= 0 (PID 0 is valid on macOS).
                 affected_pids = [
-                    int(p) for p in (raw.get("affected_pids") or [])
-                    if isinstance(p, (int, float)) and int(p) > 0
+                    int(p) for p in (raw.get("affected_pids") or []) if isinstance(p, (int, float)) and int(p) > 0
                 ]
                 if not affected_pids:
-                    affected_pids = sorted(p for p in finding_pids if p > 0)
-                if not affected_pids:
-                    affected_pids = batch_pids
+                    affected_pids = sorted(p for p in finding_pids if p >= 0)
 
                 # Extract IOCs from LLM output
                 raw_iocs = raw.get("iocs") or {}
@@ -762,8 +750,8 @@ class LlmAnalyzer:
                     id=str(uuid.uuid4()),
                     timestamp=datetime.now(),
                     severity=raw.get("severity", "info"),
-                    title=raw.get("title", "Unknown finding"),
-                    description=raw.get("description", ""),
+                    title=title,
+                    description=description,
                     affected_entities=raw.get("affected_entities", []),
                     evidence_event_ids=raw.get("evidence_event_ids", []),
                     recommendation=raw.get("recommendation", ""),
@@ -773,7 +761,7 @@ class LlmAnalyzer:
                 )
                 findings.append(finding)
             except Exception:
-                logger.debug("Failed to parse individual finding", exc_info=True)
+                logger.warning("Failed to parse individual finding", exc_info=True)
 
         return findings
 
@@ -783,16 +771,12 @@ class LlmAnalyzer:
             return False
         try:
             conn = self._queue._get_conn()
-            row = conn.execute(
-                "SELECT id FROM findings WHERE id = ?", (finding_id,)
-            ).fetchone()
+            row = conn.execute("SELECT id FROM findings WHERE id = ?", (finding_id,)).fetchone()
             return row is not None
         except Exception:
             return False
 
-    def _build_chain_from_events(
-        self, events: list[tuple[int, OcsfEvent]]
-    ) -> list[ChainStep]:
+    def _build_chain_from_events(self, events: list[tuple[int, OcsfEvent]]) -> list[ChainStep]:
         """Build a chain from the events if the LLM didn't provide one."""
         chain = []
         for _, event in events[:3]:  # Use first 3 events max
@@ -860,6 +844,10 @@ class LlmAnalyzer:
             if isinstance(event, ProcessActivity):
                 if event.process.pid > 0:
                     pids.add(event.process.pid)
-            elif isinstance(event, (NetworkActivity, DnsActivity, FileActivity, RegistryActivity)) and event.process and event.process.pid > 0:
+            elif (
+                isinstance(event, (NetworkActivity, DnsActivity, FileActivity, RegistryActivity))
+                and event.process
+                and event.process.pid > 0
+            ):
                 pids.add(event.process.pid)
         return list(pids)

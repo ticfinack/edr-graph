@@ -44,7 +44,8 @@ a:hover{text-decoration:underline}
 .card-sub{color:var(--dim);font-size:12px;margin-top:4px}
 
 /* Tables */
-table{width:100%;border-collapse:collapse}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+td.mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 th{text-align:left;padding:8px 12px;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border);font-weight:500}
 td{padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px}
 tr:hover{background:rgba(59,130,246,0.05)}
@@ -173,7 +174,7 @@ svg .edge-arrow{fill:var(--dim)}
 <!-- ── Findings ──────────────────────────────────────────────────── -->
 <div class="tab-panel" id="panel-findings">
   <div class="filter-bar">
-    <select id="findings-severity"><option value="">All Severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option><option value="info">Info</option></select>
+    <select id="findings-severity"><option value="medium" selected>Medium &amp; Above</option><option value="high">High &amp; Above</option><option value="critical">Critical Only</option><option value="">All Severities</option></select>
     <input type="text" id="findings-search" placeholder="Search findings...">
   </div>
   <table><thead><tr><th>Severity</th><th>Time</th><th>Title</th><th>ATT&CK</th></tr></thead><tbody id="findings-tbody"></tbody></table>
@@ -219,7 +220,7 @@ svg .edge-arrow{fill:var(--dim)}
   </div>
   <div class="card">
     <div class="card-label">File Activity</div>
-    <table><thead><tr><th>Operation</th><th>Path</th><th>By Process</th><th>Finding</th></tr></thead><tbody id="ioc-files"></tbody></table>
+    <table><thead><tr><th style="width:10%">Operation</th><th style="width:55%">Path</th><th style="width:15%">By Process</th><th style="width:20%">Finding</th></tr></thead><tbody id="ioc-files"></tbody></table>
     <div id="ioc-files-empty" class="empty-state" style="display:none">No file activity observed yet</div>
   </div>
 </div>
@@ -361,13 +362,15 @@ async function refreshOverview() {
 
 // ── Findings ───────────────────────────────────────────────────
 async function refreshFindings() {
-  const sev = document.getElementById('findings-severity').value;
-  const q = sev ? '?severity=' + sev + '&limit=100' : '?limit=100';
-  const data = await api('/api/findings' + q);
+  const sevFilter = document.getElementById('findings-severity').value;
+  const data = await api('/api/findings?limit=200');
   if (!data) return;
 
+  const SEVERITY_RANK = {critical:4, high:3, medium:2, low:1, info:0};
+  const minRank = SEVERITY_RANK[sevFilter] ?? 0;
+  let items = data.findings.filter(f => (SEVERITY_RANK[(f.severity||'').toLowerCase()] ?? 0) >= minRank);
+
   const search = document.getElementById('findings-search').value.toLowerCase();
-  let items = data.findings;
   if (search) items = items.filter(f => f.title.toLowerCase().includes(search) || (f.description||'').toLowerCase().includes(search));
 
   const tbody = document.getElementById('findings-tbody');
@@ -682,7 +685,10 @@ function renderChain(area, data) {
   window._graphProcessChain = data.process_chain || [];
   if (data.process_chain && data.process_chain.length > 0) {
     const chainHtml = data.process_chain.map(p => {
-      const name = p.name || p.type || '?';
+      if (p.type === 'user') {
+        return '<span style="padding:2px 8px;background:rgba(99,102,241,0.15);color:rgb(129,140,248);border-radius:4px;margin:2px;display:inline-flex;align-items:center;font-weight:600">' + esc(p.name) + '</span>';
+      }
+      const name = p.name || '?';
       const pid = p.pid ? ' (PID ' + p.pid + ')' : '';
       const cmd = p.cmd_line ? ' <span class="mono" style="color:var(--dim);font-size:11px">' + esc(p.cmd_line.substring(0,80)) + '</span>' : '';
       return '<span style="padding:2px 8px;background:var(--bg);border-radius:4px;margin:2px;display:inline-flex;align-items:center;gap:4px">' + esc(name) + '<span class="mono" style="color:var(--dim);font-size:11px">' + pid + '</span>' + signBadge(p) + cmd + '</span>';
@@ -840,7 +846,7 @@ async function refreshIOC() {
       var c = opColors[f.operation]||'var(--text)';
       var procs = (f.by_processes||[]).filter(function(n){return n && n!=='unknown';}).join(', ') || '—';
       var findings = (f.findings||[]).map(renderFindingRef).join(' ') || '';
-      return '<tr><td><span style="color:' + c + '">' + esc(f.operation) + '</span></td><td class="mono">' + esc(f.path) + '</td><td>' + esc(procs) + '</td><td>' + findings + '</td></tr>';
+      return '<tr><td><span style="color:' + c + '">' + esc(f.operation) + '</span></td><td class="mono" title="' + esc(f.path) + '">' + esc(f.path) + '</td><td>' + esc(procs) + '</td><td>' + findings + '</td></tr>';
     }).join('');
   }
 }
@@ -918,8 +924,16 @@ async function refreshSettings() {
     const total = baselineStats.total || 0;
     let daysLearned = '';
     if (baselineStats.earliest && baselineStats.latest) {
-      const days = Math.max(1, Math.ceil((new Date(baselineStats.latest) - new Date(baselineStats.earliest)) / 86400000));
-      daysLearned = ' (learned ' + days + ' day' + (days !== 1 ? 's' : '') + ')';
+      const ms = new Date(baselineStats.latest) - new Date(baselineStats.earliest);
+      const hours = ms / 3600000;
+      if (hours < 1) {
+        daysLearned = ' (learned < 1 hour)';
+      } else if (hours < 24) {
+        daysLearned = ' (learned ' + Math.floor(hours) + 'h)';
+      } else {
+        const days = Math.ceil(hours / 24);
+        daysLearned = ' (learned ' + days + ' day' + (days !== 1 ? 's' : '') + ')';
+      }
     }
     html += '<div style="color:var(--dim);font-size:13px">Baseline: <strong style="color:var(--text)">' + fmtNum(total) + '</strong> behaviors' + daysLearned + '</div>';
   }
@@ -1140,11 +1154,11 @@ function buildSuggestedChainPattern(chain) {
   const graphChain = window._graphProcessChain || [];
   let names = [];
   if (graphChain.length > 0) {
-    names = graphChain.map(p => p.name || p.type).filter(n => n && n !== '?');
+    names = graphChain.map(p => p.type === 'user' ? 'USER:' + p.name : (p.name || '?')).filter(n => n && n !== '?');
   }
   if (names.length === 0) {
     // Fallback: use the finding's chain steps
-    names = (chain||[]).filter(s => s.entity_type === 'process').map(s => s.entity_name).filter(n => n && n !== 'unknown');
+    names = (chain||[]).filter(s => s.entity_type === 'process' || s.entity_type === 'user').map(s => s.entity_type === 'user' ? 'USER:' + s.entity_name : s.entity_name).filter(n => n && n !== 'unknown');
   }
   if (names.length === 0) return '';
   if (names.length === 1) return names[0];

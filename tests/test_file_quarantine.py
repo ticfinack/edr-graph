@@ -2,17 +2,13 @@
 
 import hashlib
 import json
-import os
 import stat
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from agent.response.file_quarantine import (
     FileQuarantine,
-    QuarantineOutcome,
-    QuarantineRecord,
     QuarantineResult,
 )
 

@@ -17,7 +17,6 @@ import json
 import os
 import sqlite3
 import sys
-import time
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -83,18 +82,14 @@ class ValidationContext:
 
     def fetch_metrics(self) -> str | None:
         try:
-            with urlopen(
-                f"http://127.0.0.1:{self.metrics_port}/metrics", timeout=5
-            ) as resp:
+            with urlopen(f"http://127.0.0.1:{self.metrics_port}/metrics", timeout=5) as resp:
                 return resp.read().decode()
         except (URLError, OSError):
             return None
 
     def fetch_health(self) -> dict | None:
         try:
-            with urlopen(
-                f"http://127.0.0.1:{self.metrics_port}/health", timeout=5
-            ) as resp:
+            with urlopen(f"http://127.0.0.1:{self.metrics_port}/health", timeout=5) as resp:
                 return json.loads(resp.read().decode())
         except (URLError, OSError, json.JSONDecodeError):
             return None
@@ -142,8 +137,7 @@ def check_dashboard_api_status(ctx: ValidationContext) -> None:
         queue = data.get("queue_depth", 0)
         print_pass(
             name,
-            f"status={status}, uptime={uptime:.0f}s, events={processed}, "
-            f"rate={eps}/s, queue={queue}",
+            f"status={status}, uptime={uptime:.0f}s, events={processed}, rate={eps}/s, queue={queue}",
         )
     else:
         print_fail(name, "GET /api/status failed or returned invalid JSON")
@@ -165,8 +159,7 @@ def check_process_chain(ctx: ValidationContext) -> None:
     if spawned_count >= 2:
         print_pass(
             name,
-            f"{user_count} User nodes, {process_count} Process nodes, "
-            f"{spawned_count} SPAWNED edges",
+            f"{user_count} User nodes, {process_count} Process nodes, {spawned_count} SPAWNED edges",
         )
     elif spawned_count == 1:
         print_pass(name, f"1 SPAWNED edge, {process_count} Process nodes")
@@ -227,8 +220,7 @@ def check_file_creation(ctx: ValidationContext) -> None:
     if created_edges > 0:
         print_pass(
             name,
-            f"{file_count} File nodes, {created_edges} CREATED_FILE, "
-            f"{modified_edges} MODIFIED_FILE edges",
+            f"{file_count} File nodes, {created_edges} CREATED_FILE, {modified_edges} MODIFIED_FILE edges",
         )
     elif file_count > 0:
         print_pass(name, f"{file_count} File nodes (no CREATED_FILE edges)")
@@ -250,9 +242,10 @@ def check_persistence_detected(ctx: ValidationContext) -> None:
         for f in findings["findings"]:
             title = (f.get("title") or "").lower()
             desc = (f.get("description") or "").lower()
-            if any(kw in title or kw in desc for kw in [
-                "persist", "t1547", "t1543", "t1053", "launchagent", "launchdaemon"
-            ]):
+            if any(
+                kw in title or kw in desc
+                for kw in ["persist", "t1547", "t1543", "t1053", "launchagent", "launchdaemon"]
+            ):
                 print_pass(
                     name,
                     f"Finding: {f['title']} ({f['severity']})",
@@ -446,9 +439,7 @@ def check_no_dropped_events(ctx: ValidationContext) -> None:
         # Extract reasons
         reasons = []
         for line in metrics_text.splitlines():
-            if line.startswith("edr_events_dropped_total{") and not line.startswith(
-                "#"
-            ):
+            if line.startswith("edr_events_dropped_total{") and not line.startswith("#"):
                 start = line.find('reason="')
                 if start >= 0:
                     start += len('reason="')
@@ -599,19 +590,13 @@ def run_validation(data_dir: Path, metrics_port: int, dashboard_port: int) -> No
     print(f"{BOLD}{CYAN}{'=' * 60}{RESET}\n")
 
     if failed > 0:
-        print(
-            f"  {YELLOW}Hint: Run attack_simulations.py while the agent is running,{RESET}"
-        )
-        print(
-            f"  {YELLOW}wait ~60s for the analyzer cycle, then re-run this script.{RESET}"
-        )
+        print(f"  {YELLOW}Hint: Run attack_simulations.py while the agent is running,{RESET}")
+        print(f"  {YELLOW}wait ~60s for the analyzer cycle, then re-run this script.{RESET}")
         print()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Post-simulation validation for EDR Agent"
-    )
+    parser = argparse.ArgumentParser(description="Post-simulation validation for EDR Agent")
     parser.add_argument(
         "--data-dir",
         type=str,

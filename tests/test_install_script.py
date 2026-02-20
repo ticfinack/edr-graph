@@ -18,6 +18,7 @@ class TestInstallScript:
 
     def test_is_executable(self):
         import os
+
         assert os.access(INSTALL_SCRIPT, os.X_OK)
 
     def test_has_shebang(self, script_content):
@@ -39,8 +40,7 @@ class TestInstallScript:
         assert "edr-graph" in script_content
 
     def test_creates_required_directories(self, script_content):
-        for d in ["/opt/edr-graph", "/etc/edr-graph", "/var/lib/edr-graph",
-                  "/var/edr-graph/quarantine"]:
+        for d in ["/opt/edr-graph", "/etc/edr-graph", "/var/lib/edr-graph", "/var/edr-graph/quarantine"]:
             assert d in script_content
 
     def test_installs_systemd_service(self, script_content):

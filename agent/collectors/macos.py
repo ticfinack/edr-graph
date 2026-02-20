@@ -37,9 +37,7 @@ class MacOSCollector(Collector):
         """Start the unified log stream in a background thread."""
         if self._stream_thread is not None:
             return
-        self._stream_thread = threading.Thread(
-            target=self._run_log_stream, daemon=True
-        )
+        self._stream_thread = threading.Thread(target=self._run_log_stream, daemon=True)
         self._stream_thread.start()
 
     def _run_log_stream(self) -> None:
@@ -53,12 +51,16 @@ class MacOSCollector(Collector):
                 'category == "process" OR '
                 'category == "network" OR '
                 'category == "security"'
-                ')'
+                ")"
             )
             self._stream_proc = subprocess.Popen(
                 [
-                    "log", "stream", "--style", "ndjson",
-                    "--predicate", predicate,
+                    "log",
+                    "stream",
+                    "--style",
+                    "ndjson",
+                    "--predicate",
+                    predicate,
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,

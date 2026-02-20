@@ -1,9 +1,7 @@
 """Tests for SQLite queue."""
 
 import json
-import tempfile
 from datetime import datetime
-from pathlib import Path
 
 import pytest
 
@@ -84,21 +82,21 @@ class TestMarkProcessed:
 
 class TestFindings:
     def _make_finding(self, **overrides):
-        data = dict(
-            id="test-finding-1",
-            timestamp=datetime(2025, 1, 15, 10, 0, 0),
-            severity="high",
-            title="Suspicious process",
-            description="A suspicious process was detected",
-            affected_entities=["user:alice", "process:curl"],
-            evidence_event_ids=[1, 2, 3],
-            recommendation="Investigate immediately",
-            chain=[
+        data = {
+            "id": "test-finding-1",
+            "timestamp": datetime(2025, 1, 15, 10, 0, 0),
+            "severity": "high",
+            "title": "Suspicious process",
+            "description": "A suspicious process was detected",
+            "affected_entities": ["user:alice", "process:curl"],
+            "evidence_event_ids": [1, 2, 3],
+            "recommendation": "Investigate immediately",
+            "chain": [
                 ChainStep(entity_type="user", entity_id="alice", entity_name="alice"),
                 ChainStep(entity_type="process", entity_id="host:123:0", entity_name="curl"),
                 ChainStep(entity_type="ip", entity_id="10.0.0.5", entity_name="10.0.0.5"),
             ],
-        )
+        }
         data.update(overrides)
         return SecurityFinding(**data)
 
@@ -119,15 +117,9 @@ class TestFindings:
         assert high[0].id == "f1"
 
     def test_findings_in_range(self, queue):
-        queue.store_finding(
-            self._make_finding(id="f1", timestamp=datetime(2025, 1, 15, 10, 0))
-        )
-        queue.store_finding(
-            self._make_finding(id="f2", timestamp=datetime(2025, 1, 16, 10, 0))
-        )
-        results = queue.get_findings_in_range(
-            datetime(2025, 1, 15), datetime(2025, 1, 15, 23, 59)
-        )
+        queue.store_finding(self._make_finding(id="f1", timestamp=datetime(2025, 1, 15, 10, 0)))
+        queue.store_finding(self._make_finding(id="f2", timestamp=datetime(2025, 1, 16, 10, 0)))
+        results = queue.get_findings_in_range(datetime(2025, 1, 15), datetime(2025, 1, 15, 23, 59))
         assert len(results) == 1
         assert results[0].id == "f1"
 

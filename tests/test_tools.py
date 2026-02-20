@@ -6,9 +6,6 @@ from unittest.mock import MagicMock, patch
 
 from agent.analyzer.tool_cache import ToolCache
 from agent.analyzer.tools import (
-    TIER1_TOOLS,
-    TIER2_TOOLS,
-    TIER3_TOOLS,
     ToolExecutor,
     get_active_tools,
 )
@@ -19,7 +16,11 @@ from agent.intel.mitre_attack import lookup
 class TestGetActiveTools:
     def test_tier1_only(self):
         """No Tier 2 keys configured → only Tier 1 + Tier 3 tools."""
-        settings = Settings(deepinfra_api_key="test")
+        settings = Settings(
+            deepinfra_api_key="test",
+            abuseipdb_api_key="",
+            virustotal_api_key="",
+        )
         tools = get_active_tools(settings)
         names = {t["function"]["name"] for t in tools}
         # Tier 1
@@ -95,12 +96,8 @@ class TestToolExecutor:
 
     def test_tool_error_returns_json(self):
         """Network errors return error JSON, never raise."""
-        with patch.object(
-            ToolExecutor, "_http_get_json", side_effect=RuntimeError("connection refused")
-        ):
-            result = json.loads(
-                self.executor.execute("ip_geolocation", {"ip": "0.0.0.0"})
-            )
+        with patch.object(ToolExecutor, "_http_get_json", side_effect=RuntimeError("connection refused")):
+            result = json.loads(self.executor.execute("ip_geolocation", {"ip": "0.0.0.0"}))
         assert "error" in result
 
     def test_unknown_tool(self):
@@ -110,9 +107,7 @@ class TestToolExecutor:
 
     def test_cache_prevents_duplicate_calls(self):
         """Second call with same args should hit cache, not execute again."""
-        with patch.object(
-            ToolExecutor, "_http_get_json", return_value={"country": "US"}
-        ) as mock_http:
+        with patch.object(ToolExecutor, "_http_get_json", return_value={"country": "US"}) as mock_http:
             self.executor.execute("ip_geolocation", {"ip": "8.8.8.8"})
             self.executor.execute("ip_geolocation", {"ip": "8.8.8.8"})
         mock_http.assert_called_once()

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import collections
 import sys
 import time
 from pathlib import Path
@@ -210,12 +209,14 @@ class TestDashboardServer:
         """Notification queue should accept findings."""
         from agent.dashboard.server import notification_queue
 
-        notification_queue.appendleft({
-            "severity": "CRITICAL",
-            "title": "Test finding",
-            "id": "test-1",
-            "timestamp": time.time(),
-        })
+        notification_queue.appendleft(
+            {
+                "severity": "CRITICAL",
+                "title": "Test finding",
+                "id": "test-1",
+                "timestamp": time.time(),
+            }
+        )
         assert len(notification_queue) == 1
         item = notification_queue.pop()
         assert item["severity"] == "CRITICAL"
@@ -271,6 +272,7 @@ class TestTrayIcon:
     def test_tray_module_imports(self):
         """The tray module should import correctly on macOS."""
         from agent.tray import macos_tray
+
         assert hasattr(macos_tray, "EDRTrayApp")
 
     def test_tray_skips_non_macos(self):
@@ -294,16 +296,20 @@ class TestTrayIcon:
             app = EDRTrayApp(notification_cooldown=60)
 
             # Simulate two findings in rapid succession
-            app.notification_queue.appendleft({
-                "severity": "CRITICAL",
-                "title": "Finding 1",
-                "timestamp": time.time(),
-            })
-            app.notification_queue.appendleft({
-                "severity": "CRITICAL",
-                "title": "Finding 2",
-                "timestamp": time.time(),
-            })
+            app.notification_queue.appendleft(
+                {
+                    "severity": "CRITICAL",
+                    "title": "Finding 1",
+                    "timestamp": time.time(),
+                }
+            )
+            app.notification_queue.appendleft(
+                {
+                    "severity": "CRITICAL",
+                    "title": "Finding 2",
+                    "timestamp": time.time(),
+                }
+            )
 
             app._dispatch_notifications()
 
@@ -324,16 +330,20 @@ class TestTrayIcon:
 
             app = EDRTrayApp(notification_cooldown=60)
 
-            app.notification_queue.appendleft({
-                "severity": "CRITICAL",
-                "title": "Critical Finding",
-                "timestamp": time.time(),
-            })
-            app.notification_queue.appendleft({
-                "severity": "HIGH",
-                "title": "High Finding",
-                "timestamp": time.time(),
-            })
+            app.notification_queue.appendleft(
+                {
+                    "severity": "CRITICAL",
+                    "title": "Critical Finding",
+                    "timestamp": time.time(),
+                }
+            )
+            app.notification_queue.appendleft(
+                {
+                    "severity": "HIGH",
+                    "title": "High Finding",
+                    "timestamp": time.time(),
+                }
+            )
 
             app._dispatch_notifications()
 
@@ -352,11 +362,13 @@ class TestTrayIcon:
 
             app = EDRTrayApp(notification_cooldown=60)
 
-            app.notification_queue.appendleft({
-                "severity": "MEDIUM",
-                "title": "Medium Finding",
-                "timestamp": time.time(),
-            })
+            app.notification_queue.appendleft(
+                {
+                    "severity": "MEDIUM",
+                    "title": "Medium Finding",
+                    "timestamp": time.time(),
+                }
+            )
 
             app._dispatch_notifications()
 
@@ -442,18 +454,22 @@ class TestUptimeFormatter:
 
     def test_seconds(self):
         from agent.tray.macos_tray import _format_uptime
+
         assert _format_uptime(30) == "30s"
 
     def test_minutes(self):
         from agent.tray.macos_tray import _format_uptime
+
         assert _format_uptime(150) == "2m"
 
     def test_hours(self):
         from agent.tray.macos_tray import _format_uptime
+
         assert _format_uptime(7500) == "2h 5m"
 
     def test_days(self):
         from agent.tray.macos_tray import _format_uptime
+
         assert _format_uptime(90000) == "1d 1h"
 
 
@@ -466,12 +482,14 @@ class TestPhase8Config:
     def test_default_dashboard_port(self):
         """Default dashboard port should be 9200."""
         from agent.config import Settings
+
         s = Settings()
         assert s.dashboard_port == 9200
 
     def test_tray_settings_defaults(self):
         """Tray settings should have sensible defaults."""
         from agent.config import Settings
+
         s = Settings()
         assert s.tray_enabled is True
         assert s.tray_notification_cooldown == 60
@@ -481,18 +499,21 @@ class TestPhase8Config:
     def test_dashboard_auto_open_default(self):
         """Dashboard auto-open should default to True."""
         from agent.config import Settings
+
         s = Settings()
         assert s.dashboard_auto_open is True
 
     def test_yaml_key_map_has_tray_keys(self):
         """YAML key map should include tray settings."""
         from agent.config import _YAML_KEY_MAP
+
         tray_keys = [k for k in _YAML_KEY_MAP if k[0] == "tray"]
         assert len(tray_keys) >= 3  # enabled, cooldown, notify_on_high, notify_on_critical
 
     def test_generate_config_includes_tray(self):
         """Generated config should include tray section."""
         from agent.config import generate_default_config
+
         config = generate_default_config()
         assert "tray:" in config
         assert "notification_cooldown_seconds" in config
@@ -532,6 +553,7 @@ class TestPhase8Integration:
     def test_dashboard_server_imports(self):
         """Dashboard server module should import cleanly."""
         from agent.dashboard.server import app, init_dashboard, start_dashboard_server
+
         assert app is not None
         assert callable(init_dashboard)
         assert callable(start_dashboard_server)
@@ -539,6 +561,7 @@ class TestPhase8Integration:
     def test_is_paused_default_false(self):
         """_is_paused should default to False."""
         from agent.main import _is_paused
+
         assert _is_paused() is False
 
     def test_push_recent_event(self):

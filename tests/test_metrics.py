@@ -4,12 +4,10 @@ import json
 import urllib.request
 
 import pytest
-from prometheus_client import CollectorRegistry
 
 from agent.health import start_health_server
 from agent.metrics import (
     event_processing_latency,
-    events_dropped_total,
     events_processed_total,
     llm_verdicts,
     queue_depth,

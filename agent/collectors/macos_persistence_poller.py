@@ -121,9 +121,7 @@ class MacOSPersistencePoller(Collector):
                 self._snapshots[expanded] = self._snapshot_dir(expanded)
 
         self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._poll_loop, daemon=True, name="persistence_poller"
-        )
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True, name="persistence_poller")
         self._thread.start()
         logger.info(
             "macOS persistence poller started (%d dirs, %.0fs interval)",
@@ -188,10 +186,7 @@ class MacOSPersistencePoller(Collector):
 
                     self._emit("file_create", fpath, fields)
 
-                elif (
-                    snap.mtime != old_snapshot[fname].mtime
-                    or snap.sha256 != old_snapshot[fname].sha256
-                ):
+                elif snap.mtime != old_snapshot[fname].mtime or snap.sha256 != old_snapshot[fname].sha256:
                     # Modified file
                     plist_data = None
                     if fname.endswith(".plist"):

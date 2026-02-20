@@ -58,9 +58,7 @@ def main() -> None:
             ("grpc.max_send_message_length", settings.grpc_max_message_length),
         ],
     )
-    fleet_pb2_grpc.add_FleetServiceServicer_to_server(
-        FleetServicer(neo4j_client), server
-    )
+    fleet_pb2_grpc.add_FleetServiceServicer_to_server(FleetServicer(neo4j_client), server)
 
     # Configure TLS
     if settings.tls_ca_cert and settings.tls_server_cert and settings.tls_server_key:

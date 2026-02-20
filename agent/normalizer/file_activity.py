@@ -42,6 +42,7 @@ def normalize_file(raw: RawEvent) -> FileActivity:
     if pid == 0 and file_path_raw:
         try:
             from agent.enrichment.file_attribution import get_file_attribution_cache
+
             owner = get_file_attribution_cache().lookup(file_path_raw)
             if owner:
                 pid = owner.pid

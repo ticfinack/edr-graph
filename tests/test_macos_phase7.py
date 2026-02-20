@@ -9,7 +9,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -92,12 +92,8 @@ class TestFSEventsCollector:
     def test_excluded_path_pattern_filtered(self):
         """Files matching excluded path patterns are filtered."""
         handler, buffer = self._make_handler()
-        handler._handle(
-            "/Users/test/Library/Caches/com.apple.Safari/data.bin", "file_modify"
-        )
-        handler._handle(
-            "/Users/test/Library/Logs/DiagnosticReports/report.txt", "file_create"
-        )
+        handler._handle("/Users/test/Library/Caches/com.apple.Safari/data.bin", "file_modify")
+        handler._handle("/Users/test/Library/Logs/DiagnosticReports/report.txt", "file_create")
 
         assert len(buffer) == 0
 
@@ -134,9 +130,7 @@ class TestFSEventsCollector:
     def test_launch_agents_path_not_filtered(self):
         """LaunchAgent plist writes are NOT filtered (critical for persistence detection)."""
         handler, buffer = self._make_handler()
-        handler._handle(
-            "/Library/LaunchAgents/com.evil.agent.plist", "file_create"
-        )
+        handler._handle("/Library/LaunchAgents/com.evil.agent.plist", "file_create")
 
         assert len(buffer) == 1
         assert buffer[0].fields["file_path"] == "/Library/LaunchAgents/com.evil.agent.plist"
@@ -196,6 +190,7 @@ class TestPersistencePoller:
             # Create a file
             plist_path = os.path.join(tmpdir, "com.test.agent.plist")
             import plistlib
+
             plist_data = {
                 "Label": "com.test.agent",
                 "ProgramArguments": ["/usr/bin/python3", "-c", "print('hello')"],
@@ -272,6 +267,7 @@ class TestPersistencePoller:
 
         with tempfile.NamedTemporaryFile(suffix=".plist", delete=False) as f:
             import plistlib
+
             plistlib.dump(
                 {
                     "Label": "com.evil.backdoor",
@@ -345,9 +341,7 @@ class TestPersistencePoller:
         from agent.collectors.macos_persistence_poller import MacOSPersistencePoller
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            poller = MacOSPersistencePoller(
-                directories=[tmpdir], poll_interval=60.0
-            )
+            poller = MacOSPersistencePoller(directories=[tmpdir], poll_interval=60.0)
             assert poller.name() == "macos_persistence_poller"
 
             poller.start()
@@ -486,7 +480,7 @@ class TestNormalizerIntegration:
         from agent.schema.ocsf_types import FileActivity
 
         raw = RawEvent(
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             source="file_create",
             message="file_create: /tmp/test.txt",
             fields={
@@ -510,7 +504,7 @@ class TestNormalizerIntegration:
         from agent.schema.ocsf_types import FileActivity
 
         raw = RawEvent(
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             source="file_delete",
             message="file_delete: /tmp/test.txt",
             fields={
@@ -534,7 +528,7 @@ class TestNormalizerIntegration:
         from agent.processor.entity_extractor import extract_entities
 
         raw = RawEvent(
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             source="file_create",
             message="file_create: /Library/LaunchAgents/com.evil.plist",
             fields={

@@ -38,9 +38,7 @@ class SqliteQueue:
     def push(self, raw_json: str) -> int:
         """Push a raw event JSON string onto the queue. Returns the row ID."""
         conn = self._get_conn()
-        cursor = conn.execute(
-            "INSERT INTO event_queue (raw_json) VALUES (?)", (raw_json,)
-        )
+        cursor = conn.execute("INSERT INTO event_queue (raw_json) VALUES (?)", (raw_json,))
         conn.commit()
         return cursor.lastrowid
 
@@ -57,8 +55,7 @@ class SqliteQueue:
         """Pop a batch of unprocessed events. Returns list of (id, parsed_json)."""
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT id, raw_json FROM event_queue "
-            "WHERE processed = 0 ORDER BY id ASC LIMIT ?",
+            "SELECT id, raw_json FROM event_queue WHERE processed = 0 ORDER BY id ASC LIMIT ?",
             (batch_size,),
         ).fetchall()
         return [(row["id"], json.loads(row["raw_json"])) for row in rows]
@@ -79,8 +76,7 @@ class SqliteQueue:
         """Get recent events for dashboard display."""
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT id, raw_json, created_at, processed FROM event_queue "
-            "ORDER BY id DESC LIMIT ?",
+            "SELECT id, raw_json, created_at, processed FROM event_queue ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         results = []
@@ -96,8 +92,7 @@ class SqliteQueue:
         """Get processed events since a given ID (for analyzer)."""
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT id, raw_json FROM event_queue "
-            "WHERE processed = 1 AND id > ? ORDER BY id ASC LIMIT ?",
+            "SELECT id, raw_json FROM event_queue WHERE processed = 1 AND id > ? ORDER BY id ASC LIMIT ?",
             (since_id, limit),
         ).fetchall()
         return [(row["id"], json.loads(row["raw_json"])) for row in rows]
@@ -128,15 +123,12 @@ class SqliteQueue:
         )
         conn.commit()
 
-    def get_findings(
-        self, limit: int = 50, severity: str | None = None
-    ) -> list[SecurityFinding]:
+    def get_findings(self, limit: int = 50, severity: str | None = None) -> list[SecurityFinding]:
         """Retrieve findings, optionally filtered by severity."""
         conn = self._get_conn()
         if severity:
             rows = conn.execute(
-                "SELECT * FROM findings WHERE severity = ? "
-                "ORDER BY timestamp DESC LIMIT ?",
+                "SELECT * FROM findings WHERE severity = ? ORDER BY timestamp DESC LIMIT ?",
                 (severity, limit),
             ).fetchall()
         else:
@@ -146,15 +138,11 @@ class SqliteQueue:
             ).fetchall()
         return [self._row_to_finding(row) for row in rows]
 
-    def get_findings_in_range(
-        self, start: datetime, end: datetime
-    ) -> list[SecurityFinding]:
+    def get_findings_in_range(self, start: datetime, end: datetime) -> list[SecurityFinding]:
         """Get findings within a time range (for Sankey)."""
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT * FROM findings "
-            "WHERE timestamp >= ? AND timestamp <= ? "
-            "ORDER BY timestamp DESC",
+            "SELECT * FROM findings WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp DESC",
             (start.isoformat(), end.isoformat()),
         ).fetchall()
         return [self._row_to_finding(row) for row in rows]
@@ -194,8 +182,7 @@ class SqliteQueue:
             return []
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT * FROM findings WHERE affected_pids != '[]' "
-            "ORDER BY timestamp DESC LIMIT 100",
+            "SELECT * FROM findings WHERE affected_pids != '[]' ORDER BY timestamp DESC LIMIT 100",
         ).fetchall()
 
         pid_set = set(pids)
@@ -221,9 +208,7 @@ class SqliteQueue:
         Returns True if the finding was found and updated.
         """
         conn = self._get_conn()
-        row = conn.execute(
-            "SELECT * FROM findings WHERE id = ?", (finding_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM findings WHERE id = ?", (finding_id,)).fetchone()
         if not row:
             return False
 
@@ -242,8 +227,7 @@ class SqliteQueue:
             severity = current_sev
 
         conn.execute(
-            "UPDATE findings SET evidence_event_ids = ?, description = ?, severity = ? "
-            "WHERE id = ?",
+            "UPDATE findings SET evidence_event_ids = ?, description = ?, severity = ? WHERE id = ?",
             (json.dumps(merged), description, severity, finding_id),
         )
         conn.commit()
@@ -251,17 +235,14 @@ class SqliteQueue:
 
     def count_unprocessed(self) -> int:
         conn = self._get_conn()
-        row = conn.execute(
-            "SELECT COUNT(*) as cnt FROM event_queue WHERE processed = 0"
-        ).fetchone()
+        row = conn.execute("SELECT COUNT(*) as cnt FROM event_queue WHERE processed = 0").fetchone()
         return row["cnt"]
 
     def prune_old_events(self, retention_hours: int = 24) -> int:
         """Delete processed events older than retention_hours. Returns count deleted."""
         conn = self._get_conn()
         cursor = conn.execute(
-            "DELETE FROM event_queue WHERE processed = 1 "
-            "AND created_at < strftime('%Y-%m-%dT%H:%M:%f', 'now', ?)",
+            "DELETE FROM event_queue WHERE processed = 1 AND created_at < strftime('%Y-%m-%dT%H:%M:%f', 'now', ?)",
             (f"-{retention_hours} hours",),
         )
         conn.commit()
@@ -284,8 +265,7 @@ class SqliteQueue:
         """Pop a batch of pending forwarding items. Returns [(id, item_type, payload)]."""
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT id, item_type, payload FROM forwarding_queue "
-            "WHERE status = 'pending' ORDER BY id ASC LIMIT ?",
+            "SELECT id, item_type, payload FROM forwarding_queue WHERE status = 'pending' ORDER BY id ASC LIMIT ?",
             (batch_size,),
         ).fetchall()
         return [(row["id"], row["item_type"], row["payload"]) for row in rows]
@@ -315,8 +295,7 @@ class SqliteQueue:
             item_ids,
         )
         conn.execute(
-            f"DELETE FROM forwarding_queue WHERE retry_count > ? "
-            f"AND id IN ({placeholders})",
+            f"DELETE FROM forwarding_queue WHERE retry_count > ? AND id IN ({placeholders})",
             [max_retries, *item_ids],
         )
         conn.commit()
@@ -324,9 +303,7 @@ class SqliteQueue:
     def forwarding_queue_depth(self) -> int:
         """Count pending items in the forwarding queue."""
         conn = self._get_conn()
-        row = conn.execute(
-            "SELECT COUNT(*) as cnt FROM forwarding_queue WHERE status = 'pending'"
-        ).fetchone()
+        row = conn.execute("SELECT COUNT(*) as cnt FROM forwarding_queue WHERE status = 'pending'").fetchone()
         return row["cnt"]
 
     def close(self) -> None:

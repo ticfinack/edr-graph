@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -79,7 +79,7 @@ class TestResolveStartTime:
         assert result == datetime.fromtimestamp(1700000000.0)
 
     def test_caches_create_time(self):
-        from agent.processor.entity_extractor import _resolve_start_time, _create_time_cache
+        from agent.processor.entity_extractor import _create_time_cache, _resolve_start_time
 
         _setup_psutil_mock(create_time=1700000000.0)
         _resolve_start_time(42, datetime(2025, 1, 1))
@@ -87,7 +87,7 @@ class TestResolveStartTime:
         assert _create_time_cache[42] == 1700000000.0
 
     def test_uses_cache_for_dead_process(self):
-        from agent.processor.entity_extractor import _resolve_start_time, _create_time_cache
+        from agent.processor.entity_extractor import _resolve_start_time
 
         # First call succeeds — caches the value
         _setup_psutil_mock(create_time=1700000000.0)
@@ -109,14 +109,14 @@ class TestResolveStartTime:
         assert result == fallback
 
     def test_marks_dead_process_as_unresolvable(self):
-        from agent.processor.entity_extractor import _resolve_start_time, _create_time_cache
+        from agent.processor.entity_extractor import _create_time_cache, _resolve_start_time
 
         _setup_psutil_mock(raise_error=True)
         _resolve_start_time(999, datetime(2025, 1, 1))
         assert _create_time_cache[999] == 0
 
     def test_handles_pid_reuse(self):
-        from agent.processor.entity_extractor import _resolve_start_time, _create_time_cache
+        from agent.processor.entity_extractor import _create_time_cache, _resolve_start_time
 
         # First process with PID 42 created at epoch 1700000000
         _setup_psutil_mock(create_time=1700000000.0)
@@ -233,6 +233,7 @@ class TestProcessNodeDedup:
         from agent.processor.entity_extractor import extract_entities
 
         call_count = [0]
+
         def mock_process_factory(pid):
             call_count[0] += 1
             proc = MagicMock()
@@ -265,7 +266,9 @@ class TestProcessNodeDedup:
             severity_id=1,
             time=datetime(2025, 1, 15, 10, 0, 0),
             process=ProcessInfo(
-                pid=42, name="curl", created_time=known_time,
+                pid=42,
+                name="curl",
+                created_time=known_time,
             ),
             device=DeviceInfo(hostname="test-host"),
             metadata=OcsfMetadata(original_time=datetime(2025, 1, 15, 10, 0, 0)),
@@ -281,7 +284,7 @@ class TestProcessNodeDedup:
 
     def test_dead_process_events_use_consistent_fallback(self):
         """Multiple events for a dead process (no psutil) should still share an ID."""
-        from agent.processor.entity_extractor import extract_entities, _create_time_cache
+        from agent.processor.entity_extractor import _create_time_cache, extract_entities
 
         # Simulate: PID 42 was once alive, we cached its create_time, now it's dead
         _create_time_cache[42] = 1700000000.0

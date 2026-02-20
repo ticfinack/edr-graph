@@ -2,7 +2,6 @@
 
 import hashlib
 import time
-from pathlib import Path
 
 import pytest
 
@@ -181,8 +180,6 @@ class TestTamperCheckResult:
     def test_dirty_result(self):
         result = TamperCheckResult(
             checked_files=10,
-            tampered_files=[
-                TamperEvent("f", "a", "b", 0.0, "modified")
-            ],
+            tampered_files=[TamperEvent("f", "a", "b", 0.0, "modified")],
         )
         assert not result.is_clean

@@ -4,7 +4,7 @@ Tests the NetworkIsolator class which manages firewall rules.
 Actual firewall commands are mocked since they require root.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from agent.response.network_control import (
     NetworkControlOutcome,

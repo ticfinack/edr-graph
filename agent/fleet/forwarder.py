@@ -49,11 +49,7 @@ class FleetForwarder:
         """Establish the gRPC channel (mTLS or insecure for dev)."""
         target = self._settings.fleet_url
 
-        if (
-            self._settings.fleet_ca_cert
-            and self._settings.fleet_client_cert
-            and self._settings.fleet_client_key
-        ):
+        if self._settings.fleet_ca_cert and self._settings.fleet_client_cert and self._settings.fleet_client_key:
             credentials = load_mtls_channel_credentials(
                 ca_cert_path=self._settings.fleet_ca_cert,
                 client_cert_path=self._settings.fleet_client_cert,
@@ -86,13 +82,9 @@ class FleetForwarder:
             if response.accepted:
                 self._agent_id = response.agent_id
                 self._connected = True
-                logger.info(
-                    "Registered with fleet server (agent_id=%s)", self._agent_id
-                )
+                logger.info("Registered with fleet server (agent_id=%s)", self._agent_id)
             else:
-                logger.warning(
-                    "Fleet registration rejected: %s", response.message
-                )
+                logger.warning("Fleet registration rejected: %s", response.message)
         except grpc.RpcError as e:
             logger.warning("Fleet registration failed: %s", e)
             # Agent will retry on next drain cycle
@@ -161,9 +153,7 @@ class FleetForwarder:
         for _, payload in items:
             event_data = json.loads(payload)
             class_uid = event_data.get("class_uid", 0)
-            protos.append(
-                fleet_pb2.OcsfEvent(class_uid=class_uid, event_json=payload)
-            )
+            protos.append(fleet_pb2.OcsfEvent(class_uid=class_uid, event_json=payload))
 
         request = fleet_pb2.SendEventsRequest(
             agent_id=self._agent_id,

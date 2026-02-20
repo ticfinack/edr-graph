@@ -8,7 +8,6 @@ from agent.analyzer.llm_analyzer import LlmAnalyzer
 from agent.config import Settings
 from agent.schema.ocsf_types import (
     ActorInfo,
-    Authentication,
     DeviceInfo,
     NetworkActivity,
     NetworkEndpoint,
@@ -26,27 +25,34 @@ class TestParseFindings:
         self.analyzer = LlmAnalyzer(self.settings, self.mock_db)
 
     def test_parse_valid_findings(self):
-        content = json.dumps([
-            {
-                "severity": "high",
-                "title": "Suspicious curl execution",
-                "description": "User alice ran curl to unknown IP",
-                "affected_entities": ["alice", "curl"],
-                "evidence_event_ids": [1],
-                "recommendation": "Investigate",
-                "chain": [
-                    {"entity_type": "user", "entity_id": "alice", "entity_name": "alice"},
-                    {"entity_type": "process", "entity_id": "curl", "entity_name": "curl"},
-                    {"entity_type": "ip", "entity_id": "1.2.3.4", "entity_name": "1.2.3.4"},
-                ],
-            }
-        ])
+        content = json.dumps(
+            [
+                {
+                    "severity": "high",
+                    "title": "Suspicious curl execution",
+                    "description": "User alice ran curl to unknown IP",
+                    "affected_entities": ["alice", "curl"],
+                    "evidence_event_ids": [1],
+                    "recommendation": "Investigate",
+                    "chain": [
+                        {"entity_type": "user", "entity_id": "alice", "entity_name": "alice"},
+                        {"entity_type": "process", "entity_id": "curl", "entity_name": "curl"},
+                        {"entity_type": "ip", "entity_id": "1.2.3.4", "entity_name": "1.2.3.4"},
+                    ],
+                }
+            ]
+        )
         events = [
-            (1, ProcessActivity(
-                activity_id=1, severity_id=1, time=datetime.now(),
-                process=ProcessInfo(pid=1, name="curl"),
-                device=DeviceInfo(hostname="test"),
-            ))
+            (
+                1,
+                ProcessActivity(
+                    activity_id=1,
+                    severity_id=1,
+                    time=datetime.now(),
+                    process=ProcessInfo(pid=1, name="curl"),
+                    device=DeviceInfo(hostname="test"),
+                ),
+            )
         ]
         findings = self.analyzer._parse_findings(content, events)
         assert len(findings) == 1
@@ -77,13 +83,17 @@ class TestBatchContext:
 
     def test_build_process_context(self):
         events = [
-            (1, ProcessActivity(
-                activity_id=1, severity_id=1,
-                time=datetime(2025, 1, 15, 10, 0),
-                actor=ActorInfo(user=UserInfo(name="alice")),
-                process=ProcessInfo(pid=1234, name="curl", cmd_line="curl https://evil.com"),
-                device=DeviceInfo(hostname="test"),
-            ))
+            (
+                1,
+                ProcessActivity(
+                    activity_id=1,
+                    severity_id=1,
+                    time=datetime(2025, 1, 15, 10, 0),
+                    actor=ActorInfo(user=UserInfo(name="alice")),
+                    process=ProcessInfo(pid=1234, name="curl", cmd_line="curl https://evil.com"),
+                    device=DeviceInfo(hostname="test"),
+                ),
+            )
         ]
         # Mock the kuzu Connection to avoid actual DB
         with patch("agent.analyzer.llm_analyzer.kuzu") as mock_kuzu:
@@ -101,13 +111,17 @@ class TestBatchContext:
 
     def test_build_network_context(self):
         events = [
-            (2, NetworkActivity(
-                activity_id=1, severity_id=1,
-                time=datetime(2025, 1, 15, 10, 0),
-                process=ProcessInfo(pid=1, name="wget"),
-                dst_endpoint=NetworkEndpoint(ip="1.2.3.4", port=443),
-                device=DeviceInfo(hostname="test"),
-            ))
+            (
+                2,
+                NetworkActivity(
+                    activity_id=1,
+                    severity_id=1,
+                    time=datetime(2025, 1, 15, 10, 0),
+                    process=ProcessInfo(pid=1, name="wget"),
+                    dst_endpoint=NetworkEndpoint(ip="1.2.3.4", port=443),
+                    device=DeviceInfo(hostname="test"),
+                ),
+            )
         ]
         with patch("agent.analyzer.llm_analyzer.kuzu") as mock_kuzu:
             mock_conn = MagicMock()

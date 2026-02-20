@@ -220,13 +220,15 @@ def compute_ja3(client_hello: bytes) -> str | None:
                 offset += ext_len
 
         # Build JA3 string: TLSVersion,Ciphers,Extensions,EllipticCurves,EllipticCurvePointFormats
-        ja3_str = ",".join([
-            str(tls_version),
-            "-".join(ciphers),
-            "-".join(extensions),
-            "-".join(elliptic_curves),
-            "-".join(ec_point_formats),
-        ])
+        ja3_str = ",".join(
+            [
+                str(tls_version),
+                "-".join(ciphers),
+                "-".join(extensions),
+                "-".join(elliptic_curves),
+                "-".join(ec_point_formats),
+            ]
+        )
 
         return hashlib.md5(ja3_str.encode()).hexdigest()
 
@@ -270,9 +272,7 @@ def init_connection_metadata_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def store_connection_metadata(
-    conn: sqlite3.Connection, metadata: ConnectionMetadata
-) -> None:
+def store_connection_metadata(conn: sqlite3.Connection, metadata: ConnectionMetadata) -> None:
     """Store a connection metadata record."""
     conn.execute(
         "INSERT INTO connection_metadata "
@@ -317,9 +317,7 @@ def get_connection_metadata(
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM connection_metadata "
-            "WHERE start_time >= ? "
-            "ORDER BY start_time DESC LIMIT 100",
+            "SELECT * FROM connection_metadata WHERE start_time >= ? ORDER BY start_time DESC LIMIT 100",
             (cutoff,),
         ).fetchall()
     return [dict(row) for row in rows]
@@ -363,9 +361,7 @@ class ConnectionMetadataCollector(Collector):
         if self._thread is not None:
             return
 
-        self._thread = threading.Thread(
-            target=self._run_tcpdump, daemon=True, name="connection_metadata"
-        )
+        self._thread = threading.Thread(target=self._run_tcpdump, daemon=True, name="connection_metadata")
         self._thread.start()
 
     def _run_tcpdump(self) -> None:
@@ -383,7 +379,11 @@ class ConnectionMetadataCollector(Collector):
         try:
             self._proc = subprocess.Popen(
                 [
-                    "tcpdump", "-i", "any", "-n", "-l",
+                    "tcpdump",
+                    "-i",
+                    "any",
+                    "-n",
+                    "-l",
                     "tcp[tcpflags] & (tcp-syn) != 0",
                 ],
                 stdout=subprocess.PIPE,

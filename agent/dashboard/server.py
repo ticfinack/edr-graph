@@ -197,23 +197,27 @@ async def get_attack_chain(pid: int):
             for file_path in (f.iocs or {}).get("files", []):
                 if file_path and str(file_path).lower() not in existing_paths:
                     existing_paths.add(str(file_path).lower())
-                    chain["file_activity"].append({
-                        "file_path": str(file_path),
-                        "operation": "REFERENCED",
-                        "timestamp": f.timestamp.isoformat(),
-                        "source": f"Finding: {f.title}",
-                    })
-            chain["findings"].append({
-                "id": f.id,
-                "severity": f.severity,
-                "title": f.title,
-                "description": f.description,
-                "recommendation": f.recommendation,
-                "timestamp": f.timestamp.isoformat(),
-                "affected_entities": f.affected_entities,
-                "evidence_event_ids": f.evidence_event_ids,
-                "iocs": f.iocs or {},
-            })
+                    chain["file_activity"].append(
+                        {
+                            "file_path": str(file_path),
+                            "operation": "REFERENCED",
+                            "timestamp": f.timestamp.isoformat(),
+                            "source": f"Finding: {f.title}",
+                        }
+                    )
+            chain["findings"].append(
+                {
+                    "id": f.id,
+                    "severity": f.severity,
+                    "title": f.title,
+                    "description": f.description,
+                    "recommendation": f.recommendation,
+                    "timestamp": f.timestamp.isoformat(),
+                    "affected_entities": f.affected_entities,
+                    "evidence_event_ids": f.evidence_event_ids,
+                    "iocs": f.iocs or {},
+                }
+            )
     except Exception:
         pass
 
@@ -243,27 +247,35 @@ async def get_ioc_chain(finding_id: str):
     # Build process chain from finding's chain steps
     process_chain = []
     for step in chain:
-        s = step if isinstance(step, dict) else {
-            "entity_type": step.entity_type,
-            "entity_id": step.entity_id,
-            "entity_name": step.entity_name,
-            "pid": getattr(step, "pid", None),
-        }
+        s = (
+            step
+            if isinstance(step, dict)
+            else {
+                "entity_type": step.entity_type,
+                "entity_id": step.entity_id,
+                "entity_name": step.entity_name,
+                "pid": getattr(step, "pid", None),
+            }
+        )
         if s.get("entity_type") == "process":
-            process_chain.append({
-                "name": s.get("entity_name", "?"),
-                "pid": s.get("pid") or 0,
-                "type": "process",
-            })
+            process_chain.append(
+                {
+                    "name": s.get("entity_name", "?"),
+                    "pid": s.get("pid") or 0,
+                    "type": "process",
+                }
+            )
 
     # Gather domain resolution data from graph
     domains_data = []
     for domain in iocs.get("domains", []):
         history = gq.get_domain_resolution_history(conn, domain)
-        domains_data.append({
-            "name": domain,
-            "resolved_ips": history,
-        })
+        domains_data.append(
+            {
+                "name": domain,
+                "resolved_ips": history,
+            }
+        )
 
     # Gather IP enrichment from graph
     ips_data = []
@@ -277,14 +289,16 @@ async def get_ioc_chain(finding_id: str):
             )
             if result.has_next():
                 row = result.get_next()
-                ips_data.append({
-                    "address": row[0],
-                    "classification": row[1] or "unclassified",
-                    "provider_name": row[2] or "",
-                    "isp": row[3] or "",
-                    "country": row[4] or "",
-                    "reverse_dns": row[5] or "",
-                })
+                ips_data.append(
+                    {
+                        "address": row[0],
+                        "classification": row[1] or "unclassified",
+                        "provider_name": row[2] or "",
+                        "isp": row[3] or "",
+                        "country": row[4] or "",
+                        "reverse_dns": row[5] or "",
+                    }
+                )
             else:
                 ips_data.append({"address": ip, "classification": "unclassified"})
         except Exception:
@@ -297,25 +311,32 @@ async def get_ioc_chain(finding_id: str):
         "child_processes": [],
         "network_footprint": {
             "domains": [{"name": d["name"], "is_dga_candidate": False} for d in domains_data],
-            "ips": [{"address": ip["address"], "port": None,
-                     "classification": ip.get("classification", ""),
-                     "provider_name": ip.get("provider_name", "")}
-                    for ip in ips_data],
+            "ips": [
+                {
+                    "address": ip["address"],
+                    "port": None,
+                    "classification": ip.get("classification", ""),
+                    "provider_name": ip.get("provider_name", ""),
+                }
+                for ip in ips_data
+            ],
             "listening_ports": [],
         },
         "file_activity": [],
         "risk_indicators": [],
-        "findings": [{
-            "id": finding.id,
-            "severity": finding.severity,
-            "title": finding.title,
-            "description": finding.description,
-            "recommendation": finding.recommendation,
-            "timestamp": finding.timestamp.isoformat(),
-            "affected_entities": finding.affected_entities,
-            "evidence_event_ids": finding.evidence_event_ids,
-            "iocs": iocs,
-        }],
+        "findings": [
+            {
+                "id": finding.id,
+                "severity": finding.severity,
+                "title": finding.title,
+                "description": finding.description,
+                "recommendation": finding.recommendation,
+                "timestamp": finding.timestamp.isoformat(),
+                "affected_entities": finding.affected_entities,
+                "evidence_event_ids": finding.evidence_event_ids,
+                "iocs": iocs,
+            }
+        ],
         # Extra fields for IOC-centric view
         "ioc_domains": domains_data,
         "ioc_ips": ips_data,
@@ -349,7 +370,7 @@ async def get_ioc_summary():
                 "id": f.id,
                 "pids": [p for p in (f.affected_pids or []) if p and p > 0],
             }
-            for pid in (f.affected_pids or []):
+            for pid in f.affected_pids or []:
                 if pid and pid > 0:
                     pid_findings.setdefault(pid, []).append(f_info)
             for key in ("domains", "ips", "files", "urls"):
@@ -360,7 +381,7 @@ async def get_ioc_summary():
             """Collect unique finding refs for a set of PIDs and/or IOC value."""
             refs: list[dict] = []
             seen: set[str] = set()
-            for pid in (pids or []):
+            for pid in pids or []:
                 if pid and pid > 0:
                     for fi in pid_findings.get(pid, []):
                         if fi["id"] not in seen:
@@ -387,7 +408,7 @@ async def get_ioc_summary():
             refs = _find_refs(d.get("resolved_by_pids"), d.get("name"))
             # Also inherit findings from IPs this domain resolves to
             seen = {r["id"] for r in refs}
-            for resolved_ip in (d.get("resolved_ips") or []):
+            for resolved_ip in d.get("resolved_ips") or []:
                 for r in ip_to_findings.get(resolved_ip, []):
                     if r["id"] not in seen:
                         seen.add(r["id"])
@@ -406,18 +427,22 @@ async def get_ioc_summary():
                     existing_file_paths.add(str(file_path).lower())
                     # Build PID list from this finding's affected_pids
                     f_pids = [p for p in (f_obj.affected_pids or []) if p and p > 0]
-                    result["files"].append({
-                        "path": str(file_path),
-                        "operation": "REFERENCED",
-                        "by_processes": [],
-                        "by_pids": f_pids,
-                        "timestamp": f_obj.timestamp.isoformat(),
-                        "findings": [{
-                            "title": f_obj.title,
-                            "id": f_obj.id,
-                            "pids": f_pids,
-                        }],
-                    })
+                    result["files"].append(
+                        {
+                            "path": str(file_path),
+                            "operation": "REFERENCED",
+                            "by_processes": [],
+                            "by_pids": f_pids,
+                            "timestamp": f_obj.timestamp.isoformat(),
+                            "findings": [
+                                {
+                                    "title": f_obj.title,
+                                    "id": f_obj.id,
+                                    "pids": f_pids,
+                                }
+                            ],
+                        }
+                    )
     except Exception:
         pass
 
@@ -430,9 +455,7 @@ async def get_process_by_name(name: str):
     conn = _get_conn()
     try:
         result = conn.execute(
-            "MATCH (p:Process {name: $name}) "
-            "RETURN p.pid, p.name, p.cmd_line "
-            "ORDER BY p.start_time DESC LIMIT 5",
+            "MATCH (p:Process {name: $name}) RETURN p.pid, p.name, p.cmd_line ORDER BY p.start_time DESC LIMIT 5",
             {"name": name},
         )
         matches = []
@@ -459,9 +482,17 @@ async def get_graph_stats():
             nodes[table] = 0
 
     for table in [
-        "SPAWNED", "CONNECTED_TO", "RESOLVED", "RESOLVES_TO",
-        "CREATED_FILE", "MODIFIED_FILE", "READ_FILE", "DELETED_FILE",
-        "CREATED_REG", "MODIFIED_REG", "DELETED_REG",
+        "SPAWNED",
+        "CONNECTED_TO",
+        "RESOLVED",
+        "RESOLVES_TO",
+        "CREATED_FILE",
+        "MODIFIED_FILE",
+        "READ_FILE",
+        "DELETED_FILE",
+        "CREATED_REG",
+        "MODIFIED_REG",
+        "DELETED_REG",
     ]:
         try:
             r = conn.execute(f"MATCH ()-[e:{table}]->() RETURN COUNT(e)")
@@ -569,8 +600,7 @@ async def approve_response(response_id: str, body: dict):
 
     new_status = "approved" if action == "approve" else "denied"
     conn.execute(
-        "UPDATE response_audit SET approval_status = ?, approved_by = 'dashboard_user' "
-        "WHERE response_id = ?",
+        "UPDATE response_audit SET approval_status = ?, approved_by = 'dashboard_user' WHERE response_id = ?",
         (new_status, response_id),
     )
     conn.commit()
@@ -680,16 +710,35 @@ async def get_response_mode():
 
 @app.post("/api/response/mode")
 async def set_response_mode(body: dict):
-    """Switch response mode."""
+    """Switch response mode.
+
+    When switching FROM learning to active/passive, triggers a retroactive
+    purge of baselined edges from the graph.
+    """
     engine = _state.get("response_engine")
     if engine is None:
         raise HTTPException(503, "Response engine not initialized")
     mode = body.get("mode", "")
+    previous_mode = engine.response_mode
     try:
         engine.set_mode(mode)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
-    return {"mode": engine.response_mode}
+
+    # Retroactive graph purge when leaving learning mode
+    graph_purged = 0
+    baseline_gate = _state.get("baseline_gate")
+    if previous_mode == "learning" and mode != "learning" and baseline_gate:
+        try:
+            from agent.graph.cleanup import purge_baselined_edges
+
+            baseline_gate.invalidate()
+            conn = _get_conn()
+            graph_purged = purge_baselined_edges(conn, baseline_gate)
+        except Exception:
+            logger.warning("Baseline graph purge failed on mode switch", exc_info=True)
+
+    return {"mode": engine.response_mode, "graph_purged": graph_purged}
 
 
 @app.get("/api/response/baseline/stats")
@@ -717,7 +766,31 @@ async def clear_baseline():
     if baseline is None:
         raise HTTPException(503, "Baseline not initialized")
     baseline.clear()
+    # Invalidate the gate cache so it picks up the empty baseline
+    baseline_gate = _state.get("baseline_gate")
+    if baseline_gate is not None:
+        baseline_gate.invalidate()
     return {"status": "ok"}
+
+
+@app.post("/api/response/baseline/purge-graph")
+async def purge_baseline_graph():
+    """On-demand retroactive purge of baselined edges from the graph."""
+    baseline_gate = _state.get("baseline_gate")
+    if baseline_gate is None:
+        raise HTTPException(503, "Baseline gate not initialized")
+
+    try:
+        from agent.graph.cleanup import purge_baselined_edges
+
+        baseline_gate.invalidate()
+        conn = _get_conn()
+        purged = purge_baselined_edges(conn, baseline_gate)
+    except Exception as exc:
+        logger.exception("On-demand baseline graph purge failed")
+        raise HTTPException(500, "Purge failed") from exc
+
+    return {"status": "ok", "purged": purged}
 
 
 @app.get("/api/response/allowlist")
@@ -749,14 +822,11 @@ async def add_allowlist_rule(body: dict):
         raise HTTPException(400, str(e)) from e
     except Exception:
         logger.exception("Failed to add allowlist rule")
-        raise HTTPException(500, "Failed to add allowlist rule")
+        raise HTTPException(500, "Failed to add allowlist rule") from None
 
     # Retroactive graph purge for graph-filterable rule types
     graph_purged = 0
-    if (
-        rule_type in ResponseAllowlist.GRAPH_FILTERABLE_TYPES
-        and not chain_filter
-    ):
+    if rule_type in ResponseAllowlist.GRAPH_FILTERABLE_TYPES and not chain_filter:
         try:
             from agent.graph.cleanup import purge_by_rule
 
@@ -811,7 +881,7 @@ async def add_blocklist_rule(body: dict):
         raise HTTPException(400, str(e)) from e
     except Exception:
         logger.exception("Failed to add blocklist rule")
-        raise HTTPException(500, "Failed to add blocklist rule")
+        raise HTTPException(500, "Failed to add blocklist rule") from None
     return {"status": "ok", "rule_id": rule_id}
 
 
@@ -999,6 +1069,7 @@ def init_dashboard(
     allowlist=None,
     blocklist=None,
     allowlist_cache=None,
+    baseline_gate=None,
 ) -> None:
     """Initialize dashboard state. Called once from main.py."""
     _state["queue"] = queue
@@ -1012,6 +1083,7 @@ def init_dashboard(
     _state["allowlist"] = allowlist
     _state["blocklist"] = blocklist
     _state["allowlist_cache"] = allowlist_cache
+    _state["baseline_gate"] = baseline_gate
 
 
 def start_dashboard_server(port: int = 9200) -> threading.Thread:

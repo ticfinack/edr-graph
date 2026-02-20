@@ -33,11 +33,13 @@ class _HealthHandler(BaseHTTPRequestHandler):
     def _handle_health(self) -> None:
         uptime = time.monotonic() - self._start_time
         q_depth = self._queue_getter() if self._queue_getter else 0
-        body = json.dumps({
-            "status": "healthy",
-            "uptime_seconds": round(uptime, 1),
-            "queue_depth": q_depth,
-        }).encode()
+        body = json.dumps(
+            {
+                "status": "healthy",
+                "uptime_seconds": round(uptime, 1),
+                "queue_depth": q_depth,
+            }
+        ).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))

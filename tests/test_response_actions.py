@@ -1,7 +1,6 @@
 """Tests for Phase 3 Commit 1: Response Action Framework (3A)."""
 
 from agent.response.actions import (
-    PROTECTED_PROCESSES,
     ResponseAction,
     ResponsePolicy,
 )

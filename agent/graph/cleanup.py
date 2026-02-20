@@ -156,3 +156,165 @@ def _purge_file_path(conn: kuzu.Connection, pattern: str) -> int:
     if to_delete:
         logger.info("Purged %d File nodes matching %r", len(to_delete), pattern)
     return len(to_delete)
+
+
+# ── Baseline-gated retroactive purge ─────────────────────────────────────
+
+
+def purge_baselined_edges(conn: kuzu.Connection, cache) -> int:
+    """Retroactive purge of baselined edges from the graph.
+
+    For each Process node, checks its CONNECTED_TO, RESOLVED, and file edges
+    against the baseline cache.  Deletes matched edges individually (not
+    DETACH DELETE) to preserve nodes that have other non-baselined edges.
+
+    After all process edges are scanned, cleans up orphaned IP/Domain/File
+    nodes (nodes with zero remaining edges).
+
+    Returns the total number of items (edges + orphaned nodes) deleted.
+    """
+    if not cache.has_entries():
+        return 0
+
+    deleted = 0
+
+    # Get all processes
+    try:
+        result = conn.execute("MATCH (p:Process) RETURN p.name, p.id")
+    except Exception:
+        logger.exception("purge_baselined_edges: failed to query processes")
+        return 0
+
+    processes: list[tuple[str, str]] = []
+    while result.has_next():
+        row = result.get_next()
+        processes.append((row[0], row[1]))  # (name, id)
+
+    for proc_name, proc_id in processes:
+        if not proc_name:
+            continue
+
+        # Check CONNECTED_TO edges (Process -> IP)
+        try:
+            result = conn.execute(
+                "MATCH (p:Process {id: $pid})-[e:CONNECTED_TO]->(ip:IP) RETURN DISTINCT ip.address",
+                {"pid": proc_id},
+            )
+            while result.has_next():
+                ip_addr = result.get_next()[0]
+                if cache.is_gated(proc_name, "network", ip_addr):
+                    conn.execute(
+                        "MATCH (p:Process {id: $pid})-[e:CONNECTED_TO]->(ip:IP {address: $addr}) DELETE e",
+                        {"pid": proc_id, "addr": ip_addr},
+                    )
+                    deleted += 1
+        except Exception:
+            logger.debug(
+                "purge_baselined_edges: CONNECTED_TO scan failed for %s",
+                proc_id,
+                exc_info=True,
+            )
+
+        # Check RESOLVED edges (Process -> Domain)
+        try:
+            result = conn.execute(
+                "MATCH (p:Process {id: $pid})-[e:RESOLVED]->(d:Domain) RETURN DISTINCT d.name",
+                {"pid": proc_id},
+            )
+            while result.has_next():
+                domain_name = result.get_next()[0]
+                if cache.is_gated(proc_name, "dns", domain_name):
+                    conn.execute(
+                        "MATCH (p:Process {id: $pid})-[e:RESOLVED]->(d:Domain {name: $name}) DELETE e",
+                        {"pid": proc_id, "name": domain_name},
+                    )
+                    deleted += 1
+        except Exception:
+            logger.debug(
+                "purge_baselined_edges: RESOLVED scan failed for %s",
+                proc_id,
+                exc_info=True,
+            )
+
+        # Check file edges (Process -> File)
+        for rel_type in ("CREATED_FILE", "MODIFIED_FILE", "READ_FILE", "DELETED_FILE"):
+            try:
+                result = conn.execute(
+                    f"MATCH (p:Process {{id: $pid}})-[e:{rel_type}]->(f:File) RETURN DISTINCT f.path",
+                    {"pid": proc_id},
+                )
+                while result.has_next():
+                    file_path = result.get_next()[0]
+                    if cache.is_gated(proc_name, "file", file_path):
+                        conn.execute(
+                            f"MATCH (p:Process {{id: $pid}})-[e:{rel_type}]->(f:File {{path: $path}}) DELETE e",
+                            {"pid": proc_id, "path": file_path},
+                        )
+                        deleted += 1
+            except Exception:
+                logger.debug(
+                    "purge_baselined_edges: %s scan failed for %s",
+                    rel_type,
+                    proc_id,
+                    exc_info=True,
+                )
+
+    # Clean up orphaned target nodes (no remaining edges)
+    deleted += _cleanup_orphaned_targets(conn, "IP", "address", ["CONNECTED_TO", "RESOLVES_TO"])
+    deleted += _cleanup_orphaned_targets(conn, "Domain", "name", ["RESOLVED", "RESOLVES_TO"])
+    deleted += _cleanup_orphaned_targets(
+        conn, "File", "path", ["CREATED_FILE", "MODIFIED_FILE", "READ_FILE", "DELETED_FILE"]
+    )
+
+    if deleted:
+        logger.info("Purged %d baselined items from graph", deleted)
+
+    return deleted
+
+
+def _cleanup_orphaned_targets(
+    conn: kuzu.Connection,
+    label: str,
+    display_prop: str,
+    edge_types: list[str],
+) -> int:
+    """Delete nodes of ``label`` that have zero remaining incoming edges.
+
+    Checks each node for any incoming edges of the given types.  Uses
+    individual DELETE (not DETACH DELETE) since we've already confirmed
+    there are no edges.
+
+    Returns the count of deleted nodes.
+    """
+    deleted = 0
+    try:
+        result = conn.execute(f"MATCH (n:{label}) RETURN n.id")
+        node_ids: list[str] = []
+        while result.has_next():
+            node_ids.append(result.get_next()[0])
+
+        for node_id in node_ids:
+            has_edges = False
+            for et in edge_types:
+                try:
+                    r = conn.execute(
+                        f"MATCH ()-[e:{et}]->(n:{label} {{id: $id}}) RETURN COUNT(e)",
+                        {"id": node_id},
+                    )
+                    if r.has_next() and r.get_next()[0] > 0:
+                        has_edges = True
+                        break
+                except Exception:
+                    has_edges = True  # Assume has edges on error
+                    break
+
+            if not has_edges:
+                conn.execute(
+                    f"MATCH (n:{label} {{id: $id}}) DETACH DELETE n",
+                    {"id": node_id},
+                )
+                deleted += 1
+    except Exception:
+        logger.debug("Orphaned %s cleanup failed", label, exc_info=True)
+
+    return deleted

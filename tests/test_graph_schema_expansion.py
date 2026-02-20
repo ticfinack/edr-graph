@@ -6,7 +6,7 @@ deduplication, and file_read_tracking config gating.
 
 from datetime import datetime
 
-from agent.processor.entity_extractor import ExtractedEntities, extract_entities
+from agent.processor.entity_extractor import extract_entities
 from agent.schema.ocsf_types import (
     DeviceInfo,
     DnsActivity,
@@ -326,9 +326,7 @@ class TestFileReadTrackingGating:
         # Simulate config gating (same logic as processor_thread)
         file_read_tracking = False
         if not file_read_tracking:
-            entities.file_edges = [
-                e for e in entities.file_edges if e["operation"] != "READ"
-            ]
+            entities.file_edges = [e for e in entities.file_edges if e["operation"] != "READ"]
 
         assert len(entities.file_edges) == 0
 
@@ -346,9 +344,7 @@ class TestFileReadTrackingGating:
         # Apply config gating
         file_read_tracking = False
         if not file_read_tracking:
-            entities.file_edges = [
-                e for e in entities.file_edges if e["operation"] != "READ"
-            ]
+            entities.file_edges = [e for e in entities.file_edges if e["operation"] != "READ"]
 
         # CREATED edge is preserved
         assert len(entities.file_edges) == 1
@@ -393,9 +389,7 @@ class TestBackwardCompatibility:
             activity_id=1,
             severity_id=1,
             time=datetime(2025, 6, 1, 12, 0),
-            process=ProcessInfo(
-                pid=1234, name="curl", created_time=datetime(2025, 6, 1, 12, 0)
-            ),
+            process=ProcessInfo(pid=1234, name="curl", created_time=datetime(2025, 6, 1, 12, 0)),
             dst_endpoint=NetworkEndpoint(ip="93.184.216.34", port=443),
             device=DeviceInfo(hostname="testhost"),
         )

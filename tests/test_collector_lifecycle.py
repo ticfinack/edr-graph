@@ -2,7 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-from agent.collectors.base import Collector, RawEvent
 from agent.collectors.psutil_collector import PsutilCollector
 
 

@@ -2,7 +2,9 @@
 
 import pytest
 
-from agent.fleet.tls import load_mtls_channel_credentials
+pytest.importorskip("grpc", reason="grpc not installed")
+
+from agent.fleet.tls import load_mtls_channel_credentials  # noqa: E402
 
 
 class TestLoadMtlsCredentials:

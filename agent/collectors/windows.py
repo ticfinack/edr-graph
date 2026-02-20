@@ -45,10 +45,7 @@ class WindowsCollector(Collector):
         events: list[RawEvent] = []
         try:
             hand = win32evtlog.OpenEventLog(None, channel)
-            flags = (
-                win32evtlog.EVENTLOG_BACKWARDS_READ
-                | win32evtlog.EVENTLOG_SEQUENTIAL_READ
-            )
+            flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
             total = win32evtlog.GetNumberOfEventLogRecords(hand)
 
             last_record = self._last_record_numbers.get(channel, total)
@@ -93,9 +90,7 @@ class WindowsCollector(Collector):
                     )
                 )
 
-                self._last_record_numbers[channel] = max(
-                    self._last_record_numbers.get(channel, 0), record_num
-                )
+                self._last_record_numbers[channel] = max(self._last_record_numbers.get(channel, 0), record_num)
 
             win32evtlog.CloseEventLog(hand)
         except Exception as e:

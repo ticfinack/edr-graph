@@ -78,11 +78,11 @@ Every telemetry event is decomposed into entities and relationships in a [Kuzu](
                               |-[:CREATED_REG|MODIFIED_REG]->(:RegistryKey)
 ```
 
-<!-- Attack chain view: process ancestry, findings with Allow/Block, code signing -->
+<!-- Attack chain view: user identity, process ancestry, findings with Allow/Block, code signing -->
 ![Attack Chain](docs/screenshots/attack-chain.png)
 
-<!-- IOC feed match: threat intel finding with IOC-centric chain view -->
-![IOC Feed Match — Attack Chain](docs/screenshots/attack-chain-jsdelivr.png)
+<!-- User-enriched chain: user badge, process ancestry, IOCs, network connections -->
+![Attack Chain — Network](docs/screenshots/attack-chain-jsdelivr.png)
 
 
 ### LLM Threat Analyzer with Agentic Tool Use
@@ -125,7 +125,7 @@ If the graph edge count exceeds a configurable threshold (default: 5), the event
 
 | Platform | Collectors |
 |----------|-----------|
-| **macOS** | Unified Log, FSEvents, DNS interception (tcpdump), persistence polling (LaunchAgents/Daemons), process enrichment, Endpoint Security stub |
+| **macOS** | Unified Log, FSEvents, DNS interception (tcpdump), persistence polling (LaunchAgents/Daemons), connection metadata (tcpdump SYN), process enrichment, Endpoint Security stub |
 | **Windows** | ETW (kernel events), Event Log (Security/System/Sysmon), registry monitoring |
 | **Linux** | auditd (syscall tracing), journald, syslog, auth.log |
 | **Cross-platform** | psutil (process/network polling), TLS SNI extraction, JA3 fingerprinting |
@@ -163,7 +163,18 @@ A three-mode response engine that maps LLM severity verdicts to automated or sup
 
 **Protected process list** prevents the agent from terminating system-critical processes (`launchd`, `csrss.exe`, `systemd`, `sshd`, etc.) regardless of severity.
 
-### Chain-Aware Allowlisting
+### User Identity Enrichment
+
+Every process in the graph is linked to the user who spawned it. The agent resolves the owning user for each process via OS-level APIs (`stat /proc/<pid>` on Linux, `ps -o user=` on macOS, token query on Windows) and writes `(:User)-[:SPAWNED]->(:Process)` edges into the graph.
+
+This enables:
+- **Per-user scoping** — findings and attack chains show which user account was involved
+- **User-aware rules** — allow/block rules can target specific users (see below)
+- **Cross-user correlation** — detect lateral movement where one user's process spawns activity under another account
+
+The dashboard displays the user in the **Target Process** details and as a colored badge at the start of the **Process Chain**.
+
+### Chain-Aware Allow/Block Rules
 
 Rules can be scoped to specific process ancestry chains, not just flat attributes. This prevents overly broad allowlists:
 
@@ -176,12 +187,24 @@ malware > curl → 18.97.36.79  ← still triggers response
 ```
 
 **Chain pattern syntax:**
-- `>` separates process steps
-- `*` matches exactly one process
-- `**` matches zero or more processes
+- `>` separates chain steps
+- `*` matches exactly one step
+- `**` matches zero or more steps
 - Named steps use glob matching (case-insensitive)
+- `USER:<name>` matches a user entry (e.g., `USER:thomas`, `USER:root`)
 
-Examples:
+**Per-user rules** — chain patterns include the owning user with a `USER:` prefix, allowing rules scoped to specific accounts:
+
+```
+USER:thomas > ** > OrbStack Helper   # Block thomas using OrbStack Helper
+USER:thomas > **                     # Block all activity by user thomas
+USER:* > ** > osascript              # Allow osascript for any user
+** > curl                            # Block curl regardless of user
+```
+
+The `USER:` prefix prevents ambiguity when a username collides with a process name (e.g., `postgres` the user vs `postgres` the binary).
+
+**More examples:**
 ```
 Terminal > ** > caffeinate        # Terminal ancestry, any depth
 bash > curl                       # Direct parent
@@ -190,6 +213,10 @@ launchd > * > bash > python*     # One hop from launchd, then bash, then python*
 
 <!-- Allowlist rules with chain_filter scoping visible in Settings -->
 ![Allowlist Rules](docs/screenshots/settings.png)
+
+### Process Hierarchy Intelligence
+
+A built-in knowledge base of expected parent-child process relationships flags anomalous process ancestry. For example, `osascript` is expected to be spawned by shells (`bash`, `zsh`) — if it appears under an unexpected parent, the analyzer is alerted before the LLM even runs. This catches process injection and LOLBin abuse patterns that are invisible to signature-based detection.
 
 ### Real-Time Threat Intelligence
 
@@ -222,10 +249,12 @@ These run synchronously on every event (sub-millisecond) — no LLM needed:
 A single-page web dashboard served by FastAPI on `localhost:9200`:
 
 - **Overview** — Status cards (uptime, event rate, queue depth), severity breakdown, recent findings
-- **Events** — Live event stream with type filtering
 - **Findings** — Severity-filtered finding list with full detail, evidence events, and IOC extraction
-- **Graph Investigation** — Attack chain visualization with process ancestry, network connections, file operations, and DNS resolutions
-- **Settings** — Response mode control, baseline statistics, allowlist/blocklist CRUD, network controls, DNS sinkhole management, panic mode
+- **Graph Investigation** — Attack chain visualization with user identity, process ancestry, network connections, and code signing status
+- **Events** — Live event stream with type filtering and source selection
+- **IOC/IOA** — DNS query log with DGA scoring, external IP connections with geolocation, and finding correlation
+- **Audit** — Complete audit trail of all response actions taken
+- **Settings** — Response mode control, baseline statistics, allowlist/blocklist CRUD, network controls, DNS sinkhole management, panic mode, threat intel feed stats
 
 <!-- Findings list with severity, MITRE ATT&CK mappings, timestamps -->
 ![Findings](docs/screenshots/findings.png)
@@ -312,7 +341,7 @@ macOS system tray icon provides live status, native notifications for HIGH/CRITI
 | Process Info | psutil |
 | macOS Tray | rumps |
 | Logging | structlog (JSON/text) |
-| Testing | pytest (~450 tests) |
+| Testing | pytest (~500 tests) |
 
 ---
 
@@ -349,13 +378,13 @@ edr-graph/
 │   ├── graph/                  # Attack chain queries
 │   ├── analyzer/               # LLM tool-use analyzer + preflight
 │   ├── analysis/               # Lightweight detectors (DGA, persistence)
-│   ├── enrichment/             # Code signing, IP reputation, allowlisting
-│   ├── intel/                  # IOC feeds, MITRE ATT&CK, LOLBAS
+│   ├── enrichment/             # Code signing, IP reputation, process identity, allowlisting
+│   ├── intel/                  # IOC feeds, MITRE ATT&CK, LOLBAS, process hierarchy
 │   ├── response/               # Engine, actions, approval, baseline, network control
 │   ├── dashboard/              # FastAPI server + SPA frontend
 │   ├── platform/               # Tamper detection, Windows service
 │   └── tray/                   # macOS menu bar integration
-├── tests/                      # ~40 test modules, ~450 tests
+├── tests/                      # 40 test modules, ~500 tests
 ├── config.yaml                 # Runtime configuration
 └── README.md
 ```
@@ -368,11 +397,12 @@ edr-graph/
 |------|-------------|
 | [Dashboard Overview](docs/screenshots/dashboard-overview.png) | Status cards, active collectors, threat intel feed stats, recent findings |
 | [Findings](docs/screenshots/findings.png) | Severity-filtered finding list with MITRE ATT&CK technique IDs |
-| [Attack Chain](docs/screenshots/attack-chain.png) | Process ancestry, code signing verification, Allow/Block per finding |
-| [IOC Feed Match](docs/screenshots/attack-chain-jsdelivr.png) | Threat intel feed hit with IOC-centric chain view and response actions |
+| [Attack Chain](docs/screenshots/attack-chain.png) | User identity, process ancestry, code signing, Allow/Block per finding |
+| [Attack Chain — Network](docs/screenshots/attack-chain-jsdelivr.png) | User-enriched chain with IOCs, network connections, and response actions |
 | [Events](docs/screenshots/events.png) | Live event stream with type filtering (file, network, DNS, process) |
 | [IOC/IOA](docs/screenshots/ioc-ioa.png) | DNS query log with DGA scoring and finding correlation |
-| [Settings](docs/screenshots/settings.png) | Response mode, baseline stats, allowlist rules with chain filters |
+| [Audit Trail](docs/screenshots/audit.png) | Response action audit log with timestamps and outcomes |
+| [Settings](docs/screenshots/settings.png) | Response mode, baseline, allowlist/blocklist, network controls, threat intel |
 
 ---
 

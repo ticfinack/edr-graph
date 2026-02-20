@@ -1,13 +1,12 @@
 """Tests for Phase 3 Commit 5: Approval Workflow, Audit Trail, and Response Engine (3E+3F)."""
 
 import sqlite3
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from agent.response.actions import ResponseAction, ResponsePolicy
-from agent.response.approval import ApprovalManager, ApprovalRequest, ApprovalStatus
+from agent.response.approval import ApprovalManager, ApprovalStatus
 from agent.response.engine import ResponseAuditLog, ResponseEngine, ResponseRecord
 from agent.schema.queue_schema import init_queue_db
 

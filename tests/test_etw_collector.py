@@ -1,8 +1,6 @@
 """Tests for the Windows ETW collector."""
 
-import sys
 from datetime import datetime
-from unittest.mock import MagicMock, patch
 
 from agent.collectors.base import RawEvent
 from agent.collectors.etw_collector import (
@@ -66,5 +64,6 @@ class TestEtwCollector:
         collector.start()
         # Give the thread a moment, then stop
         import time
+
         time.sleep(0.05)
         collector.stop()

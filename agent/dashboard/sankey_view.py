@@ -33,9 +33,7 @@ def create(queue: SqliteQueue, refresh_interval: float = 10.0) -> None:
         ui.label("Event Chain Visualization").classes("text-h6")
 
         with ui.row().classes("w-full items-center gap-4"):
-            hours_back = ui.number(
-                label="Hours back", value=24, min=1, max=168, step=1
-            ).classes("w-32")
+            hours_back = ui.number(label="Hours back", value=24, min=1, max=168, step=1).classes("w-32")
             ui.button("Refresh", on_click=lambda: refresh())
 
         plot_container = ui.column().classes("w-full")
@@ -70,9 +68,7 @@ def _build_sankey(findings: list[SecurityFinding]) -> go.Figure:
     node_colors: list[str] = []
     node_index: dict[str, int] = {}
 
-    links_agg: dict[tuple[str, str], dict] = defaultdict(
-        lambda: {"count": 0, "severities": []}
-    )
+    links_agg: dict[tuple[str, str], dict] = defaultdict(lambda: {"count": 0, "severities": []})
 
     for finding in findings:
         chain = finding.chain
@@ -159,8 +155,7 @@ def _get_node_color(entity_type: str, entity_id: str) -> str:
         return NODE_COLORS["process"]
     elif entity_type == "ip":
         # Check if private IP (simple heuristic)
-        if entity_id.startswith(("10.", "192.168.", "172.16.", "172.17.",
-                                  "172.18.", "172.19.", "172.2", "172.3")):
+        if entity_id.startswith(("10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.", "172.2", "172.3")):
             return NODE_COLORS["ip_private"]
         return NODE_COLORS["ip_public"]
     return "rgba(128,128,128,0.6)"

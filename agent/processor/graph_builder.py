@@ -20,6 +20,11 @@ from agent.schema.graph_types import (
 logger = logging.getLogger(__name__)
 
 
+def _naive(dt: datetime) -> datetime:
+    """Strip timezone info so naive/aware datetimes can be compared."""
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+
 class GraphBuilder:
     """Writes extracted entities into the Kuzu graph.
 
@@ -80,25 +85,25 @@ class GraphBuilder:
         for entities in batch:
             for u in entities.users:
                 existing = users.get(u.id)
-                if existing is None or u.last_seen > existing.last_seen:
+                if existing is None or _naive(u.last_seen) > _naive(existing.last_seen):
                     users[u.id] = u
             for p in entities.processes:
                 processes[p.id] = p  # last write wins (same data)
             for ip in entities.ips:
                 existing = ips.get(ip.id)
-                if existing is None or ip.last_seen > existing.last_seen:
+                if existing is None or _naive(ip.last_seen) > _naive(existing.last_seen):
                     ips[ip.id] = ip
             for d in entities.domains:
                 existing = domains.get(d.id)
-                if existing is None or d.last_seen > existing.last_seen:
+                if existing is None or _naive(d.last_seen) > _naive(existing.last_seen):
                     domains[d.id] = d
             for f in entities.files:
                 existing = files.get(f.id)
-                if existing is None or f.last_seen > existing.last_seen:
+                if existing is None or _naive(f.last_seen) > _naive(existing.last_seen):
                     files[f.id] = f
             for r in entities.registry_keys:
                 existing = registry_keys.get(r.id)
-                if existing is None or r.last_seen > existing.last_seen:
+                if existing is None or _naive(r.last_seen) > _naive(existing.last_seen):
                     registry_keys[r.id] = r
             spawned.extend(entities.spawned_edges)
             connected.extend(entities.connected_edges)
@@ -509,10 +514,7 @@ def backfill_parent_pids(db: kuzu.Database) -> int:
 
     # Phase 1: Fix processes with parent_pid=0
     try:
-        result = conn.execute(
-            "MATCH (p:Process) WHERE p.parent_pid = 0 AND p.pid > 0 "
-            "RETURN p.id, p.pid"
-        )
+        result = conn.execute("MATCH (p:Process) WHERE p.parent_pid = 0 AND p.pid > 0 RETURN p.id, p.pid")
         rows = []
         while result.has_next():
             rows.append(result.get_next())
@@ -609,10 +611,7 @@ def backfill_parent_pids(db: kuzu.Database) -> int:
     # Phase 2: Create ancestor stubs for processes whose parent_pid > 0
     # but the parent PID is not in the graph
     try:
-        result2 = conn.execute(
-            "MATCH (p:Process) WHERE p.parent_pid > 0 AND p.pid > 0 "
-            "RETURN p.pid, p.parent_pid"
-        )
+        result2 = conn.execute("MATCH (p:Process) WHERE p.parent_pid > 0 AND p.pid > 0 RETURN p.pid, p.parent_pid")
         orphans = []
         while result2.has_next():
             row = result2.get_next()

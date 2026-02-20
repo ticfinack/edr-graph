@@ -140,12 +140,14 @@ class FileQuarantine:
 
             metadata_path = quarantine_path.with_suffix(".quarantined.meta")
             metadata_path.write_text(
-                json.dumps({
-                    "original_path": record.original_path,
-                    "sha256": record.sha256,
-                    "timestamp": record.timestamp,
-                    "original_permissions": oct(record.original_permissions),
-                }),
+                json.dumps(
+                    {
+                        "original_path": record.original_path,
+                        "sha256": record.sha256,
+                        "timestamp": record.timestamp,
+                        "original_permissions": oct(record.original_permissions),
+                    }
+                ),
             )
 
             logger.info(

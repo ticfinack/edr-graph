@@ -89,9 +89,7 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
                 self._neo4j.ingest_ocsf_event(request.agent_id, event_data)
                 accepted += 1
             except Exception:
-                logger.debug(
-                    "Failed to ingest event from %s", request.agent_id, exc_info=True
-                )
+                logger.debug("Failed to ingest event from %s", request.agent_id, exc_info=True)
 
         return fleet_pb2.SendEventsResponse(
             accepted_count=accepted,

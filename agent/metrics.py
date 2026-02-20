@@ -34,9 +34,19 @@ llm_verdicts = Counter(
     ["severity"],
 )
 
+events_self_filtered = Counter(
+    "edr_events_self_filtered_total",
+    "Entities filtered by agent self-allowlist",
+)
+
 events_allowlist_filtered = Counter(
     "edr_events_allowlist_filtered_total",
     "Entities filtered by allowlist before graph insertion",
+)
+
+edges_baseline_gated = Counter(
+    "edr_edges_baseline_gated_total",
+    "Edges filtered by baseline gating before graph insertion",
 )
 
 dga_detections_total = Counter(
@@ -99,6 +109,11 @@ fleet_forwarding_errors = Counter(
 fleet_forwarding_queue_depth = Gauge(
     "edr_fleet_forwarding_queue_depth",
     "Number of items pending in the forwarding queue",
+)
+
+graph_reaper_pruned = Counter(
+    "edr_graph_reaper_pruned_total",
+    "Graph edges and nodes pruned by TTL reaper",
 )
 
 fleet_forwarding_latency = Histogram(

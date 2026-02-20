@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import platform
-import sys
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -125,32 +124,34 @@ class TestProcessIdentity:
 
     def test_lru_cache_eviction(self):
         """Cache should evict oldest entries when full."""
-        with patch("agent.enrichment.process_identity._MAX_CACHE_SIZE", 3):
-            with patch("agent.enrichment.process_identity._lookup_identity") as mock_lookup:
-                mock_lookup.return_value = ProcessIdentity(code_signed=False)
+        with (
+            patch("agent.enrichment.process_identity._MAX_CACHE_SIZE", 3),
+            patch("agent.enrichment.process_identity._lookup_identity") as mock_lookup,
+        ):
+            mock_lookup.return_value = ProcessIdentity(code_signed=False)
 
-                # Fill cache
-                get_process_identity(1, "/path/a")
-                get_process_identity(2, "/path/b")
-                get_process_identity(3, "/path/c")
-                assert mock_lookup.call_count == 3
+            # Fill cache
+            get_process_identity(1, "/path/a")
+            get_process_identity(2, "/path/b")
+            get_process_identity(3, "/path/c")
+            assert mock_lookup.call_count == 3
 
-                # This should evict /path/a
-                get_process_identity(4, "/path/d")
-                assert mock_lookup.call_count == 4
+            # This should evict /path/a
+            get_process_identity(4, "/path/d")
+            assert mock_lookup.call_count == 4
 
-                # /path/a should require a new lookup
-                get_process_identity(5, "/path/a")
-                assert mock_lookup.call_count == 5
+            # /path/a should require a new lookup
+            get_process_identity(5, "/path/a")
+            assert mock_lookup.call_count == 5
 
-                # /path/b should still be cached (not evicted because /path/c and /path/d are newer)
-                # Actually /path/b is the next oldest after /path/a was evicted, then /path/d added,
-                # then /path/a re-added evicts /path/b
-                # Let's just verify the cache works at all
-                get_process_identity(6, "/path/d")  # should be cached
-                # call_count shouldn't increase for cached entry
-                # but the cache was already modified... let's simplify
-                assert mock_lookup.call_count >= 5
+            # /path/b should still be cached (not evicted because /path/c and /path/d are newer)
+            # Actually /path/b is the next oldest after /path/a was evicted, then /path/d added,
+            # then /path/a re-added evicts /path/b
+            # Let's just verify the cache works at all
+            get_process_identity(6, "/path/d")  # should be cached
+            # call_count shouldn't increase for cached entry
+            # but the cache was already modified... let's simplify
+            assert mock_lookup.call_count >= 5
 
 
 class TestEntityExtractorEnrichment:

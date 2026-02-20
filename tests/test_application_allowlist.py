@@ -6,8 +6,6 @@ import pytest
 
 from agent.enrichment.application_allowlist import (
     BUILTIN_ALLOWLIST,
-    AllowlistEntry,
-    NetworkPattern,
     _rebuild_indexes,
     check_allowlist,
     load_custom_entries,
@@ -266,6 +264,4 @@ class TestBuiltinAllowlist:
     def test_all_entries_have_patterns(self):
         """All entries should have at least one network pattern."""
         for entry in BUILTIN_ALLOWLIST:
-            assert len(entry.expected_network) > 0, (
-                f"Entry {entry.app_name} has no network patterns"
-            )
+            assert len(entry.expected_network) > 0, f"Entry {entry.app_name} has no network patterns"

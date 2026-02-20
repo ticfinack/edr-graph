@@ -1,6 +1,7 @@
 """Tests for fleet forwarder: forwarding queue, drain logic, retry behavior."""
 
 import json
+import sys
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -9,6 +10,15 @@ import pytest
 from agent.config import Settings
 from agent.queue.sqlite_queue import SqliteQueue
 from agent.schema.graph_types import ChainStep, SecurityFinding
+
+_has_grpc = bool(sys.modules.get("grpc"))
+if not _has_grpc:
+    try:
+        import grpc as _grpc  # noqa: F401
+
+        _has_grpc = True
+    except ImportError:
+        pass
 
 
 @pytest.fixture
@@ -108,6 +118,7 @@ class TestForwardingQueue:
         queue.mark_forward_failed([])  # Should not raise
 
 
+@pytest.mark.skipif(not _has_grpc, reason="grpc not installed")
 class TestFleetForwarderIntegration:
     def test_forward_finding_queues_payload(self, queue, sample_finding):
         settings = Settings(fleet_enabled=True, fleet_url="localhost:50051")

@@ -14,16 +14,56 @@ from dataclasses import dataclass, field
 # Source: aggregated from English text corpus analysis.
 # Higher values = more common in English.
 _ENGLISH_BIGRAMS: dict[str, float] = {
-    "th": 3.56, "he": 3.07, "in": 2.43, "er": 2.05, "an": 1.99,
-    "re": 1.85, "on": 1.76, "at": 1.49, "en": 1.45, "nd": 1.35,
-    "ti": 1.34, "es": 1.34, "or": 1.28, "te": 1.27, "of": 1.17,
-    "ed": 1.17, "is": 1.13, "it": 1.12, "al": 1.09, "ar": 1.07,
-    "st": 1.05, "to": 1.05, "nt": 1.04, "ng": 0.95, "se": 0.93,
-    "ha": 0.93, "as": 0.87, "ou": 0.87, "io": 0.83, "le": 0.83,
-    "ve": 0.83, "co": 0.79, "me": 0.79, "de": 0.76, "hi": 0.76,
-    "ri": 0.73, "ro": 0.73, "ic": 0.70, "ne": 0.69, "ea": 0.69,
-    "ra": 0.69, "ce": 0.65, "li": 0.62, "ch": 0.60, "ll": 0.58,
-    "be": 0.58, "ma": 0.57, "si": 0.55, "om": 0.55, "ur": 0.54,
+    "th": 3.56,
+    "he": 3.07,
+    "in": 2.43,
+    "er": 2.05,
+    "an": 1.99,
+    "re": 1.85,
+    "on": 1.76,
+    "at": 1.49,
+    "en": 1.45,
+    "nd": 1.35,
+    "ti": 1.34,
+    "es": 1.34,
+    "or": 1.28,
+    "te": 1.27,
+    "of": 1.17,
+    "ed": 1.17,
+    "is": 1.13,
+    "it": 1.12,
+    "al": 1.09,
+    "ar": 1.07,
+    "st": 1.05,
+    "to": 1.05,
+    "nt": 1.04,
+    "ng": 0.95,
+    "se": 0.93,
+    "ha": 0.93,
+    "as": 0.87,
+    "ou": 0.87,
+    "io": 0.83,
+    "le": 0.83,
+    "ve": 0.83,
+    "co": 0.79,
+    "me": 0.79,
+    "de": 0.76,
+    "hi": 0.76,
+    "ri": 0.73,
+    "ro": 0.73,
+    "ic": 0.70,
+    "ne": 0.69,
+    "ea": 0.69,
+    "ra": 0.69,
+    "ce": 0.65,
+    "li": 0.62,
+    "ch": 0.60,
+    "ll": 0.58,
+    "be": 0.58,
+    "ma": 0.57,
+    "si": 0.55,
+    "om": 0.55,
+    "ur": 0.54,
 }
 
 _VOWELS = set("aeiou")
@@ -161,10 +201,7 @@ def _shannon_entropy(s: str) -> float:
     for c in s:
         freq[c] = freq.get(c, 0) + 1
     length = len(s)
-    return -sum(
-        (count / length) * math.log2(count / length)
-        for count in freq.values()
-    )
+    return -sum((count / length) * math.log2(count / length) for count in freq.values())
 
 
 def _consonant_vowel_ratio(s: str) -> float:
@@ -187,7 +224,7 @@ def _bigram_frequency_score(s: str) -> float:
     total = 0.0
     count = 0
     for i in range(len(s) - 1):
-        bigram = s[i:i + 2]
+        bigram = s[i : i + 2]
         if bigram[0].isalpha() and bigram[1].isalpha():
             total += _ENGLISH_BIGRAMS.get(bigram, 0.0)
             count += 1

@@ -119,7 +119,7 @@ def test_dns_resolution() -> None:
         try:
             socket.getaddrinfo(domain, 80)
         except socket.gaierror:
-            print_step(f"  -> Resolution failed (expected)")
+            print_step("  -> Resolution failed (expected)")
         time.sleep(1)
 
     # Real domain with high entropy
@@ -194,9 +194,7 @@ def test_persistence() -> None:
     print_banner("Test 4: Persistence Mechanism")
 
     if IS_MACOS:
-        plist_path = os.path.expanduser(
-            "~/Library/LaunchAgents/com.edr.test.fake.plist"
-        )
+        plist_path = os.path.expanduser("~/Library/LaunchAgents/com.edr.test.fake.plist")
         if not wait_and_confirm(f"Create a fake LaunchAgent plist at {plist_path}"):
             return
 
@@ -229,9 +227,7 @@ def test_persistence() -> None:
         value_data = r"C:\Windows\System32\cmd.exe /c echo test"
 
         try:
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE
-            )
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
             winreg.SetValueEx(key, value_name, 0, winreg.REG_SZ, value_data)
             winreg.CloseKey(key)
             print_step(f"Created test Run key: HKCU\\{key_path}\\{value_name}")
@@ -239,9 +235,7 @@ def test_persistence() -> None:
 
             time.sleep(5)
 
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE
-            )
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
             winreg.DeleteValue(key, value_name)
             winreg.CloseKey(key)
             print_step("Cleaned up test Run key")
@@ -270,12 +264,8 @@ def test_persistence() -> None:
             os.remove(actual_cron)
             print_step("Cleaned up")
         else:
-            print(
-                f"  {YELLOW}Not running as root — agent may not detect /tmp writes as persistence.{RESET}"
-            )
-            print(
-                f"  {YELLOW}For full test, run simulation as root in the test VM.{RESET}"
-            )
+            print(f"  {YELLOW}Not running as root — agent may not detect /tmp writes as persistence.{RESET}")
+            print(f"  {YELLOW}For full test, run simulation as root in the test VM.{RESET}")
 
         os.remove(cron_file)
         print_step("Cleaned up test cron file")
@@ -300,9 +290,7 @@ def test_network_connection() -> None:
         ("93.184.216.34", 80, "example.com"),
     ]
 
-    if not wait_and_confirm(
-        f"Make TCP connections to {len(targets)} known-good IP addresses"
-    ):
+    if not wait_and_confirm(f"Make TCP connections to {len(targets)} known-good IP addresses"):
         return
 
     for ip, port, desc in targets:
@@ -400,9 +388,7 @@ def test_rapid_spawning() -> None:
     print()
     print_expected("All 20 process_start events captured")
     print_expected("events_processed_total should increase by >= 20")
-    print_expected(
-        "This proves ETW/auditd is working — psutil polling would miss most of these"
-    )
+    print_expected("This proves ETW/auditd is working — psutil polling would miss most of these")
     print()
     time.sleep(3)
 
@@ -468,9 +454,7 @@ def test_kill_chain() -> None:
         if IS_MACOS:
             import plistlib
 
-            plist_path = os.path.expanduser(
-                "~/Library/LaunchAgents/com.edr.killchain.test.plist"
-            )
+            plist_path = os.path.expanduser("~/Library/LaunchAgents/com.edr.killchain.test.plist")
             plist_data = {
                 "Label": "com.edr.killchain.test",
                 "ProgramArguments": ["/usr/bin/true"],
@@ -479,7 +463,10 @@ def test_kill_chain() -> None:
             os.makedirs(os.path.dirname(plist_path), exist_ok=True)
             with open(plist_path, "wb") as f:
                 plistlib.dump(plist_data, f)
-            persistence_cleanup = lambda: os.remove(plist_path)
+
+            def persistence_cleanup():
+                return os.remove(plist_path)
+
             print_step(f"  Created LaunchAgent: {plist_path}")
         elif IS_WINDOWS:
             import winreg
@@ -613,8 +600,8 @@ def main() -> None:
         for key in sorted(TESTS.keys()):
             name, _ = TESTS[key]
             print(f"    [{key}] {name}")
-        print(f"    [0] Run All Tests Sequentially")
-        print(f"    [q] Quit")
+        print("    [0] Run All Tests Sequentially")
+        print("    [q] Quit")
         print()
 
         choice = input(f"  {CYAN}>>>{RESET} ").strip().lower()

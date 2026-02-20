@@ -107,14 +107,7 @@ class DnsSinkhole:
         try:
             content = self._hosts_path.read_text()
             lines = content.splitlines(keepends=True)
-            filtered = [
-                line
-                for line in lines
-                if not (
-                    _MARKER in line
-                    and domain in line.lower()
-                )
-            ]
+            filtered = [line for line in lines if not (_MARKER in line and domain in line.lower())]
             self._hosts_path.write_text("".join(filtered))
             self._sinkholed.discard(domain)
             self._flush_dns_cache()

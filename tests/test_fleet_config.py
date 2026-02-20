@@ -1,8 +1,6 @@
 """Tests for fleet configuration: Settings fields, YAML loading, CLI overrides."""
 
-from pathlib import Path
-
-from agent.config import Settings, load_config_file, generate_default_config
+from agent.config import Settings, generate_default_config, load_config_file
 
 
 class TestFleetSettingsDefaults:

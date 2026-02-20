@@ -6,7 +6,6 @@ Uses a real in-memory Kuzu database for integration testing.
 
 import shutil
 import tempfile
-from datetime import datetime
 
 import kuzu
 
@@ -14,7 +13,6 @@ from agent.graph.queries import (
     build_attack_chain,
     get_domain_resolution_history,
     get_file_activity,
-    get_persistence_artifacts,
     get_process_chain,
     get_process_network_footprint,
     serialize_attack_chain,

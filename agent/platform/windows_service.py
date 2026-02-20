@@ -44,6 +44,7 @@ def _check_pywin32() -> bool:
     """Check if pywin32 is available."""
     try:
         import win32serviceutil  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -74,6 +75,7 @@ def _get_service_class():
 
             # Signal the agent to shut down
             from agent.main import _shutdown
+
             _shutdown.set()
 
         def SvcDoRun(self):
@@ -104,15 +106,11 @@ def _get_service_class():
                 with contextlib.suppress(SystemExit):
                     main()
 
-            self._agent_thread = threading.Thread(
-                target=agent_main, daemon=True, name="agent-main"
-            )
+            self._agent_thread = threading.Thread(target=agent_main, daemon=True, name="agent-main")
             self._agent_thread.start()
 
             # Wait for stop signal
-            win32event.WaitForSingleObject(
-                self._stop_event, win32event.INFINITE
-            )
+            win32event.WaitForSingleObject(self._stop_event, win32event.INFINITE)
 
             # Ensure agent shuts down
             _shutdown.set()
@@ -131,13 +129,9 @@ def configure_recovery(service_name: str = SERVICE_NAME) -> None:
     try:
         import win32service
 
-        hscm = win32service.OpenSCManager(
-            None, None, win32service.SC_MANAGER_ALL_ACCESS
-        )
+        hscm = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_ALL_ACCESS)
         try:
-            hs = win32service.OpenService(
-                hscm, service_name, win32service.SERVICE_ALL_ACCESS
-            )
+            hs = win32service.OpenService(hscm, service_name, win32service.SERVICE_ALL_ACCESS)
             try:
                 # SC_ACTION_RESTART = 1
                 actions = [(1, delay_ms) for _, delay_ms in RECOVERY_ACTIONS]

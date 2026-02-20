@@ -19,29 +19,41 @@ from agent.schema.ocsf_types import (
 def _make_events():
     """Helper: create a small batch of test events."""
     return [
-        (1, ProcessActivity(
-            activity_id=1, severity_id=1,
-            time=datetime(2025, 6, 1, 12, 0),
-            process=ProcessInfo(pid=100, name="curl", cmd_line="curl https://evil.com"),
-            device=DeviceInfo(hostname="test-host"),
-        )),
-        (2, NetworkActivity(
-            activity_id=1, severity_id=1,
-            time=datetime(2025, 6, 1, 12, 1),
-            process=ProcessInfo(pid=100, name="curl"),
-            dst_endpoint=NetworkEndpoint(ip="93.184.216.34", port=443),
-            device=DeviceInfo(hostname="test-host"),
-        )),
+        (
+            1,
+            ProcessActivity(
+                activity_id=1,
+                severity_id=1,
+                time=datetime(2025, 6, 1, 12, 0),
+                process=ProcessInfo(pid=100, name="curl", cmd_line="curl https://evil.com"),
+                device=DeviceInfo(hostname="test-host"),
+            ),
+        ),
+        (
+            2,
+            NetworkActivity(
+                activity_id=1,
+                severity_id=1,
+                time=datetime(2025, 6, 1, 12, 1),
+                process=ProcessInfo(pid=100, name="curl"),
+                dst_endpoint=NetworkEndpoint(ip="93.184.216.34", port=443),
+                device=DeviceInfo(hostname="test-host"),
+            ),
+        ),
     ]
 
 
 def _mock_choice(content, finish_reason="stop", tool_calls=None):
     """Build a mock OpenAI ChatCompletion choice."""
     message = SimpleNamespace(content=content, tool_calls=tool_calls)
-    return SimpleNamespace(choices=[SimpleNamespace(
-        finish_reason=finish_reason,
-        message=message,
-    )])
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                finish_reason=finish_reason,
+                message=message,
+            )
+        ]
+    )
 
 
 def _mock_tool_call(tc_id, name, arguments):
@@ -105,20 +117,22 @@ class TestToolLoop:
 
         # First call: LLM requests ip_geolocation
         tool_call = _mock_tool_call("tc_1", "ip_geolocation", {"ip": "93.184.216.34"})
-        first_response = _mock_choice(
-            None, finish_reason="tool_calls", tool_calls=[tool_call]
-        )
+        first_response = _mock_choice(None, finish_reason="tool_calls", tool_calls=[tool_call])
 
         # Second call: LLM returns findings
-        finding_json = json.dumps([{
-            "severity": "medium",
-            "title": "Suspicious outbound connection",
-            "description": "curl connected to 93.184.216.34 (US, Example ISP)",
-            "affected_entities": ["curl", "93.184.216.34"],
-            "evidence_event_ids": [1, 2],
-            "recommendation": "Investigate",
-            "chain": [],
-        }])
+        finding_json = json.dumps(
+            [
+                {
+                    "severity": "medium",
+                    "title": "Suspicious outbound connection",
+                    "description": "curl connected to 93.184.216.34 (US, Example ISP)",
+                    "affected_entities": ["curl", "93.184.216.34"],
+                    "evidence_event_ids": [1, 2],
+                    "recommendation": "Investigate",
+                    "chain": [],
+                }
+            ]
+        )
         second_response = _mock_choice(finding_json, finish_reason="stop")
 
         analyzer._client = MagicMock()
@@ -150,9 +164,7 @@ class TestToolLoop:
 
         # Both iterations: LLM keeps requesting tools
         tool_call = _mock_tool_call("tc_1", "reverse_dns", {"ip": "93.184.216.34"})
-        tool_response = _mock_choice(
-            None, finish_reason="tool_calls", tool_calls=[tool_call]
-        )
+        tool_response = _mock_choice(None, finish_reason="tool_calls", tool_calls=[tool_call])
 
         # Forced final answer
         final_response = _mock_choice("[]", finish_reason="stop")
@@ -185,9 +197,7 @@ class TestToolLoop:
 
         # First: LLM calls a tool
         tool_call = _mock_tool_call("tc_1", "ip_geolocation", {"ip": "0.0.0.0"})
-        first_response = _mock_choice(
-            None, finish_reason="tool_calls", tool_calls=[tool_call]
-        )
+        first_response = _mock_choice(None, finish_reason="tool_calls", tool_calls=[tool_call])
 
         # Second: LLM produces final answer
         second_response = _mock_choice("[]", finish_reason="stop")

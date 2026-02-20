@@ -142,9 +142,7 @@ class TestDGAGraphIntegration:
             query_domain="storage.googleapis.com",
             device=DeviceInfo(hostname="testhost"),
         )
-        entities = extract_entities(
-            event, event_id=102, dga_allowlist=allowlist
-        )
+        entities = extract_entities(event, event_id=102, dga_allowlist=allowlist)
 
         assert len(entities.domains) == 1
         assert entities.domains[0].is_dga_candidate is False

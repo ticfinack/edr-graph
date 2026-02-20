@@ -30,8 +30,7 @@ class MacOSEndpointSecurityCollector(Collector):
 
     def start(self) -> None:
         logger.info(
-            "Endpoint Security collector is a stub — requires "
-            "com.apple.developer.endpoint-security.client entitlement"
+            "Endpoint Security collector is a stub — requires com.apple.developer.endpoint-security.client entitlement"
         )
 
     def collect(self) -> list[RawEvent]:

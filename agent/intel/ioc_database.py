@@ -38,51 +38,53 @@ _IP_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
 # Legitimate infrastructure domains that host user-uploaded malware.
 # URLhaus/ThreatFox list URLs on these services, but the domains themselves
 # are not malicious — blocking them would break normal operations.
-_DOMAIN_ALLOWLIST = frozenset({
-    # Cloud storage / CDN
-    "storage.googleapis.com",
-    "firebasestorage.googleapis.com",
-    "drive.google.com",
-    "docs.google.com",
-    "sites.google.com",
-    "s3.amazonaws.com",
-    "blob.core.windows.net",
-    "1drv.ms",
-    "onedrive.live.com",
-    # Code hosting
-    "github.com",
-    "raw.githubusercontent.com",
-    "codeload.github.com",
-    "objects.githubusercontent.com",
-    "gist.githubusercontent.com",
-    "gitlab.com",
-    "bitbucket.org",
-    # File sharing / paste
-    "dropbox.com",
-    "dl.dropboxusercontent.com",
-    "pastebin.com",
-    "paste.ee",
-    "transfer.sh",
-    "cdn.discordapp.com",
-    "media.discordapp.net",
-    "discord.gg",
-    "anonfiles.com",
-    "mega.nz",
-    "mediafire.com",
-    # Web hosting / archives
-    "web.archive.org",
-    "archive.org",
-    "img1.wsimg.com",
-    "wordpress.com",
-    "blogspot.com",
-    "weebly.com",
-    # URL shorteners
-    "bit.ly",
-    "tinyurl.com",
-    "t.co",
-    "is.gd",
-    "rebrand.ly",
-})
+_DOMAIN_ALLOWLIST = frozenset(
+    {
+        # Cloud storage / CDN
+        "storage.googleapis.com",
+        "firebasestorage.googleapis.com",
+        "drive.google.com",
+        "docs.google.com",
+        "sites.google.com",
+        "s3.amazonaws.com",
+        "blob.core.windows.net",
+        "1drv.ms",
+        "onedrive.live.com",
+        # Code hosting
+        "github.com",
+        "raw.githubusercontent.com",
+        "codeload.github.com",
+        "objects.githubusercontent.com",
+        "gist.githubusercontent.com",
+        "gitlab.com",
+        "bitbucket.org",
+        # File sharing / paste
+        "dropbox.com",
+        "dl.dropboxusercontent.com",
+        "pastebin.com",
+        "paste.ee",
+        "transfer.sh",
+        "cdn.discordapp.com",
+        "media.discordapp.net",
+        "discord.gg",
+        "anonfiles.com",
+        "mega.nz",
+        "mediafire.com",
+        # Web hosting / archives
+        "web.archive.org",
+        "archive.org",
+        "img1.wsimg.com",
+        "wordpress.com",
+        "blogspot.com",
+        "weebly.com",
+        # URL shorteners
+        "bit.ly",
+        "tinyurl.com",
+        "t.co",
+        "is.gd",
+        "rebrand.ly",
+    }
+)
 
 
 @dataclass
@@ -117,7 +119,7 @@ class IocDatabase:
         self._feed_stats: dict[str, int] = {}
         # User-configurable regex exclusions for domains/IPs
         self._exclusion_patterns: list[re.Pattern] = []
-        for pat in (exclusion_patterns or []):
+        for pat in exclusion_patterns or []:
             try:
                 self._exclusion_patterns.append(re.compile(pat, re.IGNORECASE))
             except re.error:
@@ -205,9 +207,7 @@ class IocDatabase:
             if self._last_refresh > 0:
                 elapsed = time.monotonic() - self._last_refresh
                 wall = datetime.now(UTC).timestamp() - elapsed
-                last_refresh_iso = datetime.fromtimestamp(
-                    wall, tz=UTC
-                ).isoformat()
+                last_refresh_iso = datetime.fromtimestamp(wall, tz=UTC).isoformat()
 
             return {
                 "ip_count": len(self._ips),
@@ -383,10 +383,7 @@ class IocDatabase:
             count_domain = 0
 
             # Skip comment lines
-            lines = [
-                line for line in body.splitlines()
-                if line.strip() and not line.startswith("#")
-            ]
+            lines = [line for line in body.splitlines() if line.strip() and not line.startswith("#")]
             reader = csv.reader(io.StringIO("\n".join(lines)))
 
             for row in reader:
@@ -410,7 +407,12 @@ class IocDatabase:
                         count_ip += 1
                 elif ioc_type == "domain":
                     domain = ioc_value.strip().lower()
-                    if domain and domain not in domains and domain not in _DOMAIN_ALLOWLIST and not self._is_excluded(domain):
+                    if (
+                        domain
+                        and domain not in domains
+                        and domain not in _DOMAIN_ALLOWLIST
+                        and not self._is_excluded(domain)
+                    ):
                         domains[domain] = IocMatch(
                             feed_name="threatfox",
                             ioc_type="domain",
@@ -420,11 +422,14 @@ class IocDatabase:
                         count_domain += 1
                 elif ioc_type == "url":
                     try:
-                        parsed = urlparse(
-                            ioc_value if "://" in ioc_value else f"http://{ioc_value}"
-                        )
+                        parsed = urlparse(ioc_value if "://" in ioc_value else f"http://{ioc_value}")
                         domain = (parsed.hostname or "").lower()
-                        if domain and domain not in domains and domain not in _DOMAIN_ALLOWLIST and not self._is_excluded(domain):
+                        if (
+                            domain
+                            and domain not in domains
+                            and domain not in _DOMAIN_ALLOWLIST
+                            and not self._is_excluded(domain)
+                        ):
                             domains[domain] = IocMatch(
                                 feed_name="threatfox",
                                 ioc_type="domain",

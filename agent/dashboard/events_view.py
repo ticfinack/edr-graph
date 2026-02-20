@@ -31,14 +31,20 @@ def create(queue: SqliteQueue, refresh_interval: float = 5.0) -> None:
 
         with ui.row().classes("w-full items-center gap-4"):
             source_filter = ui.select(
-                options=["All", "psutil_process", "psutil_network", "auth", "auditd",
-                         "syslog", "unified_log", "macos_log"],
+                options=[
+                    "All",
+                    "psutil_process",
+                    "psutil_network",
+                    "auth",
+                    "auditd",
+                    "syslog",
+                    "unified_log",
+                    "macos_log",
+                ],
                 value="All",
                 label="Source Filter",
             ).classes("w-48")
-            limit_input = ui.number(
-                label="Max Events", value=50, min=10, max=500, step=10
-            ).classes("w-32")
+            limit_input = ui.number(label="Max Events", value=50, min=10, max=500, step=10).classes("w-32")
 
         table = ui.table(
             columns=COLUMNS,

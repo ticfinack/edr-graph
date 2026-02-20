@@ -42,11 +42,7 @@ class TamperCheckResult:
 
     @property
     def is_clean(self) -> bool:
-        return (
-            not self.tampered_files
-            and not self.new_files
-            and not self.deleted_files
-        )
+        return not self.tampered_files and not self.new_files and not self.deleted_files
 
 
 def compute_file_hash(file_path: Path) -> str:
@@ -203,9 +199,7 @@ class TamperChecker:
 
         self.initialize_baseline()
         self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._check_loop, daemon=True, name="tamper-checker"
-        )
+        self._thread = threading.Thread(target=self._check_loop, daemon=True, name="tamper-checker")
         self._thread.start()
 
     def stop(self) -> None:

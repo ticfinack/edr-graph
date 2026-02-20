@@ -48,9 +48,7 @@ class MacOSDnsCollector(Collector):
     def start(self) -> None:
         if self._thread is not None:
             return
-        self._thread = threading.Thread(
-            target=self._run_tcpdump, daemon=True, name="macos_dns"
-        )
+        self._thread = threading.Thread(target=self._run_tcpdump, daemon=True, name="macos_dns")
         self._thread.start()
 
     def _run_tcpdump(self) -> None:

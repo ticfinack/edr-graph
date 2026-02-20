@@ -88,9 +88,7 @@ def _lookup_identity(pid: int, exe_path: str) -> ProcessIdentity:
 
         # Check if Apple-signed
         authority = identity.signing_authority or ""
-        identity.is_apple_binary = (
-            "Apple" in authority or "Software Signing" in authority
-        )
+        identity.is_apple_binary = "Apple" in authority or "Software Signing" in authority
 
         # Check notarization flag from codesign flags
         flags = codesign_info.get("Flags", "")

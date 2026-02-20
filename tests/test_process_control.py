@@ -4,9 +4,6 @@ import os
 import signal
 import subprocess
 import sys
-import time
-
-import pytest
 
 from agent.response.process_control import (
     ProcessControlOutcome,

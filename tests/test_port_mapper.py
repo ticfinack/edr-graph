@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
 import pytest
 
 from agent.enrichment.port_mapper import (
-    ConnectionContext,
     ListeningService,
     PortMapper,
 )
@@ -239,10 +236,7 @@ class TestEntityExtractorPortMapper:
 
         entities = extract_entities(event, event_id=1, port_mapper=mapper)
         # Should have a connection_context risk indicator
-        ctx_indicators = [
-            r for r in entities.risk_indicators
-            if r.get("type") == "connection_context"
-        ]
+        ctx_indicators = [r for r in entities.risk_indicators if r.get("type") == "connection_context"]
         assert len(ctx_indicators) == 1
         assert "Localhost IPC" in ctx_indicators[0]["description"]
         assert "node" in ctx_indicators[0]["description"]

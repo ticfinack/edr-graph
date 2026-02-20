@@ -447,15 +447,17 @@ class ToolExecutor:
         data = self._http_request_json(req)
         # Extract just the useful bits
         report = data.get("data", {})
-        return json.dumps({
-            "ip": ip,
-            "abuse_confidence_score": report.get("abuseConfidenceScore"),
-            "total_reports": report.get("totalReports"),
-            "usage_type": report.get("usageType"),
-            "isp": report.get("isp"),
-            "country_code": report.get("countryCode"),
-            "is_tor": report.get("isTor"),
-        })
+        return json.dumps(
+            {
+                "ip": ip,
+                "abuse_confidence_score": report.get("abuseConfidenceScore"),
+                "total_reports": report.get("totalReports"),
+                "usage_type": report.get("usageType"),
+                "isp": report.get("isp"),
+                "country_code": report.get("countryCode"),
+                "is_tor": report.get("isTor"),
+            }
+        )
 
     def _handle_virustotal_lookup(self, indicator: str, indicator_type: str) -> str:
         url = f"https://www.virustotal.com/api/v3/{indicator_type}/{indicator}"
@@ -468,13 +470,15 @@ class ToolExecutor:
         )
         data = self._http_request_json(req)
         attrs = data.get("data", {}).get("attributes", {})
-        return json.dumps({
-            "indicator": indicator,
-            "type": indicator_type,
-            "last_analysis_stats": attrs.get("last_analysis_stats"),
-            "reputation": attrs.get("reputation"),
-            "tags": attrs.get("tags", []),
-        })
+        return json.dumps(
+            {
+                "indicator": indicator,
+                "type": indicator_type,
+                "last_analysis_stats": attrs.get("last_analysis_stats"),
+                "reputation": attrs.get("reputation"),
+                "tags": attrs.get("tags", []),
+            }
+        )
 
     # -- Tier 3 handlers ---------------------------------------------------
 
@@ -562,11 +566,13 @@ class ToolExecutor:
         # Owner name
         try:
             import pwd
+
             result["owner"] = pwd.getpwuid(st.st_uid).pw_name
         except (ImportError, KeyError):
             pass
         try:
             import grp
+
             result["group"] = grp.getgrgid(st.st_gid).gr_name
         except (ImportError, KeyError):
             pass
@@ -576,7 +582,9 @@ class ToolExecutor:
             try:
                 proc = subprocess.run(
                     ["codesign", "-dvv", str(resolved)],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
                 output = proc.stderr  # codesign outputs to stderr
                 sig: dict[str, str] = {}
@@ -626,21 +634,25 @@ class ToolExecutor:
         for item in items[:max_entries]:
             try:
                 item_stat = item.stat()
-                entries.append({
-                    "name": item.name,
-                    "type": "dir" if item.is_dir() else "file",
-                    "size": item_stat.st_size,
-                    "modified": _dt.fromtimestamp(item_stat.st_mtime).isoformat(),
-                })
+                entries.append(
+                    {
+                        "name": item.name,
+                        "type": "dir" if item.is_dir() else "file",
+                        "size": item_stat.st_size,
+                        "modified": _dt.fromtimestamp(item_stat.st_mtime).isoformat(),
+                    }
+                )
             except OSError:
                 entries.append({"name": item.name, "type": "unknown"})
 
-        return json.dumps({
-            "path": str(dir_path),
-            "entries": entries,
-            "total": len(items),
-            "showing": len(entries),
-        })
+        return json.dumps(
+            {
+                "path": str(dir_path),
+                "entries": entries,
+                "total": len(items),
+                "showing": len(entries),
+            }
+        )
 
     def _handle_process_info(self, pid: int) -> str:
         try:
@@ -699,10 +711,7 @@ class ToolExecutor:
         # Children
         try:
             children = proc.children()
-            result["children"] = [
-                {"pid": c.pid, "name": c.name()}
-                for c in children[:10]
-            ]
+            result["children"] = [{"pid": c.pid, "name": c.name()} for c in children[:10]]
         except (psutil.AccessDenied, psutil.ZombieProcess):
             pass
 
@@ -748,22 +757,26 @@ class ToolExecutor:
                 with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
                     proc_name = psutil.Process(c.pid).name()
 
-            connections.append({
-                "pid": c.pid,
-                "process": proc_name,
-                "local_addr": f"{c.laddr.ip}:{c.laddr.port}" if c.laddr else None,
-                "remote_addr": f"{c.raddr.ip}:{c.raddr.port}" if c.raddr else None,
-                "status": c.status,
-            })
+            connections.append(
+                {
+                    "pid": c.pid,
+                    "process": proc_name,
+                    "local_addr": f"{c.laddr.ip}:{c.laddr.port}" if c.laddr else None,
+                    "remote_addr": f"{c.raddr.ip}:{c.raddr.port}" if c.raddr else None,
+                    "status": c.status,
+                }
+            )
 
             if len(connections) >= 50:
                 break
 
-        return json.dumps({
-            "connections": connections,
-            "count": len(connections),
-            "filters": {"pid": pid, "port": port},
-        })
+        return json.dumps(
+            {
+                "connections": connections,
+                "count": len(connections),
+                "filters": {"pid": pid, "port": port},
+            }
+        )
 
     def _handle_file_hash(self, path: str) -> str:
         if _is_sensitive_path(path):
@@ -799,13 +812,15 @@ class ToolExecutor:
         except PermissionError:
             return json.dumps({"error": f"permission denied: {path}"})
 
-        return json.dumps({
-            "path": str(resolved),
-            "size": size,
-            "md5": md5.hexdigest(),
-            "sha1": sha1.hexdigest(),
-            "sha256": sha256.hexdigest(),
-        })
+        return json.dumps(
+            {
+                "path": str(resolved),
+                "size": size,
+                "md5": md5.hexdigest(),
+                "sha1": sha1.hexdigest(),
+                "sha256": sha256.hexdigest(),
+            }
+        )
 
     # -- HTTP helpers -------------------------------------------------------
 

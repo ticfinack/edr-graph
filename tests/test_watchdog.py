@@ -2,12 +2,8 @@
 
 import json
 import os
-import subprocess
 import sys
 import time
-from pathlib import Path
-
-import pytest
 
 from agent.watchdog import (
     AGENT_HEARTBEAT_FILE,

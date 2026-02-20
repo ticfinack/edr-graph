@@ -51,9 +51,9 @@ def create(queue: SqliteQueue, refresh_interval: float = 5.0) -> None:
                                 ).classes("text-white")
                                 ui.label(finding.title).classes("text-subtitle1 text-bold")
                                 ui.space()
-                                ui.label(
-                                    finding.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-                                ).classes("text-caption text-grey")
+                                ui.label(finding.timestamp.strftime("%Y-%m-%d %H:%M:%S")).classes(
+                                    "text-caption text-grey"
+                                )
 
                             ui.label(finding.description).classes("text-body2")
 
@@ -61,9 +61,7 @@ def create(queue: SqliteQueue, refresh_interval: float = 5.0) -> None:
                                 with ui.row().classes("gap-1 q-mt-sm"):
                                     ui.label("Entities:").classes("text-caption text-bold")
                                     for entity in finding.affected_entities:
-                                        ui.badge(entity, color="blue-grey").classes(
-                                            "text-white"
-                                        )
+                                        ui.badge(entity, color="blue-grey").classes("text-white")
 
                             if finding.chain:
                                 with ui.row().classes("gap-1 q-mt-sm items-center"):
@@ -74,14 +72,10 @@ def create(queue: SqliteQueue, refresh_interval: float = 5.0) -> None:
                                             color="teal",
                                         ).classes("text-white")
                                         if i < len(finding.chain) - 1:
-                                            ui.icon("arrow_forward").classes(
-                                                "text-grey"
-                                            )
+                                            ui.icon("arrow_forward").classes("text-grey")
 
                             ui.separator()
-                            ui.label(f"Recommendation: {finding.recommendation}").classes(
-                                "text-body2 text-italic"
-                            )
+                            ui.label(f"Recommendation: {finding.recommendation}").classes("text-body2 text-italic")
             except Exception:
                 pass
 

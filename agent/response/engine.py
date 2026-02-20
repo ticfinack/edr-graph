@@ -160,9 +160,7 @@ class ResponseEngine:
         self.audit_log = audit_log
         self.approval_manager = ApprovalManager(policy)
         self.network_isolator = NetworkIsolator()
-        self.file_quarantine = FileQuarantine(
-            quarantine_dir or Path("/var/edr-graph/quarantine")
-        )
+        self.file_quarantine = FileQuarantine(quarantine_dir or Path("/var/edr-graph/quarantine"))
         self.baseline = baseline
         self.allowlist = allowlist
         self.blocklist = blocklist
@@ -200,9 +198,12 @@ class ResponseEngine:
         # ── Learning mode: record baseline, never block ──
         if self._response_mode == "learning":
             if self.baseline and process_name:
-                target = dst_ip or domain or target_path or "unknown"
-                btype = "network" if dst_ip else "dns" if domain else "file"
-                self.baseline.record(process_name, btype, target)
+                if dst_ip:
+                    self.baseline.record(process_name, "network", dst_ip)
+                if domain:
+                    self.baseline.record(process_name, "dns", domain)
+                if target_path:
+                    self.baseline.record(process_name, "file", target_path)
 
             record = ResponseRecord(
                 response_id=f"resp-{uuid.uuid4().hex[:12]}",
@@ -352,17 +353,21 @@ class ResponseEngine:
             return record
 
         # Check protected process list for process-targeting actions
-        if action in (ResponseAction.SUSPEND_PROCESS, ResponseAction.TERMINATE_PROCESS) and process_name and self.policy.is_protected(process_name):
-                record.result = "blocked_protected"
-                record.result_detail = f"Process '{process_name}' is protected"
-                record.approval_status = "not_required"
-                self.audit_log.record(record)
-                logger.warning(
-                    "Blocked %s on protected process '%s'",
-                    action.value,
-                    process_name,
-                )
-                return record
+        if (
+            action in (ResponseAction.SUSPEND_PROCESS, ResponseAction.TERMINATE_PROCESS)
+            and process_name
+            and self.policy.is_protected(process_name)
+        ):
+            record.result = "blocked_protected"
+            record.result_detail = f"Process '{process_name}' is protected"
+            record.approval_status = "not_required"
+            self.audit_log.record(record)
+            logger.warning(
+                "Blocked %s on protected process '%s'",
+                action.value,
+                process_name,
+            )
+            return record
 
         # Request approval
         approval = self.approval_manager.request_approval(
@@ -388,9 +393,7 @@ class ResponseEngine:
         # Execute the action
         self._do_execute(action, target_pid, target_path, record, dst_ip=dst_ip)
         self.audit_log.record(record)
-        metrics.response_actions_total.labels(
-            action=action.value, result=record.result
-        ).inc()
+        metrics.response_actions_total.labels(action=action.value, result=record.result).inc()
         return record
 
     def _do_execute(

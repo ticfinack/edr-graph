@@ -55,9 +55,7 @@ class PsutilCollector(Collector):
         current_pids: set[int] = set()
         now = datetime.now()
 
-        for proc in psutil.process_iter(
-            ["pid", "name", "username", "cmdline", "create_time", "ppid", "exe"]
-        ):
+        for proc in psutil.process_iter(["pid", "name", "username", "cmdline", "create_time", "ppid", "exe"]):
             try:
                 info = proc.info
                 pid = info["pid"]
@@ -65,11 +63,7 @@ class PsutilCollector(Collector):
 
                 if self._initialized and pid not in self._prev_pids and pid not in self._agent_pids:
                     cmdline = " ".join(info["cmdline"]) if info["cmdline"] else ""
-                    create_time = (
-                        datetime.fromtimestamp(info["create_time"])
-                        if info["create_time"]
-                        else now
-                    )
+                    create_time = datetime.fromtimestamp(info["create_time"]) if info["create_time"] else now
                     events.append(
                         RawEvent(
                             timestamp=create_time,
@@ -131,10 +125,7 @@ class PsutilCollector(Collector):
                     RawEvent(
                         timestamp=now,
                         source="psutil_network",
-                        message=(
-                            f"New connection: {proc_name or 'unknown'} "
-                            f"-> {conn.raddr.ip}:{conn.raddr.port}"
-                        ),
+                        message=(f"New connection: {proc_name or 'unknown'} -> {conn.raddr.ip}:{conn.raddr.port}"),
                         fields={
                             "pid": str(conn.pid or 0),
                             "process_name": proc_name,

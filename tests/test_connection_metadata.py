@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 import struct
 from datetime import datetime, timedelta
@@ -222,9 +221,7 @@ class TestCollectorParsing:
     def test_collector_parse_line(self):
         """Collector._parse_line should buffer events from SYN lines."""
         collector = ConnectionMetadataCollector()
-        collector._parse_line(
-            "12:34:56.789 IP 10.0.0.1.54321 > 93.184.216.34.443: Flags [S], seq 1"
-        )
+        collector._parse_line("12:34:56.789 IP 10.0.0.1.54321 > 93.184.216.34.443: Flags [S], seq 1")
 
         events = collector.collect()
         assert len(events) == 1
@@ -240,9 +237,7 @@ class TestCollectorParsing:
     def test_collect_drains_buffer(self):
         """collect() should drain buffer atomically."""
         collector = ConnectionMetadataCollector()
-        collector._parse_line(
-            "12:34:56.789 IP 10.0.0.1.54321 > 1.2.3.4.80: Flags [S], seq 1"
-        )
+        collector._parse_line("12:34:56.789 IP 10.0.0.1.54321 > 1.2.3.4.80: Flags [S], seq 1")
         events1 = collector.collect()
         events2 = collector.collect()
         assert len(events1) == 1

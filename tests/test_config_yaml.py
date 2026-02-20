@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import yaml
-import pytest
 
 from agent.config import (
     Settings,
@@ -26,23 +25,14 @@ class TestLoadConfigFile:
 
     def test_load_basic_settings(self, tmp_path):
         f = tmp_path / "config.yaml"
-        f.write_text(
-            "response:\n"
-            "  auto_respond: true\n"
-            "  auto_terminate: true\n"
-        )
+        f.write_text("response:\n  auto_respond: true\n  auto_terminate: true\n")
         result = load_config_file(f)
         assert result["auto_respond"] is True
         assert result["auto_terminate"] is True
 
     def test_load_nested_analysis_settings(self, tmp_path):
         f = tmp_path / "config.yaml"
-        f.write_text(
-            "analysis:\n"
-            "  dga:\n"
-            "    entropy_threshold: 4.0\n"
-            "    score_threshold: 0.8\n"
-        )
+        f.write_text("analysis:\n  dga:\n    entropy_threshold: 4.0\n    score_threshold: 0.8\n")
         result = load_config_file(f)
         assert result["dga_entropy_threshold"] == 4.0
         assert result["dga_score_threshold"] == 0.8
@@ -88,13 +78,7 @@ class TestLoadConfigFile:
 
     def test_load_dga_allowlist(self, tmp_path):
         f = tmp_path / "config.yaml"
-        f.write_text(
-            "analysis:\n"
-            "  dga:\n"
-            "    allowlist:\n"
-            "      - example.com\n"
-            "      - test.org\n"
-        )
+        f.write_text("analysis:\n  dga:\n    allowlist:\n      - example.com\n      - test.org\n")
         result = load_config_file(f)
         assert result["dga_allowlist"] == ["example.com", "test.org"]
 
@@ -107,10 +91,7 @@ class TestLoadSettings:
 
     def test_settings_from_config_file(self, tmp_path):
         f = tmp_path / "config.yaml"
-        f.write_text(
-            "metrics:\n  port: 9300\n"
-            "dashboard:\n  port: 9090\n"
-        )
+        f.write_text("metrics:\n  port: 9300\ndashboard:\n  port: 9090\n")
         settings = load_settings(config_path=f)
         assert settings.metrics_port == 9300
         assert settings.dashboard_port == 9090

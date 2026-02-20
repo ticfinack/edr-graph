@@ -30,6 +30,7 @@ class TestLoggingSetup:
 
     def test_context_binding(self, capsys):
         import structlog
+
         setup_logging(log_level="DEBUG", log_format="json")
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(request_id="abc-123")

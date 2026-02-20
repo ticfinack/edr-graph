@@ -65,7 +65,7 @@ def check_health(port: int) -> dict | None:
         with urlopen(url, timeout=5) as resp:
             data = json.loads(resp.read().decode())
             return data
-    except (URLError, OSError, json.JSONDecodeError) as e:
+    except (URLError, OSError, json.JSONDecodeError):
         return None
 
 
@@ -144,14 +144,20 @@ def run_preflight(config_path: Path, metrics_port: int) -> None:
 
     # Build the agent command
     agent_cmd = [
-        sys.executable, "-m", "agent.main",
-        "--config", str(config_path),
+        sys.executable,
+        "-m",
+        "agent.main",
+        "--config",
+        str(config_path),
         "--no-watchdog",
         "--no-tamper-check",
         "--no-dashboard",
-        "--log-format", "text",
-        "--log-level", "DEBUG",
-        "--metrics-port", str(metrics_port),
+        "--log-format",
+        "text",
+        "--log-level",
+        "DEBUG",
+        "--metrics-port",
+        str(metrics_port),
     ]
     print_info(f"Command: {' '.join(agent_cmd)}")
 
@@ -179,11 +185,11 @@ def run_preflight(config_path: Path, metrics_port: int) -> None:
     start_time = time.time()
 
     # Poll for health endpoint while collecting logs
-    agent_healthy = False
     while time.time() - start_time < STARTUP_WAIT:
         # Non-blocking read of stdout
         if agent_proc.stdout and agent_proc.stdout.readable():
             import select
+
             ready, _, _ = select.select([agent_proc.stdout], [], [], 0.5)
             if ready:
                 line = agent_proc.stdout.readline()
@@ -204,23 +210,22 @@ def run_preflight(config_path: Path, metrics_port: int) -> None:
         # Try health endpoint
         health = check_health(metrics_port)
         if health and health.get("status") == "healthy":
-            agent_healthy = True
             break
 
     print_header("Pre-Flight Results")
 
     # Check 1: Agent started
     if agent_proc.poll() is None:
-        print_ok("Agent process is running (PID %d)" % agent_proc.pid)
+        print_ok(f"Agent process is running (PID {agent_proc.pid})")
     else:
-        print_fail("Agent process died (exit code %d)" % agent_proc.returncode)
+        print_fail(f"Agent process died (exit code {agent_proc.returncode})")
 
     # Check 2: Health endpoint
     health_data = check_health(metrics_port)
     if health_data and health_data.get("status") == "healthy":
         uptime = health_data.get("uptime_seconds", 0)
         queue = health_data.get("queue_depth", -1)
-        print_ok(f'/health returns healthy (uptime={uptime:.1f}s, queue_depth={queue})')
+        print_ok(f"/health returns healthy (uptime={uptime:.1f}s, queue_depth={queue})")
     else:
         print_fail(f"/health not responding on port {metrics_port}")
 
@@ -320,9 +325,7 @@ def run_preflight(config_path: Path, metrics_port: int) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="EDR Agent Pre-Flight Check — starts agent and verifies health"
-    )
+    parser = argparse.ArgumentParser(description="EDR Agent Pre-Flight Check — starts agent and verifies health")
     parser.add_argument(
         "--config",
         type=str,

@@ -7,7 +7,6 @@ import os
 from datetime import datetime
 
 from agent.analysis.persistence_detector import (
-    PersistenceResult,
     check_persistence,
     check_persistence_for_path,
     check_persistence_for_registry,

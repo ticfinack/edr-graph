@@ -27,6 +27,7 @@ except ImportError:
 # ── Embedded menu bar icons (12×12 PNG circles) ─────────────────────────
 # Generated as minimal 12×12 PNG images — avoids a Pillow dependency.
 
+
 def _make_circle_png(r: int, g: int, b: int) -> bytes:
     """Generate a tiny 12×12 PNG with a filled circle of the given colour."""
     import struct
@@ -56,18 +57,13 @@ def _make_circle_png(r: int, g: int, b: int) -> bytes:
 
     ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
     idat = zlib.compress(bytes(rows))
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + _chunk(b"IHDR", ihdr)
-        + _chunk(b"IDAT", idat)
-        + _chunk(b"IEND", b"")
-    )
+    return b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")
 
 
 # Pre-built icon data
-_ICON_GREEN = _make_circle_png(34, 197, 94)   # #22c55e — healthy
+_ICON_GREEN = _make_circle_png(34, 197, 94)  # #22c55e — healthy
 _ICON_ORANGE = _make_circle_png(249, 115, 22)  # #f97316 — HIGH findings
-_ICON_RED = _make_circle_png(239, 68, 68)     # #ef4444 — CRITICAL findings
+_ICON_RED = _make_circle_png(239, 68, 68)  # #ef4444 — CRITICAL findings
 _ICON_GRAY = _make_circle_png(156, 163, 175)  # #9ca3af — stopped / unhealthy
 
 
@@ -77,6 +73,7 @@ def _icon_path(data: bytes, name: str) -> str:
     rumps needs a file path, not raw bytes.
     """
     import tempfile
+
     fd, path = tempfile.mkstemp(prefix=f"edr_icon_{name}_", suffix=".png")
     with os.fdopen(fd, "wb") as f:
         f.write(data)
@@ -133,9 +130,7 @@ class EDRTrayApp:
         self._events_item = rumps.MenuItem("Events: —")
         self._findings_item = rumps.MenuItem("Findings: —")
         self._last_alert_item = rumps.MenuItem("Last Alert: None")
-        self._open_dashboard = rumps.MenuItem(
-            "Open Dashboard", callback=self._on_open_dashboard, key="d"
-        )
+        self._open_dashboard = rumps.MenuItem("Open Dashboard", callback=self._on_open_dashboard, key="d")
 
         # Collector submenu
         self._collectors_menu = rumps.MenuItem("Collectors")
@@ -178,12 +173,14 @@ class EDRTrayApp:
 
     def push_finding(self, finding: Any) -> None:
         """Push a finding to the notification queue (thread-safe)."""
-        self.notification_queue.appendleft({
-            "severity": getattr(finding, "severity", "MEDIUM"),
-            "title": getattr(finding, "title", "Finding"),
-            "id": getattr(finding, "id", ""),
-            "timestamp": time.time(),
-        })
+        self.notification_queue.appendleft(
+            {
+                "severity": getattr(finding, "severity", "MEDIUM"),
+                "title": getattr(finding, "title", "Finding"),
+                "id": getattr(finding, "id", ""),
+                "timestamp": time.time(),
+            }
+        )
 
     # ── Menu callbacks ──────────────────────────────────────────────────
 
@@ -255,9 +252,7 @@ class EDRTrayApp:
         findings_high = status.get("findings_high", 0)
         findings_critical = status.get("findings_critical", 0)
         last_title = status.get("last_finding_title")
-        self.update_findings_summary(
-            findings_total, findings_high, findings_critical, last_title
-        )
+        self.update_findings_summary(findings_total, findings_high, findings_critical, last_title)
 
         # Collectors
         collectors = status.get("collector_sources", [])
@@ -322,12 +317,8 @@ class EDRTrayApp:
         one_hour_ago = now - 3600
 
         # Check if we had recent CRITICAL or HIGH notifications
-        has_critical = (
-            self._last_notification.get("CRITICAL", 0) > one_hour_ago
-        )
-        has_high = (
-            self._last_notification.get("HIGH", 0) > one_hour_ago
-        )
+        has_critical = self._last_notification.get("CRITICAL", 0) > one_hour_ago
+        has_high = self._last_notification.get("HIGH", 0) > one_hour_ago
 
         if has_critical:
             self._set_icon("red")
@@ -346,9 +337,7 @@ class EDRTrayApp:
 
     # ── Findings summary update ─────────────────────────────────────────
 
-    def update_findings_summary(
-        self, total: int, high: int, critical: int, last_title: str | None = None
-    ) -> None:
+    def update_findings_summary(self, total: int, high: int, critical: int, last_title: str | None = None) -> None:
         """Update the findings menu items (called from background thread via timer)."""
         parts = [f"{total} total"]
         if high:

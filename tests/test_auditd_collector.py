@@ -1,12 +1,10 @@
 """Tests for the Linux auditd netlink collector."""
 
-import struct
 from datetime import datetime
 
 from agent.collectors.auditd_collector import (
     _NLMSG_HDR,
     AUDIT_EXECVE,
-    AUDIT_SYSCALL,
     AuditdCollector,
     _parse_audit_kv,
 )

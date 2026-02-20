@@ -20,6 +20,7 @@ import psutil
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class FileOwner:
     pid: int

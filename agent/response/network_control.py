@@ -117,9 +117,7 @@ class NetworkIsolator:
 
     # --- Windows implementations ---
 
-    def _isolate_windows(
-        self, pid: int, exe_path: str | None
-    ) -> NetworkControlOutcome:
+    def _isolate_windows(self, pid: int, exe_path: str | None) -> NetworkControlOutcome:
         """Use netsh advfirewall to block network for a process on Windows."""
         if not exe_path:
             return NetworkControlOutcome(
@@ -135,19 +133,35 @@ class NetworkIsolator:
 
         try:
             # Block outbound
-            _run_command([
-                "netsh", "advfirewall", "firewall", "add", "rule",
-                f"name={rule_out}", "dir=out", "action=block",
-                f"program={exe_path}",
-            ])
+            _run_command(
+                [
+                    "netsh",
+                    "advfirewall",
+                    "firewall",
+                    "add",
+                    "rule",
+                    f"name={rule_out}",
+                    "dir=out",
+                    "action=block",
+                    f"program={exe_path}",
+                ]
+            )
             rules.append(rule_out)
 
             # Block inbound
-            _run_command([
-                "netsh", "advfirewall", "firewall", "add", "rule",
-                f"name={rule_in}", "dir=in", "action=block",
-                f"program={exe_path}",
-            ])
+            _run_command(
+                [
+                    "netsh",
+                    "advfirewall",
+                    "firewall",
+                    "add",
+                    "rule",
+                    f"name={rule_in}",
+                    "dir=in",
+                    "action=block",
+                    f"program={exe_path}",
+                ]
+            )
             rules.append(rule_in)
 
             self._isolated[pid] = rules
@@ -184,10 +198,16 @@ class NetworkIsolator:
         errors: list[str] = []
         for rule in rules:
             try:
-                _run_command([
-                    "netsh", "advfirewall", "firewall", "delete", "rule",
-                    f"name={rule}",
-                ])
+                _run_command(
+                    [
+                        "netsh",
+                        "advfirewall",
+                        "firewall",
+                        "delete",
+                        "rule",
+                        f"name={rule}",
+                    ]
+                )
             except Exception as e:
                 errors.append(f"Failed to delete rule {rule}: {e}")
 
@@ -220,22 +240,44 @@ class NetworkIsolator:
         try:
             # Block outbound traffic from this PID
             out_rule = f"EDR-OUT-{pid}"
-            _run_command([
-                "iptables", "-A", "OUTPUT",
-                "-m", "owner", "--pid-owner", str(pid),
-                "-j", "DROP",
-                "-m", "comment", "--comment", out_rule,
-            ])
+            _run_command(
+                [
+                    "iptables",
+                    "-A",
+                    "OUTPUT",
+                    "-m",
+                    "owner",
+                    "--pid-owner",
+                    str(pid),
+                    "-j",
+                    "DROP",
+                    "-m",
+                    "comment",
+                    "--comment",
+                    out_rule,
+                ]
+            )
             rules.append(out_rule)
 
             # Block inbound established connections to this PID
             in_rule = f"EDR-IN-{pid}"
-            _run_command([
-                "iptables", "-A", "INPUT",
-                "-m", "owner", "--pid-owner", str(pid),
-                "-j", "DROP",
-                "-m", "comment", "--comment", in_rule,
-            ])
+            _run_command(
+                [
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-m",
+                    "owner",
+                    "--pid-owner",
+                    str(pid),
+                    "-j",
+                    "DROP",
+                    "-m",
+                    "comment",
+                    "--comment",
+                    in_rule,
+                ]
+            )
             rules.append(in_rule)
 
             self._isolated[pid] = rules
@@ -269,19 +311,41 @@ class NetworkIsolator:
         for rule in rules:
             try:
                 if rule.startswith("EDR-OUT-"):
-                    _run_command([
-                        "iptables", "-D", "OUTPUT",
-                        "-m", "owner", "--pid-owner", str(pid),
-                        "-j", "DROP",
-                        "-m", "comment", "--comment", rule,
-                    ])
+                    _run_command(
+                        [
+                            "iptables",
+                            "-D",
+                            "OUTPUT",
+                            "-m",
+                            "owner",
+                            "--pid-owner",
+                            str(pid),
+                            "-j",
+                            "DROP",
+                            "-m",
+                            "comment",
+                            "--comment",
+                            rule,
+                        ]
+                    )
                 elif rule.startswith("EDR-IN-"):
-                    _run_command([
-                        "iptables", "-D", "INPUT",
-                        "-m", "owner", "--pid-owner", str(pid),
-                        "-j", "DROP",
-                        "-m", "comment", "--comment", rule,
-                    ])
+                    _run_command(
+                        [
+                            "iptables",
+                            "-D",
+                            "INPUT",
+                            "-m",
+                            "owner",
+                            "--pid-owner",
+                            str(pid),
+                            "-j",
+                            "DROP",
+                            "-m",
+                            "comment",
+                            "--comment",
+                            rule,
+                        ]
+                    )
             except Exception as e:
                 errors.append(f"Failed to delete rule {rule}: {e}")
 
@@ -335,11 +399,11 @@ class NetworkIsolator:
                             # IPv6: [::1]:443
                             bracket_end = remote.index("]")
                             ip = remote[1:bracket_end]
-                            port = remote[bracket_end + 2:] if bracket_end + 1 < len(remote) else ""
+                            port = remote[bracket_end + 2 :] if bracket_end + 1 < len(remote) else ""
                         else:
                             last_colon = remote.rfind(":")
                             ip = remote[:last_colon]
-                            port = remote[last_colon + 1:]
+                            port = remote[last_colon + 1 :]
                         if ip and port and not ip.startswith("127.") and ip != "::1":
                             remote_endpoints.append((ip, port))
 
@@ -424,12 +488,9 @@ class NetworkIsolator:
             rules_applied=rules,
         )
 
-
     # --- Connection-level blocking ---
 
-    def block_connection(
-        self, ip: str, port: int | None = None
-    ) -> NetworkControlOutcome:
+    def block_connection(self, ip: str, port: int | None = None) -> NetworkControlOutcome:
         """Block traffic to a specific IP (optionally port).
 
         macOS: pf anchor rule.  Linux: iptables rule.  Windows: netsh rule.
@@ -465,8 +526,14 @@ class NetworkIsolator:
             if os.name == "nt":
                 rule_name = f"EDR-BLOCK-CONN-{ip}-{port or 'all'}"
                 cmd = [
-                    "netsh", "advfirewall", "firewall", "add", "rule",
-                    f"name={rule_name}", "dir=out", "action=block",
+                    "netsh",
+                    "advfirewall",
+                    "firewall",
+                    "add",
+                    "rule",
+                    f"name={rule_name}",
+                    "dir=out",
+                    "action=block",
                     f"remoteip={ip}",
                 ]
                 if port:
@@ -490,10 +557,7 @@ class NetworkIsolator:
                         f"block drop quick proto {{ tcp udp }} from {ip} port {port} to any\n"
                     )
                 else:
-                    pf_rules = (
-                        f"block drop quick from any to {ip}\n"
-                        f"block drop quick from {ip} to any\n"
-                    )
+                    pf_rules = f"block drop quick from any to {ip}\nblock drop quick from {ip} to any\n"
                 _run_command(
                     ["pfctl", "-a", anchor_name, "-f", "-"],
                     input_data=pf_rules,
@@ -524,9 +588,7 @@ class NetworkIsolator:
                 detail=str(e),
             )
 
-    def unblock_connection(
-        self, ip: str, port: int | None = None
-    ) -> NetworkControlOutcome:
+    def unblock_connection(self, ip: str, port: int | None = None) -> NetworkControlOutcome:
         """Remove a connection block for a specific IP (optionally port)."""
         # Validate IP to prevent injection into firewall commands
         try:
@@ -551,10 +613,16 @@ class NetworkIsolator:
         rule_id = self._blocked_connections[key]
         try:
             if os.name == "nt":
-                _run_command([
-                    "netsh", "advfirewall", "firewall", "delete", "rule",
-                    f"name={rule_id}",
-                ])
+                _run_command(
+                    [
+                        "netsh",
+                        "advfirewall",
+                        "firewall",
+                        "delete",
+                        "rule",
+                        f"name={rule_id}",
+                    ]
+                )
             elif _is_linux():
                 cmd = ["iptables", "-D", "OUTPUT", "-d", ip]
                 if port:
@@ -596,25 +664,65 @@ class NetworkIsolator:
 
         try:
             if os.name == "nt":
-                _run_command([
-                    "netsh", "advfirewall", "firewall", "add", "rule",
-                    "name=EDR-PANIC-BLOCK", "dir=out", "action=block",
-                    "remoteip=0.0.0.0/0",
-                ])
-                _run_command([
-                    "netsh", "advfirewall", "firewall", "add", "rule",
-                    "name=EDR-PANIC-BLOCK-IN", "dir=in", "action=block",
-                    "remoteip=0.0.0.0/0",
-                ])
+                _run_command(
+                    [
+                        "netsh",
+                        "advfirewall",
+                        "firewall",
+                        "add",
+                        "rule",
+                        "name=EDR-PANIC-BLOCK",
+                        "dir=out",
+                        "action=block",
+                        "remoteip=0.0.0.0/0",
+                    ]
+                )
+                _run_command(
+                    [
+                        "netsh",
+                        "advfirewall",
+                        "firewall",
+                        "add",
+                        "rule",
+                        "name=EDR-PANIC-BLOCK-IN",
+                        "dir=in",
+                        "action=block",
+                        "remoteip=0.0.0.0/0",
+                    ]
+                )
             elif _is_linux():
-                _run_command([
-                    "iptables", "-A", "OUTPUT", "!", "-o", "lo",
-                    "-j", "DROP", "-m", "comment", "--comment", "EDR-PANIC",
-                ])
-                _run_command([
-                    "iptables", "-A", "INPUT", "!", "-i", "lo",
-                    "-j", "DROP", "-m", "comment", "--comment", "EDR-PANIC",
-                ])
+                _run_command(
+                    [
+                        "iptables",
+                        "-A",
+                        "OUTPUT",
+                        "!",
+                        "-o",
+                        "lo",
+                        "-j",
+                        "DROP",
+                        "-m",
+                        "comment",
+                        "--comment",
+                        "EDR-PANIC",
+                    ]
+                )
+                _run_command(
+                    [
+                        "iptables",
+                        "-A",
+                        "INPUT",
+                        "!",
+                        "-i",
+                        "lo",
+                        "-j",
+                        "DROP",
+                        "-m",
+                        "comment",
+                        "--comment",
+                        "EDR-PANIC",
+                    ]
+                )
             else:
                 # macOS: pf anchor blocking everything except loopback
                 pf_rules = "block drop quick on ! lo0 all\n"
@@ -662,20 +770,38 @@ class NetworkIsolator:
             if os.name == "nt":
                 for name in ("EDR-PANIC-BLOCK", "EDR-PANIC-BLOCK-IN"):
                     try:
-                        _run_command([
-                            "netsh", "advfirewall", "firewall", "delete", "rule",
-                            f"name={name}",
-                        ])
+                        _run_command(
+                            [
+                                "netsh",
+                                "advfirewall",
+                                "firewall",
+                                "delete",
+                                "rule",
+                                f"name={name}",
+                            ]
+                        )
                     except Exception as e:
                         errors.append(str(e))
             elif _is_linux():
                 for chain in ("OUTPUT", "INPUT"):
                     try:
                         iface_flag = "-o" if chain == "OUTPUT" else "-i"
-                        _run_command([
-                            "iptables", "-D", chain, "!", iface_flag, "lo",
-                            "-j", "DROP", "-m", "comment", "--comment", "EDR-PANIC",
-                        ])
+                        _run_command(
+                            [
+                                "iptables",
+                                "-D",
+                                chain,
+                                "!",
+                                iface_flag,
+                                "lo",
+                                "-j",
+                                "DROP",
+                                "-m",
+                                "comment",
+                                "--comment",
+                                "EDR-PANIC",
+                            ]
+                        )
                     except Exception as e:
                         errors.append(str(e))
             else:
@@ -712,6 +838,7 @@ class NetworkIsolator:
 def _is_linux() -> bool:
     """Check if the current platform is Linux."""
     import sys
+
     return sys.platform.startswith("linux")
 
 
@@ -729,9 +856,7 @@ def _run_command(
             input=input_data,
         )
         if result.returncode != 0:
-            raise RuntimeError(
-                f"Command {cmd[0]} failed (exit {result.returncode}): {result.stderr.strip()}"
-            )
+            raise RuntimeError(f"Command {cmd[0]} failed (exit {result.returncode}): {result.stderr.strip()}")
         return result
     except FileNotFoundError as e:
         raise RuntimeError(f"Command not found: {cmd[0]}") from e
@@ -742,7 +867,13 @@ def _run_command(
 def _try_delete_netsh_rule(rule_name: str) -> None:
     """Best-effort delete a netsh firewall rule."""
     with contextlib.suppress(Exception):
-        _run_command([
-            "netsh", "advfirewall", "firewall", "delete", "rule",
-            f"name={rule_name}",
-        ])
+        _run_command(
+            [
+                "netsh",
+                "advfirewall",
+                "firewall",
+                "delete",
+                "rule",
+                f"name={rule_name}",
+            ]
+        )

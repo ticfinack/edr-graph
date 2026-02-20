@@ -68,17 +68,19 @@ def get_process_chain(conn: kuzu.Connection, pid: int) -> list[dict]:
         root_id = chain[0].get("id", "")
         if root_id:
             user_result = conn.execute(
-                "MATCH (u:User)-[:SPAWNED]->(p:Process {id: $id}) "
-                "RETURN u.id, u.name",
+                "MATCH (u:User)-[:SPAWNED]->(p:Process {id: $id}) RETURN u.id, u.name",
                 {"id": root_id},
             )
             if user_result.has_next():
                 user_row = user_result.get_next()
-                chain.insert(0, {
-                    "type": "user",
-                    "id": user_row[0],
-                    "name": user_row[1],
-                })
+                chain.insert(
+                    0,
+                    {
+                        "type": "user",
+                        "id": user_row[0],
+                        "name": user_row[1],
+                    },
+                )
 
         return chain
     except Exception:
@@ -98,18 +100,20 @@ def get_process_children(conn: kuzu.Connection, pid: int) -> list[dict]:
         children = []
         while result.has_next():
             row = result.get_next()
-            children.append({
-                "id": row[0],
-                "name": row[1],
-                "pid": row[2],
-                "cmd_line": row[3],
-                "exe_path": row[4],
-                "hostname": row[5],
-                "parent_pid": row[6],
-                "bundle_id": row[7],
-                "code_signed": row[8],
-                "signing_authority": row[9],
-            })
+            children.append(
+                {
+                    "id": row[0],
+                    "name": row[1],
+                    "pid": row[2],
+                    "cmd_line": row[3],
+                    "exe_path": row[4],
+                    "hostname": row[5],
+                    "parent_pid": row[6],
+                    "bundle_id": row[7],
+                    "code_signed": row[8],
+                    "signing_authority": row[9],
+                }
+            )
         return children
     except Exception:
         logger.debug("Failed to get children for pid %d", pid, exc_info=True)
@@ -125,8 +129,7 @@ def _get_pid_network(conn: kuzu.Connection, pid: int) -> list[dict]:
     items = []
     try:
         result = conn.execute(
-            "MATCH (p:Process {pid: $pid})-[c:CONNECTED_TO]->(ip:IP) "
-            "RETURN ip.address, c.dst_port, c.protocol",
+            "MATCH (p:Process {pid: $pid})-[c:CONNECTED_TO]->(ip:IP) RETURN ip.address, c.dst_port, c.protocol",
             {"pid": pid},
         )
         seen = set()
@@ -139,8 +142,7 @@ def _get_pid_network(conn: kuzu.Connection, pid: int) -> list[dict]:
 
         # DNS (direct)
         dns_result = conn.execute(
-            "MATCH (p:Process {pid: $pid})-[:RESOLVED]->(d:Domain) "
-            "RETURN d.name, d.is_dga_candidate",
+            "MATCH (p:Process {pid: $pid})-[:RESOLVED]->(d:Domain) RETURN d.name, d.is_dga_candidate",
             {"pid": pid},
         )
         seen_domains = set()
@@ -155,8 +157,7 @@ def _get_pid_network(conn: kuzu.Connection, pid: int) -> list[dict]:
         for ip_addr in connected_ips:
             try:
                 inferred = conn.execute(
-                    "MATCH (d:Domain)-[:RESOLVES_TO]->(ip:IP {address: $ip}) "
-                    "RETURN d.name, d.is_dga_candidate",
+                    "MATCH (d:Domain)-[:RESOLVES_TO]->(ip:IP {address: $ip}) RETURN d.name, d.is_dga_candidate",
                     {"ip": ip_addr},
                 )
                 while inferred.has_next():
@@ -188,11 +189,13 @@ def _get_pid_files(conn: kuzu.Connection, pid: int) -> list[dict]:
             )
             while result.has_next():
                 row = result.get_next()
-                items.append({
-                    "file_path": row[0],
-                    "operation": operation,
-                    "timestamp": str(row[1]) if row[1] else None,
-                })
+                items.append(
+                    {
+                        "file_path": row[0],
+                        "operation": operation,
+                        "timestamp": str(row[1]) if row[1] else None,
+                    }
+                )
     except Exception:
         pass
     return items
@@ -292,19 +295,20 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
             key = (row[0], row[1])
             if key not in seen_ips:
                 seen_ips.add(key)
-                result["ips"].append({
-                    "address": row[0],
-                    "port": row[1],
-                    "protocol": row[2],
-                    "country": row[3] or "",
-                    "classification": row[4] or "unclassified",
-                    "provider_name": row[5] or "",
-                })
+                result["ips"].append(
+                    {
+                        "address": row[0],
+                        "port": row[1],
+                        "protocol": row[2],
+                        "country": row[3] or "",
+                        "classification": row[4] or "unclassified",
+                        "provider_name": row[5] or "",
+                    }
+                )
 
         # Get direct DNS resolutions (by PID)
         dns_result = conn.execute(
-            "MATCH (p:Process {pid: $pid})-[:RESOLVED]->(d:Domain) "
-            "RETURN d.name, d.first_seen, d.is_dga_candidate",
+            "MATCH (p:Process {pid: $pid})-[:RESOLVED]->(d:Domain) RETURN d.name, d.first_seen, d.is_dga_candidate",
             {"pid": pid},
         )
         seen_domains = set()
@@ -312,11 +316,13 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
             row = dns_result.get_next()
             if row[0] not in seen_domains:
                 seen_domains.add(row[0])
-                result["domains"].append({
-                    "name": row[0],
-                    "first_seen": str(row[1]) if row[1] else None,
-                    "is_dga_candidate": row[2],
-                })
+                result["domains"].append(
+                    {
+                        "name": row[0],
+                        "first_seen": str(row[1]) if row[1] else None,
+                        "is_dga_candidate": row[2],
+                    }
+                )
 
         # Infer domains from IP connections: if Process→IP and Domain→IP,
         # the process likely queried that domain.  DNS events go to
@@ -335,45 +341,49 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
                         row = inferred.get_next()
                         if row[0] not in seen_domains:
                             seen_domains.add(row[0])
-                            result["domains"].append({
-                                "name": row[0],
-                                "first_seen": str(row[1]) if row[1] else None,
-                                "is_dga_candidate": row[2],
-                                "inferred": True,
-                            })
+                            result["domains"].append(
+                                {
+                                    "name": row[0],
+                                    "first_seen": str(row[1]) if row[1] else None,
+                                    "is_dga_candidate": row[2],
+                                    "inferred": True,
+                                }
+                            )
                 except Exception:
                     pass
 
         # Get DNS chains (domain -> resolved IPs)
         for domain_name in seen_domains:
             chain_result = conn.execute(
-                "MATCH (d:Domain {id: $domain})-[:RESOLVES_TO]->(ip:IP) "
-                "RETURN ip.address",
+                "MATCH (d:Domain {id: $domain})-[:RESOLVES_TO]->(ip:IP) RETURN ip.address",
                 {"domain": domain_name},
             )
             resolved = []
             while chain_result.has_next():
                 resolved.append(chain_result.get_next()[0])
             if resolved:
-                result["dns_chains"].append({
-                    "domain": domain_name,
-                    "resolved_to": resolved,
-                })
+                result["dns_chains"].append(
+                    {
+                        "domain": domain_name,
+                        "resolved_to": resolved,
+                    }
+                )
 
         # Get listening ports (by PID)
         try:
             listen_result = conn.execute(
-                "MATCH (p:Process {pid: $pid})-[l:LISTENING_ON]->(ip:IP) "
-                "RETURN ip.address, l.port, l.protocol",
+                "MATCH (p:Process {pid: $pid})-[l:LISTENING_ON]->(ip:IP) RETURN ip.address, l.port, l.protocol",
                 {"pid": pid},
             )
             while listen_result.has_next():
                 row = listen_result.get_next()
-                result["listening_ports"].append({
-                    "address": row[0],
-                    "port": row[1],
-                    "protocol": row[2],
-                })
+                result["listening_ports"].append(
+                    {
+                        "address": row[0],
+                        "port": row[1],
+                        "protocol": row[2],
+                    }
+                )
         except Exception:
             pass  # LISTENING_ON table may not exist in older schemas
 
@@ -398,16 +408,16 @@ def get_domain_resolution_history(conn: kuzu.Connection, domain_name: str) -> li
         history = []
         while result.has_next():
             row = result.get_next()
-            history.append({
-                "ip": row[0],
-                "first_seen": str(row[1]) if row[1] else None,
-                "last_seen": str(row[2]) if row[2] else None,
-            })
+            history.append(
+                {
+                    "ip": row[0],
+                    "first_seen": str(row[1]) if row[1] else None,
+                    "last_seen": str(row[2]) if row[2] else None,
+                }
+            )
         return history
     except Exception:
-        logger.debug(
-            "Failed to get resolution history for %s", domain_name, exc_info=True
-        )
+        logger.debug("Failed to get resolution history for %s", domain_name, exc_info=True)
         return []
 
 
@@ -432,16 +442,16 @@ def get_file_activity(conn: kuzu.Connection, file_path: str) -> list[dict]:
             )
             while query_result.has_next():
                 row = query_result.get_next()
-                results.append({
-                    "pid": row[0],
-                    "process_name": row[1],
-                    "operation": operation,
-                    "timestamp": str(row[2]) if row[2] else None,
-                })
+                results.append(
+                    {
+                        "pid": row[0],
+                        "process_name": row[1],
+                        "operation": operation,
+                        "timestamp": str(row[2]) if row[2] else None,
+                    }
+                )
     except Exception:
-        logger.debug(
-            "Failed to get file activity for %s", file_path, exc_info=True
-        )
+        logger.debug("Failed to get file activity for %s", file_path, exc_info=True)
 
     return results
 
@@ -464,16 +474,16 @@ def get_persistence_artifacts(conn: kuzu.Connection, pid: int) -> list[dict]:
             )
             while result.has_next():
                 row = result.get_next()
-                artifacts.append({
-                    "registry_path": row[0],
-                    "value_name": row[1],
-                    "value_data": row[2],
-                    "created_by_pid": row[3],
-                })
+                artifacts.append(
+                    {
+                        "registry_path": row[0],
+                        "value_name": row[1],
+                        "value_data": row[2],
+                        "created_by_pid": row[3],
+                    }
+                )
     except Exception:
-        logger.debug(
-            "Failed to get persistence artifacts for pid %d", pid, exc_info=True
-        )
+        logger.debug("Failed to get persistence artifacts for pid %d", pid, exc_info=True)
 
     return artifacts
 
@@ -495,6 +505,7 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
             target_info = {"pid": pid}
             try:
                 import psutil
+
                 p = psutil.Process(pid)
                 target_info["name"] = p.name()
                 with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
@@ -519,9 +530,7 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
 
             for domain in network_footprint.get("domains", []):
                 if domain.get("is_dga_candidate"):
-                    chain["risk_indicators"].append(
-                        f"DGA candidate: {domain['name']}"
-                    )
+                    chain["risk_indicators"].append(f"DGA candidate: {domain['name']}")
 
             elapsed = time.monotonic() - t0
             metrics.attack_chain_build_latency.observe(elapsed)
@@ -541,51 +550,62 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
             "signing_authority": target.get("signing_authority"),
         }
 
-        # Try to get the user (from SPAWNED edge on root ancestor or target)
+        # Try to get the user — walk bottom-up (target first, then ancestors toward root)
+        # so the effective user of the executing process wins over system daemons (e.g. launchd/root).
         ancestors = tree.get("ancestors", [])
-        root_id = ancestors[0]["id"] if ancestors else target["id"]
-        user_result = conn.execute(
-            "MATCH (u:User)-[:SPAWNED]->(p:Process {id: $id}) "
-            "RETURN u.name",
-            {"id": root_id},
-        )
-        if user_result.has_next():
-            target_info["user"] = user_result.get_next()[0]
+        candidate_ids = [target["id"]] + [a["id"] for a in reversed(ancestors)]
+        for cid in candidate_ids:
+            user_result = conn.execute(
+                "MATCH (u:User)-[:SPAWNED]->(p:Process {id: $id}) RETURN u.name",
+                {"id": cid},
+            )
+            if user_result.has_next():
+                target_info["user"] = user_result.get_next()[0]
+                break
 
         # Build process_chain (ancestors + target, each with cmd_line)
+        # Prepend user as first chain entry if found
         process_chain = []
+        if target_info.get("user"):
+            process_chain.append({"type": "user", "name": target_info["user"]})
         for anc in ancestors:
-            process_chain.append({
-                "name": anc["name"],
-                "pid": anc["pid"],
-                "cmd_line": anc.get("cmd_line"),
-                "parent_pid": anc.get("parent_pid"),
-                "code_signed": anc.get("code_signed"),
-                "signing_authority": anc.get("signing_authority"),
-            })
-        process_chain.append({
-            "name": target["name"],
-            "pid": target["pid"],
-            "cmd_line": target.get("cmd_line"),
-            "parent_pid": target.get("parent_pid"),
-            "code_signed": target.get("code_signed"),
-            "signing_authority": target.get("signing_authority"),
-        })
+            process_chain.append(
+                {
+                    "name": anc["name"],
+                    "pid": anc["pid"],
+                    "cmd_line": anc.get("cmd_line"),
+                    "parent_pid": anc.get("parent_pid"),
+                    "code_signed": anc.get("code_signed"),
+                    "signing_authority": anc.get("signing_authority"),
+                }
+            )
+        process_chain.append(
+            {
+                "name": target["name"],
+                "pid": target["pid"],
+                "cmd_line": target.get("cmd_line"),
+                "parent_pid": target.get("parent_pid"),
+                "code_signed": target.get("code_signed"),
+                "signing_authority": target.get("signing_authority"),
+            }
+        )
 
         # Build child_processes recursively
         def _serialize_children(children: list[dict]) -> list[dict]:
             result = []
             for child in children:
-                result.append({
-                    "pid": child["pid"],
-                    "name": child["name"],
-                    "cmd_line": child.get("cmd_line"),
-                    "code_signed": child.get("code_signed"),
-                    "signing_authority": child.get("signing_authority"),
-                    "network": child.get("network", []),
-                    "files": child.get("files", []),
-                    "children": _serialize_children(child.get("children", [])),
-                })
+                result.append(
+                    {
+                        "pid": child["pid"],
+                        "name": child["name"],
+                        "cmd_line": child.get("cmd_line"),
+                        "code_signed": child.get("code_signed"),
+                        "signing_authority": child.get("signing_authority"),
+                        "network": child.get("network", []),
+                        "files": child.get("files", []),
+                        "children": _serialize_children(child.get("children", [])),
+                    }
+                )
             return result
 
         child_processes = _serialize_children(target.get("children", []))
@@ -609,15 +629,12 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
         # Populate risk indicators from DGA detections
         for domain in chain["network_footprint"].get("domains", []):
             if domain.get("is_dga_candidate"):
-                chain["risk_indicators"].append(
-                    f"DGA candidate: {domain['name']}"
-                )
+                chain["risk_indicators"].append(f"DGA candidate: {domain['name']}")
 
         # Populate risk indicators from persistence artifacts
         for artifact in chain["persistence_artifacts"]:
             chain["risk_indicators"].append(
-                f"Persistence: {artifact.get('registry_path', 'unknown')} "
-                f"(value: {artifact.get('value_data', 'N/A')})"
+                f"Persistence: {artifact.get('registry_path', 'unknown')} (value: {artifact.get('value_data', 'N/A')})"
             )
 
         elapsed = time.monotonic() - t0
@@ -659,15 +676,15 @@ def _get_process_file_activity(conn: kuzu.Connection, pid: int) -> list[dict]:
             )
             while query_result.has_next():
                 row = query_result.get_next()
-                results.append({
-                    "file_path": row[0],
-                    "operation": operation,
-                    "timestamp": str(row[1]) if row[1] else None,
-                })
+                results.append(
+                    {
+                        "file_path": row[0],
+                        "operation": operation,
+                        "timestamp": str(row[1]) if row[1] else None,
+                    }
+                )
     except Exception:
-        logger.debug(
-            "Failed to get file activity for pid %d", pid, exc_info=True
-        )
+        logger.debug("Failed to get file activity for pid %d", pid, exc_info=True)
 
     # Sort by timestamp, take top 10
     results.sort(key=lambda x: x.get("timestamp") or "", reverse=True)
@@ -689,9 +706,7 @@ def _serialize_tree_node(proc: dict, indent: int, parts: list[str]) -> None:
     prefix = "  " * indent
     sign = _format_signing(proc)
     cmd = f' cmd="{proc.get("cmd_line", "")}"' if proc.get("cmd_line") else ""
-    parts.append(
-        f"{prefix}{proc.get('name', '?')} (PID {proc.get('pid', '?')}){cmd} {sign}".rstrip()
-    )
+    parts.append(f"{prefix}{proc.get('name', '?')} (PID {proc.get('pid', '?')}){cmd} {sign}".rstrip())
 
     # Network bullets
     for item in proc.get("network", []):
@@ -746,9 +761,7 @@ def serialize_attack_chain(chain: dict, max_tokens: int = 2000) -> str:
             indent = i
             sign = _format_signing(p)
             cmd = f' cmd="{p.get("cmd_line", "")}"' if p.get("cmd_line") else ""
-            parts.append(
-                f"{'  ' * indent}{p.get('name', '?')} (PID {p.get('pid', '?')}){cmd} {sign}".rstrip()
-            )
+            parts.append(f"{'  ' * indent}{p.get('name', '?')} (PID {p.get('pid', '?')}){cmd} {sign}".rstrip())
 
     # Child processes — rendered as tree continuation
     children = chain.get("child_processes", [])
@@ -786,8 +799,7 @@ def serialize_attack_chain(chain: dict, max_tokens: int = 2000) -> str:
     listening = net.get("listening_ports", [])
     if listening:
         listen_strs = [
-            f"{ep.get('address', '?')}:{ep.get('port', '?')}/{ep.get('protocol', '?')}"
-            for ep in listening[:5]
+            f"{ep.get('address', '?')}:{ep.get('port', '?')}/{ep.get('protocol', '?')}" for ep in listening[:5]
         ]
         parts.append(f"Listening on: {', '.join(listen_strs)}")
 
@@ -807,19 +819,13 @@ def serialize_attack_chain(chain: dict, max_tokens: int = 2000) -> str:
     # File activity
     files = chain.get("file_activity", [])
     if files:
-        file_strs = [
-            f"{f.get('operation', '?')} {f.get('file_path', '?')}"
-            for f in files[:10]
-        ]
+        file_strs = [f"{f.get('operation', '?')} {f.get('file_path', '?')}" for f in files[:10]]
         parts.append(f"File ops: {'; '.join(file_strs)}")
 
     # Persistence
     persist = chain.get("persistence_artifacts", [])
     if persist:
-        persist_strs = [
-            f"{p.get('registry_path', '?')}={p.get('value_data', '?')}"
-            for p in persist[:5]
-        ]
+        persist_strs = [f"{p.get('registry_path', '?')}={p.get('value_data', '?')}" for p in persist[:5]]
         parts.append(f"Persistence: {'; '.join(persist_strs)}")
 
     # Risk indicators
@@ -831,7 +837,7 @@ def serialize_attack_chain(chain: dict, max_tokens: int = 2000) -> str:
 
     # Truncate if too long
     if len(text) > max_chars:
-        text = text[:max_chars - 20] + "\n... (truncated)"
+        text = text[: max_chars - 20] + "\n... (truncated)"
 
     return text
 
@@ -866,22 +872,23 @@ def get_ioc_summary(conn: kuzu.Connection, limit: int = 50) -> dict:
             resolved_ips = []
             try:
                 ip_result = conn.execute(
-                    "MATCH (d:Domain {name: $name})-[:RESOLVES_TO]->(ip:IP) "
-                    "RETURN ip.address",
+                    "MATCH (d:Domain {name: $name})-[:RESOLVES_TO]->(ip:IP) RETURN ip.address",
                     {"name": domain_name},
                 )
                 while ip_result.has_next():
                     resolved_ips.append(ip_result.get_next()[0])
             except Exception:
                 pass
-            result["domains"].append({
-                "name": domain_name,
-                "is_dga_candidate": row[1],
-                "first_seen": str(row[2]) if row[2] else None,
-                "resolved_by": row[3],
-                "resolved_by_pids": row[4],
-                "resolved_ips": resolved_ips,
-            })
+            result["domains"].append(
+                {
+                    "name": domain_name,
+                    "is_dga_candidate": row[1],
+                    "first_seen": str(row[2]) if row[2] else None,
+                    "resolved_by": row[3],
+                    "resolved_by_pids": row[4],
+                    "resolved_ips": resolved_ips,
+                }
+            )
     except Exception:
         logger.debug("IOC domain query failed", exc_info=True)
 
@@ -901,17 +908,19 @@ def get_ioc_summary(conn: kuzu.Connection, limit: int = 50) -> dict:
             is_private = row[1]
             if is_private is True:
                 continue
-            result["external_ips"].append({
-                "address": row[0],
-                "ports": row[2],
-                "connected_by": row[3],
-                "connected_by_pids": row[4],
-                "country": row[6] or "",
-                "isp": row[7] or "",
-                "classification": row[8] or "unclassified",
-                "provider_name": row[9] or "",
-                "reverse_dns": row[10] or "",
-            })
+            result["external_ips"].append(
+                {
+                    "address": row[0],
+                    "ports": row[2],
+                    "connected_by": row[3],
+                    "connected_by_pids": row[4],
+                    "country": row[6] or "",
+                    "isp": row[7] or "",
+                    "classification": row[8] or "unclassified",
+                    "provider_name": row[9] or "",
+                    "reverse_dns": row[10] or "",
+                }
+            )
     except Exception:
         logger.debug("IOC IP query failed", exc_info=True)
 
@@ -943,13 +952,15 @@ def get_ioc_summary(conn: kuzu.Connection, limit: int = 50) -> dict:
                 if proc_pid and proc_pid > 0:
                     by_procs = [proc_name] if proc_name else []
                     by_pids = [proc_pid]
-                result["files"].append({
-                    "path": path,
-                    "operation": operation,
-                    "by_processes": by_procs,
-                    "by_pids": by_pids,
-                    "timestamp": str(row[3]) if row[3] else None,
-                })
+                result["files"].append(
+                    {
+                        "path": path,
+                        "operation": operation,
+                        "by_processes": by_procs,
+                        "by_pids": by_pids,
+                        "timestamp": str(row[3]) if row[3] else None,
+                    }
+                )
         except Exception:
             logger.debug("IOC file query failed for %s", rel_type, exc_info=True)
 

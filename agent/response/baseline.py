@@ -42,9 +42,7 @@ def _match_chain_pattern(chain_names: list[str], pattern_parts: list[str]) -> bo
     return False
 
 
-def _match_chain_recursive(
-    chain: list[str], ci: int, pattern: list[str], pi: int
-) -> bool:
+def _match_chain_recursive(chain: list[str], ci: int, pattern: list[str], pi: int) -> bool:
     # Base case: pattern exhausted
     if pi == len(pattern):
         return ci == len(chain)
@@ -72,16 +70,27 @@ def _match_chain_recursive(
 
 
 def _extract_chain_names(chain: list) -> list[str]:
-    """Extract process names from a chain (list of objects or dicts)."""
+    """Extract process and user names from a chain (list of objects or dicts).
+
+    User entries are prefixed with ``USER:`` so that rules can target specific
+    users without colliding with identically-named processes.
+    """
     if not chain:
         return []
+    names = []
     if hasattr(chain[0], "entity_type"):
-        return [s.entity_name for s in chain if s.entity_type == "process"]
-    return [
-        s["entity_name"]
-        for s in chain
-        if s.get("entity_type") == "process"
-    ]
+        for s in chain:
+            if s.entity_type == "user":
+                names.append(f"USER:{s.entity_name}")
+            elif s.entity_type == "process":
+                names.append(s.entity_name)
+    else:
+        for s in chain:
+            if s.get("entity_type") == "user":
+                names.append("USER:" + s["entity_name"])
+            elif s.get("entity_type") == "process":
+                names.append(s["entity_name"])
+    return names
 
 
 def _match_rule(
@@ -127,9 +136,7 @@ def _match_rule(
 
     if rt == "dst_cidr" and dst_ip:
         try:
-            return ipaddress.ip_address(dst_ip) in ipaddress.ip_network(
-                pat, strict=False
-            )
+            return ipaddress.ip_address(dst_ip) in ipaddress.ip_network(pat, strict=False)
         except ValueError:
             return False
 
@@ -181,8 +188,7 @@ class BehaviorBaseline:
         conn = self._conn()
         try:
             row = conn.execute(
-                "SELECT 1 FROM behavior_baseline "
-                "WHERE process_name = ? AND behavior_type = ? AND target = ?",
+                "SELECT 1 FROM behavior_baseline WHERE process_name = ? AND behavior_type = ? AND target = ?",
                 (process_name, behavior_type, target),
             ).fetchone()
             return row is not None
@@ -203,16 +209,14 @@ class BehaviorBaseline:
         conn = self._conn()
         try:
             rows = conn.execute(
-                "SELECT behavior_type, COUNT(*) as cnt "
-                "FROM behavior_baseline GROUP BY behavior_type"
+                "SELECT behavior_type, COUNT(*) as cnt FROM behavior_baseline GROUP BY behavior_type"
             ).fetchall()
             by_type = {r["behavior_type"]: r["cnt"] for r in rows}
 
             total = conn.execute("SELECT COUNT(*) FROM behavior_baseline").fetchone()[0]
 
             range_row = conn.execute(
-                "SELECT MIN(first_seen) as earliest, MAX(last_seen) as latest "
-                "FROM behavior_baseline"
+                "SELECT MIN(first_seen) as earliest, MAX(last_seen) as latest FROM behavior_baseline"
             ).fetchone()
 
             return {
@@ -235,6 +239,61 @@ class BehaviorBaseline:
             return [dict(r) for r in rows]
         finally:
             conn.close()
+
+    def get_all_entries_raw(self) -> list[tuple[str, str, str]]:
+        """Return all (process_name, behavior_type, target) tuples for caching."""
+        conn = self._conn()
+        try:
+            rows = conn.execute("SELECT process_name, behavior_type, target FROM behavior_baseline").fetchall()
+            return [(r["process_name"], r["behavior_type"], r["target"]) for r in rows]
+        finally:
+            conn.close()
+
+
+class BaselineGateCache:
+    """Thread-safe cache of baseline entries for graph gating.
+
+    Loads all baseline (process_name, behavior_type, target) tuples into a
+    frozenset for O(1) lookup. Refreshes from SQLite at most every
+    ``refresh_interval`` seconds.
+    """
+
+    def __init__(
+        self,
+        baseline: BehaviorBaseline,
+        refresh_interval: float = 30.0,
+    ) -> None:
+        self._baseline = baseline
+        self._refresh_interval = refresh_interval
+        self._lock = threading.Lock()
+        self._entries: frozenset[tuple[str, str, str]] = frozenset()
+        self._last_refresh: float = 0.0
+        self._invalidated = True  # force initial load
+
+    def _refresh_if_stale(self) -> None:
+        now = time.monotonic()
+        if self._invalidated or (now - self._last_refresh >= self._refresh_interval):
+            with self._lock:
+                # Double-check after acquiring lock
+                if self._invalidated or (now - self._last_refresh >= self._refresh_interval):
+                    raw = self._baseline.get_all_entries_raw()
+                    self._entries = frozenset(raw)
+                    self._last_refresh = time.monotonic()
+                    self._invalidated = False
+
+    def is_gated(self, process_name: str, behavior_type: str, target: str) -> bool:
+        """Return True if the (process_name, behavior_type, target) is baselined."""
+        self._refresh_if_stale()
+        return (process_name, behavior_type, target) in self._entries
+
+    def has_entries(self) -> bool:
+        """Return True if the cache has any baseline entries."""
+        self._refresh_if_stale()
+        return bool(self._entries)
+
+    def invalidate(self) -> None:
+        """Force a refresh on the next access."""
+        self._invalidated = True
 
 
 class ResponseAllowlist:
@@ -294,8 +353,7 @@ class ResponseAllowlist:
         conn = self._conn()
         try:
             cur = conn.execute(
-                "INSERT INTO response_allowlist (rule_type, pattern, description, chain_filter) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO response_allowlist (rule_type, pattern, description, chain_filter) VALUES (?, ?, ?, ?)",
                 (rule_type, pattern, description, chain_filter),
             )
             conn.commit()
@@ -307,9 +365,7 @@ class ResponseAllowlist:
         """Remove a rule by ID. Returns True if a rule was deleted."""
         conn = self._conn()
         try:
-            cur = conn.execute(
-                "DELETE FROM response_allowlist WHERE id = ?", (rule_id,)
-            )
+            cur = conn.execute("DELETE FROM response_allowlist WHERE id = ?", (rule_id,))
             conn.commit()
             return cur.rowcount > 0
         finally:
@@ -327,9 +383,7 @@ class ResponseAllowlist:
         """Check if any allowlist rule matches. Returns (matched, rule_description)."""
         conn = self._conn()
         try:
-            rules = conn.execute(
-                "SELECT * FROM response_allowlist ORDER BY id"
-            ).fetchall()
+            rules = conn.execute("SELECT * FROM response_allowlist ORDER BY id").fetchall()
         finally:
             conn.close()
 
@@ -352,9 +406,7 @@ class ResponseAllowlist:
         """Return all rules for dashboard display."""
         conn = self._conn()
         try:
-            rows = conn.execute(
-                "SELECT * FROM response_allowlist ORDER BY id"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM response_allowlist ORDER BY id").fetchall()
             return [dict(r) for r in rows]
         finally:
             conn.close()
@@ -368,15 +420,8 @@ class ResponseAllowlist:
         """
         conn = self._conn()
         try:
-            rows = conn.execute(
-                "SELECT * FROM response_allowlist ORDER BY id"
-            ).fetchall()
-            return [
-                dict(r)
-                for r in rows
-                if r["rule_type"] in self.GRAPH_FILTERABLE_TYPES
-                and not r["chain_filter"]
-            ]
+            rows = conn.execute("SELECT * FROM response_allowlist ORDER BY id").fetchall()
+            return [dict(r) for r in rows if r["rule_type"] in self.GRAPH_FILTERABLE_TYPES and not r["chain_filter"]]
         finally:
             conn.close()
 
@@ -459,8 +504,7 @@ class ResponseBlocklist:
         conn = self._conn()
         try:
             cur = conn.execute(
-                "INSERT INTO response_blocklist (rule_type, pattern, description, chain_filter) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO response_blocklist (rule_type, pattern, description, chain_filter) VALUES (?, ?, ?, ?)",
                 (rule_type, pattern, description, chain_filter),
             )
             conn.commit()
@@ -472,9 +516,7 @@ class ResponseBlocklist:
         """Remove a rule by ID. Returns True if a rule was deleted."""
         conn = self._conn()
         try:
-            cur = conn.execute(
-                "DELETE FROM response_blocklist WHERE id = ?", (rule_id,)
-            )
+            cur = conn.execute("DELETE FROM response_blocklist WHERE id = ?", (rule_id,))
             conn.commit()
             return cur.rowcount > 0
         finally:
@@ -492,9 +534,7 @@ class ResponseBlocklist:
         """Check if any blocklist rule matches. Returns (matched, rule_description)."""
         conn = self._conn()
         try:
-            rules = conn.execute(
-                "SELECT * FROM response_blocklist ORDER BY id"
-            ).fetchall()
+            rules = conn.execute("SELECT * FROM response_blocklist ORDER BY id").fetchall()
         finally:
             conn.close()
 
@@ -517,9 +557,7 @@ class ResponseBlocklist:
         """Return all rules for dashboard display."""
         conn = self._conn()
         try:
-            rows = conn.execute(
-                "SELECT * FROM response_blocklist ORDER BY id"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM response_blocklist ORDER BY id").fetchall()
             return [dict(r) for r in rows]
         finally:
             conn.close()

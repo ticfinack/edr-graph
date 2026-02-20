@@ -25,8 +25,10 @@ def _make_client(mock_neo4j):
     # Force re-import to pick up the mocked neo4j module
     import importlib
     import server.neo4j_client
+
     importlib.reload(server.neo4j_client)
     from server.neo4j_client import Neo4jClient
+
     return Neo4jClient("bolt://localhost:7687", "neo4j", "test")
 
 
@@ -35,14 +37,16 @@ class TestNeo4jClientRegistration:
         mock_neo4j, mock_driver, mock_session = mock_neo4j_module
         client = _make_client(mock_neo4j)
 
-        client.register_agent({
-            "agent_id": "agent-001",
-            "hostname": "test-host",
-            "platform": "linux",
-            "os_version": "5.15",
-            "agent_version": "0.1.0",
-            "registered_at": 1700000000,
-        })
+        client.register_agent(
+            {
+                "agent_id": "agent-001",
+                "hostname": "test-host",
+                "platform": "linux",
+                "os_version": "5.15",
+                "agent_version": "0.1.0",
+                "registered_at": 1700000000,
+            }
+        )
 
         mock_session.run.assert_called_once()
         query = mock_session.run.call_args[0][0]
@@ -68,17 +72,20 @@ class TestNeo4jClientIngestFinding:
         mock_neo4j, mock_driver, mock_session = mock_neo4j_module
         client = _make_client(mock_neo4j)
 
-        client.ingest_finding("agent-001", {
-            "id": "finding-001",
-            "timestamp": 1700000000,
-            "severity": "high",
-            "title": "Test",
-            "description": "Test finding",
-            "recommendation": "Block",
-            "affected_entities": ["process:bash"],
-            "affected_pids": [42],
-            "iocs": {"ips": ["10.0.0.1"], "domains": ["evil.com"]},
-        })
+        client.ingest_finding(
+            "agent-001",
+            {
+                "id": "finding-001",
+                "timestamp": 1700000000,
+                "severity": "high",
+                "title": "Test",
+                "description": "Test finding",
+                "recommendation": "Block",
+                "affected_entities": ["process:bash"],
+                "affected_pids": [42],
+                "iocs": {"ips": ["10.0.0.1"], "domains": ["evil.com"]},
+            },
+        )
 
         # Should have 3 calls: main finding query + IP IOC + Domain IOC
         assert mock_session.run.call_count == 3
@@ -87,15 +94,18 @@ class TestNeo4jClientIngestFinding:
         mock_neo4j, mock_driver, mock_session = mock_neo4j_module
         client = _make_client(mock_neo4j)
 
-        client.ingest_finding("agent-001", {
-            "id": "finding-002",
-            "timestamp": 1700000000,
-            "severity": "low",
-            "title": "No IOCs",
-            "description": "Test",
-            "recommendation": "Monitor",
-            "iocs": {},
-        })
+        client.ingest_finding(
+            "agent-001",
+            {
+                "id": "finding-002",
+                "timestamp": 1700000000,
+                "severity": "low",
+                "title": "No IOCs",
+                "description": "Test",
+                "recommendation": "Monitor",
+                "iocs": {},
+            },
+        )
 
         # Only 1 call: the main finding query (no IOC nodes)
         assert mock_session.run.call_count == 1
@@ -106,12 +116,15 @@ class TestNeo4jClientOcsfEvent:
         mock_neo4j, mock_driver, mock_session = mock_neo4j_module
         client = _make_client(mock_neo4j)
 
-        client.ingest_ocsf_event("agent-001", {
-            "class_uid": 4001,
-            "dst_endpoint": {"ip": "10.0.0.1"},
-            "process": {"name": "curl"},
-            "time": "2025-01-15T10:30:00",
-        })
+        client.ingest_ocsf_event(
+            "agent-001",
+            {
+                "class_uid": 4001,
+                "dst_endpoint": {"ip": "10.0.0.1"},
+                "process": {"name": "curl"},
+                "time": "2025-01-15T10:30:00",
+            },
+        )
 
         mock_session.run.assert_called_once()
         query = mock_session.run.call_args[0][0]
@@ -121,11 +134,14 @@ class TestNeo4jClientOcsfEvent:
         mock_neo4j, mock_driver, mock_session = mock_neo4j_module
         client = _make_client(mock_neo4j)
 
-        client.ingest_ocsf_event("agent-001", {
-            "class_uid": 4003,
-            "query_domain": "example.com",
-            "time": "2025-01-15T10:30:00",
-        })
+        client.ingest_ocsf_event(
+            "agent-001",
+            {
+                "class_uid": 4003,
+                "query_domain": "example.com",
+                "time": "2025-01-15T10:30:00",
+            },
+        )
 
         mock_session.run.assert_called_once()
         query = mock_session.run.call_args[0][0]
@@ -135,9 +151,12 @@ class TestNeo4jClientOcsfEvent:
         mock_neo4j, mock_driver, mock_session = mock_neo4j_module
         client = _make_client(mock_neo4j)
 
-        client.ingest_ocsf_event("agent-001", {
-            "class_uid": 9999,
-            "data": "unknown",
-        })
+        client.ingest_ocsf_event(
+            "agent-001",
+            {
+                "class_uid": 9999,
+                "data": "unknown",
+            },
+        )
 
         mock_session.run.assert_not_called()

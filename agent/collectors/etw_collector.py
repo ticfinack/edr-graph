@@ -66,9 +66,7 @@ class EtwCollector(Collector):
         if self._thread is not None:
             return
         self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._consume, daemon=True, name="etw-consumer"
-        )
+        self._thread = threading.Thread(target=self._consume, daemon=True, name="etw-consumer")
         self._thread.start()
 
     def stop(self) -> None:
@@ -133,10 +131,20 @@ def _classify_event(event_data: dict) -> str:
 def _extract_fields(event_data: dict) -> dict[str, str]:
     """Extract relevant fields from an ETW event."""
     fields: dict[str, str] = {}
-    for key in ("ProcessId", "ImageFileName", "CommandLine",
-                "SourceAddress", "DestAddress", "SourcePort", "DestPort",
-                "QueryName", "QueryResults",
-                "FileName", "KeyName", "ValueName"):
+    for key in (
+        "ProcessId",
+        "ImageFileName",
+        "CommandLine",
+        "SourceAddress",
+        "DestAddress",
+        "SourcePort",
+        "DestPort",
+        "QueryName",
+        "QueryResults",
+        "FileName",
+        "KeyName",
+        "ValueName",
+    ):
         val = event_data.get(key)
         if val is not None:
             fields[key.lower()] = str(val)

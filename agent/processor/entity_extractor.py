@@ -31,17 +31,21 @@ from agent.schema.ocsf_types import (
 # Lazy import to avoid circular deps and allow graceful degradation
 _get_process_identity = None
 
+
 def _ensure_identity_import():
     global _get_process_identity
     if _get_process_identity is None:
         try:
             from agent.enrichment.process_identity import get_process_identity
+
             _get_process_identity = get_process_identity
         except ImportError:
             _get_process_identity = False  # Mark as unavailable
 
+
 _ppid_cache: dict[int, int] = {}  # pid -> parent_pid, populated once per PID
 _create_time_cache: dict[int, float] = {}  # pid -> create_time epoch, populated once per PID
+_username_cache: dict[int, str] = {}  # pid -> username (empty string = unresolvable)
 
 
 def _resolve_start_time(pid: int, fallback: datetime) -> datetime:
@@ -62,6 +66,7 @@ def _resolve_start_time(pid: int, fallback: datetime) -> datetime:
 
     try:
         import psutil
+
         p = psutil.Process(pid)
         ct = p.create_time()
         if ct and ct > 0:
@@ -89,6 +94,7 @@ def _resolve_start_time(pid: int, fallback: datetime) -> datetime:
     _create_time_cache[pid] = 0
     return fallback
 
+
 def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
     """Enrich a ProcessNode with identity and parent_pid via psutil if available."""
     # Fill in parent_pid from psutil when not already set
@@ -98,6 +104,7 @@ def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
         else:
             try:
                 import psutil
+
                 p = psutil.Process(pid)
                 ppid = p.ppid()
                 if ppid and ppid > 0:
@@ -127,6 +134,59 @@ def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
         proc_node.signing_authority = identity.signing_authority
     except Exception:
         logger.debug("Failed to enrich process identity for pid %d", pid, exc_info=True)
+
+
+def _extract_user_for_process(
+    pid: int,
+    proc_id: str,
+    entities: ExtractedEntities,
+    now: datetime,
+    event_id: int,
+    activity_id: int = 0,
+    actor_user=None,
+) -> None:
+    """Extract UserNode and SPAWNED edge for a process, with psutil fallback."""
+    user_name = None
+    user_uid = None
+
+    # Tier 1: OCSF actor.user (only on ProcessActivity)
+    if actor_user:
+        user_name = actor_user.name
+        user_uid = actor_user.uid
+
+    # Tier 2: psutil fallback
+    if not user_name and pid > 0:
+        if pid in _username_cache:
+            user_name = _username_cache[pid] or None
+        else:
+            try:
+                import psutil
+
+                uname = psutil.Process(pid).username()
+                if isinstance(uname, str) and uname:
+                    user_name = uname
+                    _username_cache[pid] = uname
+                else:
+                    _username_cache[pid] = ""
+            except Exception:
+                _username_cache[pid] = ""
+
+    if not user_name:
+        return
+
+    user_id = user_name
+    entities.users.append(
+        UserNode(id=user_id, name=user_name, uid=user_uid, first_seen=now, last_seen=now)
+    )
+    entities.spawned_edges.append(
+        {
+            "user_id": user_id,
+            "process_id": proc_id,
+            "timestamp": now,
+            "activity_id": activity_id,
+            "event_id": event_id,
+        }
+    )
 
 
 class ExtractedEntities:
@@ -188,15 +248,17 @@ def extract_entities(
             metrics.persistence_detections_total.labels(
                 persistence_type=persistence.persistence_type,
             ).inc()
-            entities.risk_indicators.append({
-                "type": "persistence",
-                "persistence_type": persistence.persistence_type,
-                "platform": persistence.platform,
-                "severity": persistence.severity,
-                "mitre_technique": persistence.mitre_technique,
-                "description": persistence.description,
-                "path": persistence.path,
-            })
+            entities.risk_indicators.append(
+                {
+                    "type": "persistence",
+                    "persistence_type": persistence.persistence_type,
+                    "platform": persistence.platform,
+                    "severity": persistence.severity,
+                    "mitre_technique": persistence.mitre_technique,
+                    "description": persistence.description,
+                    "path": persistence.path,
+                }
+            )
 
     return entities
 
@@ -226,27 +288,15 @@ def _extract_process_activity(
     _enrich_process_node(proc_node, proc.pid)
     entities.processes.append(proc_node)
 
-    if event.actor and event.actor.user:
-        user = event.actor.user
-        user_id = user.name or user.uid or "unknown"
-        entities.users.append(
-            UserNode(
-                id=user_id,
-                name=user.name,
-                uid=user.uid or None,
-                first_seen=now,
-                last_seen=now,
-            )
-        )
-        entities.spawned_edges.append(
-            {
-                "user_id": user_id,
-                "process_id": proc_id,
-                "timestamp": now,
-                "activity_id": event.activity_id,
-                "event_id": event_id,
-            }
-        )
+    _extract_user_for_process(
+        proc.pid,
+        proc_id,
+        entities,
+        now,
+        event_id,
+        activity_id=event.activity_id,
+        actor_user=event.actor.user if event.actor else None,
+    )
 
 
 def _extract_network_activity(
@@ -273,6 +323,10 @@ def _extract_network_activity(
         )
         _enrich_process_node(proc_node, proc.pid)
         entities.processes.append(proc_node)
+
+        _extract_user_for_process(
+            proc.pid, proc_id, entities, now, event_id, activity_id=event.activity_id,
+        )
 
         if event.dst_endpoint and event.dst_endpoint.ip:
             ip_addr = event.dst_endpoint.ip
@@ -306,6 +360,7 @@ def _extract_network_activity(
                     if proc_node.code_signed is not None:
                         # Build a minimal identity from proc_node fields
                         from agent.enrichment.process_identity import ProcessIdentity
+
                         src_identity = ProcessIdentity(
                             pid=proc.pid,
                             path=proc.exe_path or "",
@@ -323,19 +378,23 @@ def _extract_network_activity(
                     )
                     if conn_ctx.is_localhost_ipc:
                         if conn_ctx.dest_process:
-                            entities.risk_indicators.append({
-                                "type": "connection_context",
-                                "description": f"Localhost IPC: {proc.name} -> {conn_ctx.dest_process} (low risk)",
-                                "severity": "info",
-                                "connection_context": conn_ctx.connection_description,
-                            })
+                            entities.risk_indicators.append(
+                                {
+                                    "type": "connection_context",
+                                    "description": f"Localhost IPC: {proc.name} -> {conn_ctx.dest_process} (low risk)",
+                                    "severity": "info",
+                                    "connection_context": conn_ctx.connection_description,
+                                }
+                            )
                         else:
-                            entities.risk_indicators.append({
-                                "type": "connection_context",
-                                "description": f"Localhost connection to unknown listener on port {dst_port}",
-                                "severity": "low",
-                                "connection_context": conn_ctx.connection_description,
-                            })
+                            entities.risk_indicators.append(
+                                {
+                                    "type": "connection_context",
+                                    "description": f"Localhost connection to unknown listener on port {dst_port}",
+                                    "severity": "low",
+                                    "connection_context": conn_ctx.connection_description,
+                                }
+                            )
                 except Exception:
                     logger.debug("Port mapper enrichment failed", exc_info=True)
 
@@ -396,6 +455,10 @@ def _extract_dns_activity(
         )
         _enrich_process_node(proc_node, proc.pid)
         entities.processes.append(proc_node)
+
+        _extract_user_for_process(
+            proc.pid, proc_id, entities, now, event_id, activity_id=event.activity_id,
+        )
 
     if event.query_domain:
         domain_name = event.query_domain.lower().rstrip(".")
@@ -486,6 +549,10 @@ def _extract_file_activity(
         )
         _enrich_process_node(proc_node, proc.pid)
         entities.processes.append(proc_node)
+
+        _extract_user_for_process(
+            proc.pid, proc_id, entities, now, event_id, activity_id=event.activity_id,
+        )
 
     if event.file_path:
         file_id = event.file_path

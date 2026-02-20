@@ -46,6 +46,10 @@ dashboard:
   port: 8080
   refresh_interval: 5.0
 
+graph:
+  max_memory_mb: 512          # KùzuDB buffer pool size limit (MB)
+  ttl_hours: 24               # Delete graph edges older than this (hours)
+
 fleet:
   enabled: false              # Enable fleet forwarding to central server
   url: ""                     # Central server gRPC address (host:port)

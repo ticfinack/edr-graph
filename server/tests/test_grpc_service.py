@@ -85,12 +85,22 @@ class TestFleetServicer:
             agent_id="agent-001",
             findings=[
                 fleet_pb2.SecurityFinding(
-                    id="f-ok", timestamp=0, severity="low",
-                    title="OK", description="", recommendation="", iocs_json="{}",
+                    id="f-ok",
+                    timestamp=0,
+                    severity="low",
+                    title="OK",
+                    description="",
+                    recommendation="",
+                    iocs_json="{}",
                 ),
                 fleet_pb2.SecurityFinding(
-                    id="f-fail", timestamp=0, severity="high",
-                    title="Fail", description="", recommendation="", iocs_json="{}",
+                    id="f-fail",
+                    timestamp=0,
+                    severity="high",
+                    title="Fail",
+                    description="",
+                    recommendation="",
+                    iocs_json="{}",
                 ),
             ],
         )

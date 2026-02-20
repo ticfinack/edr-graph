@@ -30,7 +30,13 @@ from agent.processor.entity_extractor import extract_entities
 from agent.processor.graph_builder import GraphBuilder
 from agent.queue.sqlite_queue import SqliteQueue
 from agent.response.actions import ResponsePolicy
-from agent.response.baseline import AllowlistRuleCache, BehaviorBaseline, ResponseAllowlist, ResponseBlocklist
+from agent.response.baseline import (
+    AllowlistRuleCache,
+    BaselineGateCache,
+    BehaviorBaseline,
+    ResponseAllowlist,
+    ResponseBlocklist,
+)
 from agent.response.engine import ResponseAuditLog, ResponseEngine
 from agent.schema.kuzu_schema import init_graph_schema
 from agent.watchdog import write_heartbeat
@@ -40,6 +46,7 @@ _enrich_process = None
 try:
     if sys.platform == "darwin":
         from agent.collectors.macos_proc_enricher import enrich_process_event
+
         _enrich_process = enrich_process_event
 except ImportError:
     pass
@@ -69,6 +76,7 @@ def collector_thread(
     # Update dashboard state with collector names
     try:
         from agent.dashboard import server as dashboard_server
+
         dashboard_server._state["collector_names"] = collector_names
     except Exception:
         pass
@@ -96,9 +104,14 @@ def processor_thread(
     kuzu_db: kuzu.Database,
     ioc_db=None,
     allowlist_cache: AllowlistRuleCache | None = None,
+    baseline_gate: BaselineGateCache | None = None,
 ) -> None:
     """Process queued events: normalize, extract entities, write to graph."""
     from agent.processor.allowlist_filter import filter_entities, has_entities
+    from agent.processor.baseline_gate import gate_baselined_edges
+    from agent.processor.self_filter import filter_agent_noise
+
+    _agent_pid = os.getpid()
 
     builder = GraphBuilder(kuzu_db)
     _last_prune = time.monotonic()
@@ -109,6 +122,7 @@ def processor_thread(
     if settings.process_identity_enabled:
         try:
             from agent.enrichment.port_mapper import PortMapper
+
             port_mapper = PortMapper(refresh_interval=settings.port_mapper_refresh_interval)
             logger.info("Port mapper initialized (refresh every %.0fs)", settings.port_mapper_refresh_interval)
         except Exception:
@@ -154,17 +168,27 @@ def processor_thread(
                             dga_threshold=settings.dga_score_threshold,
                             port_mapper=port_mapper,
                         )
+                        # Agent self-allowlist: suppress own telemetry
+                        self_removed = filter_agent_noise(entities, _agent_pid)
+                        if self_removed:
+                            metrics.events_self_filtered.inc(self_removed)
+                        if not has_entities(entities):
+                            continue
                         # Gate file READ edges behind config flag
                         if not settings.file_read_tracking:
-                            entities.file_edges = [
-                                e for e in entities.file_edges
-                                if e["operation"] != "READ"
-                            ]
+                            entities.file_edges = [e for e in entities.file_edges if e["operation"] != "READ"]
                         # Pre-graph allowlist filter
                         if allowlist_cache:
                             al_removed = filter_entities(entities, allowlist_cache.get_rules())
                             if al_removed:
                                 metrics.events_allowlist_filtered.inc(al_removed)
+                            if not has_entities(entities):
+                                continue
+                        # Baseline graph gating (edge-level, non-learning modes only)
+                        if baseline_gate and settings.baseline_graph_gating and settings.response_mode != "learning":
+                            gated = gate_baselined_edges(entities, baseline_gate)
+                            if gated:
+                                metrics.edges_baseline_gated.inc(gated)
                             if not has_entities(entities):
                                 continue
                         entity_batch.append(entities)
@@ -277,9 +301,7 @@ def analyzer_thread(
                         try:
                             _trigger_response(response_engine, finding, novel_events)
                         except Exception:
-                            logger.exception(
-                                "Response engine failed for finding %s", finding.id
-                            )
+                            logger.exception("Response engine failed for finding %s", finding.id)
 
                 if findings:
                     logger.info("Stored %d findings from LLM", len(findings))
@@ -311,6 +333,29 @@ def forwarder_thread(
             logger.exception("Forwarder cycle failed")
 
         _shutdown.wait(timeout=settings.fleet_forward_interval)
+
+
+def reaper_thread(settings: Settings, kuzu_db: kuzu.Database) -> None:
+    """Periodically prune graph edges older than the configured TTL."""
+    from agent.graph.reaper import prune_old_edges
+
+    logger.info("Started reaper thread (ttl=%dh)", settings.graph_ttl_hours)
+
+    while not _shutdown.is_set():
+        _shutdown.wait(timeout=3600.0)  # 1 hour
+        if _shutdown.is_set():
+            break
+        try:
+            conn = kuzu.Connection(kuzu_db)
+            pruned = prune_old_edges(conn, settings.graph_ttl_hours)
+            if pruned:
+                logger.info(
+                    "Graph reaper: pruned %d items (ttl=%dh)",
+                    pruned,
+                    settings.graph_ttl_hours,
+                )
+        except Exception:
+            logger.exception("Graph reaper cycle failed")
 
 
 def _trigger_response(
@@ -409,17 +454,21 @@ def _check_ioc_matches(ioc_db, ocsf, event_id: int) -> list:
         title = f"{title_map.get(match.ioc_type, 'Known Threat IOC Detected')}: {entity_value}"
         chain = []
         if process_name:
-            chain.append(ChainStep(
-                entity_type="process",
-                entity_id=process_name,
-                entity_name=process_name,
-                pid=pid if pid > 0 else None,
-            ))
-        chain.append(ChainStep(
-            entity_type=entity_type,
-            entity_id=entity_value,
-            entity_name=entity_value,
-        ))
+            chain.append(
+                ChainStep(
+                    entity_type="process",
+                    entity_id=process_name,
+                    entity_name=process_name,
+                    pid=pid if pid > 0 else None,
+                )
+            )
+        chain.append(
+            ChainStep(
+                entity_type=entity_type,
+                entity_id=entity_value,
+                entity_name=entity_value,
+            )
+        )
 
         iocs: dict = {}
         if match.ioc_type == "ip":
@@ -476,7 +525,7 @@ def _check_ioc_matches(ioc_db, ocsf, event_id: int) -> list:
             pid = ocsf.process.pid
         if ocsf.query_domain:
             domains_to_check.append(ocsf.query_domain)
-        for ip in (ocsf.resolved_ips or []):
+        for ip in ocsf.resolved_ips or []:
             ips_to_check.append(ip)
 
     elif isinstance(ocsf, FileActivity):
@@ -508,6 +557,7 @@ def _is_paused() -> bool:
     """Check if the agent is paused (via tray icon or dashboard API)."""
     try:
         from agent.dashboard import server as dashboard_server
+
         return dashboard_server._state.get("paused", False)
     except Exception:
         return False
@@ -517,16 +567,19 @@ def _push_recent_event(raw_data: dict, source: str) -> None:
     """Push a processed event to the dashboard's recent events buffer."""
     try:
         from agent.dashboard.server import append_recent_event
+
         fields = raw_data.get("fields", {})
-        append_recent_event({
-            "timestamp": raw_data.get("timestamp", ""),
-            "source": source,
-            "event_type": raw_data.get("event_type", raw_data.get("source", "")),
-            "name": fields.get("name", ""),
-            "pid": fields.get("pid", ""),
-            "message": fields.get("message", ""),
-            "fields": fields,
-        })
+        append_recent_event(
+            {
+                "timestamp": raw_data.get("timestamp", ""),
+                "source": source,
+                "event_type": raw_data.get("event_type", raw_data.get("source", "")),
+                "name": fields.get("name", ""),
+                "pid": fields.get("pid", ""),
+                "message": fields.get("message", ""),
+                "fields": fields,
+            }
+        )
     except Exception:
         pass
 
@@ -538,12 +591,15 @@ def _push_finding_notification(finding) -> None:
     # Push to dashboard notification queue
     try:
         from agent.dashboard.server import notification_queue
-        notification_queue.appendleft({
-            "severity": finding.severity,
-            "title": finding.title,
-            "id": finding.id,
-            "timestamp": time.time(),
-        })
+
+        notification_queue.appendleft(
+            {
+                "severity": finding.severity,
+                "title": finding.title,
+                "id": finding.id,
+                "timestamp": time.time(),
+            }
+        )
     except Exception:
         pass
 
@@ -559,27 +615,26 @@ def main() -> None:
     # Set process title so we show as "edr-graph" in Activity Monitor / ps
     try:
         import setproctitle
+
         setproctitle.setproctitle("edr-graph")
     except ImportError:
         pass
 
-    parser = argparse.ArgumentParser(
-        description="edr-graph: Local EDR with Graph-Based Event Correlation"
-    )
+    parser = argparse.ArgumentParser(description="edr-graph: Local EDR with Graph-Based Event Correlation")
     parser.add_argument(
-        "--config", type=str, default=None,
+        "--config",
+        type=str,
+        default=None,
         help="Path to config.yaml file",
     )
+    parser.add_argument("--data-dir", type=str, default=None, help="Data directory path")
     parser.add_argument(
-        "--data-dir", type=str, default=None, help="Data directory path"
-    )
-    parser.add_argument(
-        "--dashboard-port", type=int, default=None,
+        "--dashboard-port",
+        type=int,
+        default=None,
         help="Dashboard port (default: 9200)",
     )
-    parser.add_argument(
-        "--port", type=int, default=None, help="Alias for --dashboard-port"
-    )
+    parser.add_argument("--port", type=int, default=None, help="Alias for --dashboard-port")
     parser.add_argument(
         "--log-level",
         type=str,
@@ -654,6 +709,7 @@ def main() -> None:
     # Generate config and exit
     if args.generate_config:
         from agent.config import generate_default_config
+
         print(generate_default_config())
         return
 
@@ -695,6 +751,7 @@ def main() -> None:
     if sys.platform == "darwin" and settings.process_identity_enabled:
         try:
             from agent.enrichment.process_identity import warm_cache
+
             warm_cache()
         except Exception:
             logger.debug("Process identity cache warming failed", exc_info=True)
@@ -703,6 +760,7 @@ def main() -> None:
     if settings.allowlist_enabled and settings.allowlist_custom_entries:
         try:
             from agent.enrichment.application_allowlist import load_custom_entries
+
             load_custom_entries(settings.allowlist_custom_entries)
         except Exception:
             logger.debug("Custom allowlist loading failed", exc_info=True)
@@ -717,17 +775,22 @@ def main() -> None:
     )
 
     # Initialize Kuzu graph
-    kuzu_db = kuzu.Database(str(settings.graph_path))
+    kuzu_db = kuzu.Database(
+        str(settings.graph_path),
+        buffer_pool_size=settings.graph_max_memory_mb * 1024 * 1024,
+    )
     init_conn = kuzu.Connection(kuzu_db)
     init_graph_schema(init_conn)
     logger.info("Graph schema initialized")
 
     # Backfill parent_pid for existing processes using psutil
     from agent.processor.graph_builder import backfill_parent_pids
+
     backfill_parent_pids(kuzu_db)
 
     # Initialize file attribution cache (for FSEvents PID 0 attribution)
     from agent.enrichment.file_attribution import get_file_attribution_cache
+
     file_attr = get_file_attribution_cache()
     file_attr.set_agent_pid(os.getpid())
 
@@ -748,6 +811,7 @@ def main() -> None:
     )
     audit_log = ResponseAuditLog(response_conn)
     baseline = BehaviorBaseline(settings.db_path)
+    baseline_gate = BaselineGateCache(baseline) if settings.baseline_graph_gating else None
     allowlist = ResponseAllowlist(settings.db_path)
     allowlist_cache = AllowlistRuleCache(allowlist)
     blocklist = ResponseBlocklist(settings.db_path)
@@ -764,6 +828,7 @@ def main() -> None:
     # Initialize DNS sinkhole
     try:
         from agent.response.dns_sinkhole import DnsSinkhole
+
         response_engine.dns_sinkhole = DnsSinkhole()
     except Exception:
         logger.debug("DNS sinkhole initialization failed (non-fatal)", exc_info=True)
@@ -813,6 +878,7 @@ def main() -> None:
 
     # Heartbeat thread
     if settings.watchdog_enabled:
+
         def heartbeat_loop():
             while not _shutdown.is_set():
                 try:
@@ -821,23 +887,20 @@ def main() -> None:
                     logger.debug("Heartbeat write failed", exc_info=True)
                 _shutdown.wait(timeout=settings.heartbeat_interval)
 
-        t = threading.Thread(
-            target=heartbeat_loop, daemon=True, name="heartbeat"
-        )
+        t = threading.Thread(target=heartbeat_loop, daemon=True, name="heartbeat")
         t.start()
         threads.append(t)
-        logger.info("Heartbeat thread started (dir=%s, interval=%.0fs)",
-                    settings.heartbeat_dir, settings.heartbeat_interval)
+        logger.info(
+            "Heartbeat thread started (dir=%s, interval=%.0fs)", settings.heartbeat_dir, settings.heartbeat_interval
+        )
 
-    t = threading.Thread(
-        target=collector_thread, args=(settings, queue), daemon=True, name="collector"
-    )
+    t = threading.Thread(target=collector_thread, args=(settings, queue), daemon=True, name="collector")
     t.start()
     threads.append(t)
 
     t = threading.Thread(
         target=processor_thread,
-        args=(settings, queue, kuzu_db, ioc_db, allowlist_cache),
+        args=(settings, queue, kuzu_db, ioc_db, allowlist_cache, baseline_gate),
         daemon=True,
         name="processor",
     )
@@ -874,6 +937,16 @@ def main() -> None:
         except Exception:
             logger.warning("Fleet forwarder initialization failed", exc_info=True)
 
+    # Graph reaper thread (TTL pruning)
+    t = threading.Thread(
+        target=reaper_thread,
+        args=(settings, kuzu_db),
+        daemon=True,
+        name="reaper",
+    )
+    t.start()
+    threads.append(t)
+
     logger.info("All pipeline threads started")
 
     # Start FastAPI dashboard server (daemon thread)
@@ -902,12 +975,14 @@ def main() -> None:
                 allowlist=allowlist,
                 blocklist=blocklist,
                 allowlist_cache=allowlist_cache,
+                baseline_gate=baseline_gate,
             )
             start_dashboard_server(port=settings.dashboard_port)
             logger.info("Dashboard server started on http://127.0.0.1:%d", settings.dashboard_port)
 
             # Auto-open browser after a short delay
             if settings.dashboard_auto_open:
+
                 def _open_browser():
                     time.sleep(2)
                     webbrowser.open(f"http://127.0.0.1:{settings.dashboard_port}")
@@ -918,11 +993,7 @@ def main() -> None:
             logger.warning("Failed to start dashboard server", exc_info=True)
 
     # Main thread: tray icon (macOS) or signal wait
-    use_tray = (
-        sys.platform == "darwin"
-        and settings.tray_enabled
-        and not args.no_tray
-    )
+    use_tray = sys.platform == "darwin" and settings.tray_enabled and not args.no_tray
 
     if use_tray:
         try:
@@ -930,6 +1001,7 @@ def main() -> None:
 
             def _on_pause(paused: bool):
                 from agent.dashboard import server as dashboard_server
+
                 dashboard_server._state["paused"] = paused
 
             def _on_shutdown():
@@ -982,6 +1054,7 @@ def _get_tray_status(settings: Settings, queue: SqliteQueue):
         collector_names = []
         try:
             from agent.dashboard import server as dashboard_server
+
             collector_names = dashboard_server._state.get("collector_names", [])
         except Exception:
             pass

@@ -130,11 +130,4 @@ class RegistryActivity(BaseModel):
 
 
 # Union type for all OCSF events
-OcsfEvent = (
-    ProcessActivity
-    | NetworkActivity
-    | Authentication
-    | DnsActivity
-    | FileActivity
-    | RegistryActivity
-)
+OcsfEvent = ProcessActivity | NetworkActivity | Authentication | DnsActivity | FileActivity | RegistryActivity

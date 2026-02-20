@@ -3,9 +3,12 @@
 import json
 from datetime import datetime
 
-from agent.fleet.proto import fleet_pb2
-from agent.fleet.serializers import finding_to_proto, proto_to_finding_dict
-from agent.schema.graph_types import ChainStep, SecurityFinding
+import pytest
+
+pytest.importorskip("google.protobuf", reason="protobuf not installed")
+
+from agent.fleet.serializers import finding_to_proto, proto_to_finding_dict  # noqa: E402
+from agent.schema.graph_types import ChainStep, SecurityFinding  # noqa: E402
 
 
 class TestFindingToProto:

@@ -20,52 +20,26 @@ from agent.schema.ocsf_types import FileActivity, OcsfEvent, RegistryActivity
 WINDOWS_PERSISTENCE_KEYS: dict[str, tuple[str, str]] = {
     # path_prefix -> (persistence_type, mitre_technique_id)
     # Run keys
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run": (
-        "registry_run_key", "T1547.001"
-    ),
-    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce": (
-        "registry_run_key", "T1547.001"
-    ),
-    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run": (
-        "registry_run_key", "T1547.001"
-    ),
-    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce": (
-        "registry_run_key", "T1547.001"
-    ),
+    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run": ("registry_run_key", "T1547.001"),
+    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce": ("registry_run_key", "T1547.001"),
+    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run": ("registry_run_key", "T1547.001"),
+    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce": ("registry_run_key", "T1547.001"),
     # Services
-    r"HKLM\SYSTEM\CurrentControlSet\Services": (
-        "windows_service", "T1543.003"
-    ),
+    r"HKLM\SYSTEM\CurrentControlSet\Services": ("windows_service", "T1543.003"),
     # Winlogon
-    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\Shell": (
-        "winlogon", "T1547.001"
-    ),
-    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\Userinit": (
-        "winlogon", "T1547.001"
-    ),
+    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\Shell": ("winlogon", "T1547.001"),
+    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\Userinit": ("winlogon", "T1547.001"),
     # COM hijack vectors
-    r"HKLM\SOFTWARE\Classes\*\shellex\ContextMenuHandlers": (
-        "com_hijack", "T1546.015"
-    ),
-    r"HKLM\SOFTWARE\Classes\CLSID": (
-        "com_hijack", "T1546.015"
-    ),
+    r"HKLM\SOFTWARE\Classes\*\shellex\ContextMenuHandlers": ("com_hijack", "T1546.015"),
+    r"HKLM\SOFTWARE\Classes\CLSID": ("com_hijack", "T1546.015"),
     # WMI persistence
-    r"HKLM\SOFTWARE\Microsoft\WBEM\ESS": (
-        "wmi_event_subscription", "T1546.003"
-    ),
+    r"HKLM\SOFTWARE\Microsoft\WBEM\ESS": ("wmi_event_subscription", "T1546.003"),
     # Scheduled tasks
-    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache": (
-        "scheduled_task", "T1053.005"
-    ),
+    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache": ("scheduled_task", "T1053.005"),
     # AppInit DLLs
-    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows\AppInit_DLLs": (
-        "appinit_dlls", "T1546.010"
-    ),
+    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows\AppInit_DLLs": ("appinit_dlls", "T1546.010"),
     # Image File Execution Options
-    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options": (
-        "ifeo_debugger", "T1546.012"
-    ),
+    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options": ("ifeo_debugger", "T1546.012"),
 }
 
 # ============================================================================
@@ -77,9 +51,7 @@ MACOS_PERSISTENCE_PATHS: dict[str, tuple[str, str]] = {
     "~/Library/LaunchAgents/": ("launch_agent", "T1543.001"),
     "/Library/LaunchAgents/": ("launch_agent", "T1543.001"),
     "/Library/LaunchDaemons/": ("launch_daemon", "T1543.004"),
-    "~/Library/Application Support/com.apple.backgroundtaskmanagementagent/": (
-        "launch_agent", "T1543.001"
-    ),
+    "~/Library/Application Support/com.apple.backgroundtaskmanagementagent/": ("launch_agent", "T1543.001"),
     "/Library/StartupItems/": ("startup_items", "T1543.004"),
     "/etc/periodic/": ("periodic_script", "T1053.003"),
     "~/Library/Preferences/": ("login_items", "T1547.015"),
@@ -168,8 +140,7 @@ def _check_registry_persistence(event: RegistryActivity) -> PersistenceResult | 
                 severity="HIGH",
                 mitre_technique=technique,
                 description=(
-                    f"Process {process_name} wrote to {ptype} "
-                    f"({_MITRE_NAMES.get(technique, technique)}): {reg_path}"
+                    f"Process {process_name} wrote to {ptype} ({_MITRE_NAMES.get(technique, technique)}): {reg_path}"
                 ),
             )
     return None
@@ -230,8 +201,7 @@ def check_persistence_for_path(
                 severity="HIGH",
                 mitre_technique=technique,
                 description=(
-                    f"Process {process_name} wrote to {ptype} "
-                    f"({_MITRE_NAMES.get(technique, technique)}): {file_path}"
+                    f"Process {process_name} wrote to {ptype} ({_MITRE_NAMES.get(technique, technique)}): {file_path}"
                 ),
             )
     return None
@@ -255,8 +225,7 @@ def check_persistence_for_registry(
                 severity="HIGH",
                 mitre_technique=technique,
                 description=(
-                    f"Process {process_name} wrote to {ptype} "
-                    f"({_MITRE_NAMES.get(technique, technique)}): {reg_path}"
+                    f"Process {process_name} wrote to {ptype} ({_MITRE_NAMES.get(technique, technique)}): {reg_path}"
                 ),
             )
     return None
@@ -282,8 +251,7 @@ def _match_file_paths(
                 severity="HIGH",
                 mitre_technique=technique,
                 description=(
-                    f"Process {process_name} wrote to {ptype} "
-                    f"({_MITRE_NAMES.get(technique, technique)}): {file_path}"
+                    f"Process {process_name} wrote to {ptype} ({_MITRE_NAMES.get(technique, technique)}): {file_path}"
                 ),
             )
     return None

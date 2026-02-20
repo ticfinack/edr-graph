@@ -55,9 +55,13 @@ def build_intel_prompt(tools: list[dict] | None = None) -> str:
 
 
 _ROLE_SECTION = """\
-You are an expert security analyst performing endpoint detection and response (EDR) \
-analysis. You are examining OCSF-normalized events and their graph relationships \
-from a live endpoint.
+You are an elite Incident Responder. Analyze this event chain using the \
+Diamond Model of Intrusion Analysis. In your description field, you MUST \
+explicitly break down the threat into four vertices: \
+1. ADVERSARY (Intent/Actor type), \
+2. INFRASTRUCTURE (IPs/Domains/C2 used), \
+3. CAPABILITY (Tools/MITRE ATT&CK techniques observed, e.g., osascript, caffeinate), \
+4. VICTIM (The target host/process).
 
 Your analysis MUST be grounded in the threat intelligence provided below. \
 Do not hallucinate findings — only flag behavior that violates known-good baselines \
@@ -66,9 +70,7 @@ or matches known-bad indicators."""
 
 def _format_hierarchy(platform_name: str, rules: dict[str, dict]) -> str:
     lines = [f"## PROCESS HIERARCHY RULES — {platform_name} (SANS 'Know Normal')"]
-    lines.append(
-        "If a process violates these parent-child rules, it is HIGHLY suspicious.\n"
-    )
+    lines.append("If a process violates these parent-child rules, it is HIGHLY suspicious.\n")
 
     for proc, info in rules.items():
         parents = info.get("expected_parents", [])
@@ -107,10 +109,7 @@ def _format_gtfobins() -> str:
     dangerous = {
         name: funcs
         for name, funcs in sorted(GTFOBINS_BINARIES.items())
-        if any(
-            f in funcs
-            for f in ("shell", "reverse-shell", "file-upload", "suid", "sudo")
-        )
+        if any(f in funcs for f in ("shell", "reverse-shell", "file-upload", "suid", "sudo"))
     }
     for name, funcs in dangerous.items():
         lines.append(f"- **{name}**: {', '.join(funcs)}")
@@ -118,18 +117,14 @@ def _format_gtfobins() -> str:
     if len(GTFOBINS_BINARIES) > len(dangerous):
         remaining = len(GTFOBINS_BINARIES) - len(dangerous)
         lines.append(
-            f"\n({remaining} additional binaries with file-read/file-write/download "
-            f"capabilities also tracked)"
+            f"\n({remaining} additional binaries with file-read/file-write/download capabilities also tracked)"
         )
     return "\n".join(lines)
 
 
 def _format_loobins() -> str:
     lines = ["## LOOBins (macOS Living Off the Orchard)"]
-    lines.append(
-        "macOS-native binaries that attackers abuse. Pay special attention to "
-        "these on macOS endpoints.\n"
-    )
+    lines.append("macOS-native binaries that attackers abuse. Pay special attention to these on macOS endpoints.\n")
     for name, info in sorted(LOOBINS_BINARIES.items()):
         funcs = ", ".join(info.get("functions", []))
         desc = info.get("desc", "")
@@ -184,8 +179,7 @@ def _format_tool_instructions(tools: list[dict]) -> str:
     active_tier4 = [n for n in tool_names if n in tier4_names]
     if active_tier4:
         tier4_section = (
-            "\n\n### Local Investigation Tools\n"
-            "You also have safe, read-only tools for inspecting the local host:\n"
+            "\n\n### Local Investigation Tools\nYou also have safe, read-only tools for inspecting the local host:\n"
         )
         if "file_info" in active_tier4:
             tier4_section += (
@@ -251,8 +245,7 @@ def _format_tool_instructions(tools: list[dict]) -> str:
         "- If multiple events reference the same IP, only look it up once.\n"
         "- You have up to 5 rounds of tool calls. Use them.\n"
         "- A finding that says 'investigate this IP' without having called "
-        "`ip_geolocation` on it is INCOMPLETE. Do the investigation yourself."
-        + tier4_section
+        "`ip_geolocation` on it is INCOMPLETE. Do the investigation yourself." + tier4_section
     )
 
 

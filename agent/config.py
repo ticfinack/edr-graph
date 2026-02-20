@@ -24,12 +24,8 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 class Settings(BaseModel):
     """Application settings, overridable via environment variables or config file."""
 
-    data_dir: Path = Field(
-        default_factory=lambda: Path(os.environ.get("EDR_DATA_DIR", "./edr_data"))
-    )
-    deepinfra_api_key: str = Field(
-        default_factory=lambda: os.environ.get("DEEPINFRA_API_KEY", "")
-    )
+    data_dir: Path = Field(default_factory=lambda: Path(os.environ.get("EDR_DATA_DIR", "./edr_data")))
+    deepinfra_api_key: str = Field(default_factory=lambda: os.environ.get("DEEPINFRA_API_KEY", ""))
     deepinfra_model: str = "google/gemma-3-27b-it"
     deepinfra_base_url: str = "https://api.deepinfra.com/v1/openai"
 
@@ -74,9 +70,7 @@ class Settings(BaseModel):
         default_factory=lambda: Path(
             os.environ.get(
                 "EDR_QUARANTINE_DIR",
-                "C:\\ProgramData\\edr-graph\\quarantine"
-                if os.name == "nt"
-                else "/var/edr-graph/quarantine",
+                "C:\\ProgramData\\edr-graph\\quarantine" if os.name == "nt" else "/var/edr-graph/quarantine",
             )
         )
     )
@@ -85,12 +79,15 @@ class Settings(BaseModel):
     watchdog_enabled: bool = True
     heartbeat_interval: float = 10.0  # seconds
     heartbeat_dir: Path = Field(
-        default_factory=lambda: Path(
-            os.environ.get("EDR_HEARTBEAT_DIR", "/tmp/edr-heartbeats")
-        )
+        default_factory=lambda: Path(os.environ.get("EDR_HEARTBEAT_DIR", "/tmp/edr-heartbeats"))
     )
     tamper_check_enabled: bool = True
     tamper_check_interval: float = 60.0  # seconds
+
+    baseline_graph_gating: bool = True  # Filter baselined edges from graph in non-learning modes
+
+    graph_max_memory_mb: int = 512  # KùzuDB buffer pool size limit
+    graph_ttl_hours: int = 24  # Delete graph edges older than this
 
     novel_edge_threshold: int = 5
     graph_context_limit: int = 20
@@ -119,27 +116,21 @@ class Settings(BaseModel):
     # Tool-use settings
     tool_use_enabled: bool = True
     tool_use_max_iterations: int = 5
-    abuseipdb_api_key: str = Field(
-        default_factory=lambda: os.environ.get("ABUSEIPDB_API_KEY", "")
-    )
-    virustotal_api_key: str = Field(
-        default_factory=lambda: os.environ.get("VIRUSTOTAL_API_KEY", "")
-    )
+    abuseipdb_api_key: str = Field(default_factory=lambda: os.environ.get("ABUSEIPDB_API_KEY", ""))
+    virustotal_api_key: str = Field(default_factory=lambda: os.environ.get("VIRUSTOTAL_API_KEY", ""))
 
     # Fleet forwarding settings
     fleet_enabled: bool = False
     fleet_url: str = ""  # Central server address, e.g. "fleet.example.com:50051"
-    fleet_agent_id: str = Field(
-        default_factory=lambda: os.environ.get("EDR_AGENT_ID", "")
-    )
-    fleet_ca_cert: str = ""       # Path to CA certificate for mTLS
-    fleet_client_cert: str = ""   # Path to client certificate
-    fleet_client_key: str = ""    # Path to client private key
-    fleet_forward_interval: float = 10.0   # Seconds between forwarding cycles
-    fleet_forward_events: bool = False     # Forward raw OCSF events (high volume)
+    fleet_agent_id: str = Field(default_factory=lambda: os.environ.get("EDR_AGENT_ID", ""))
+    fleet_ca_cert: str = ""  # Path to CA certificate for mTLS
+    fleet_client_cert: str = ""  # Path to client certificate
+    fleet_client_key: str = ""  # Path to client private key
+    fleet_forward_interval: float = 10.0  # Seconds between forwarding cycles
+    fleet_forward_events: bool = False  # Forward raw OCSF events (high volume)
     fleet_heartbeat_interval: float = 30.0  # Seconds between heartbeats
-    fleet_queue_max_size: int = 10000      # Max items buffered in forwarding queue
-    fleet_retry_max: int = 5               # Max retries per queued item
+    fleet_queue_max_size: int = 10000  # Max items buffered in forwarding queue
+    fleet_retry_max: int = 5  # Max retries per queued item
 
     @property
     def db_path(self) -> Path:
@@ -169,6 +160,7 @@ _YAML_KEY_MAP: dict[tuple[str, ...], str] = {
     ("analysis", "dga", "score_threshold"): "dga_score_threshold",
     ("analysis", "dga", "allowlist"): "dga_allowlist",
     ("response", "mode"): "response_mode",
+    ("response", "baseline_graph_gating"): "baseline_graph_gating",
     ("response", "auto_respond"): "auto_respond",
     ("response", "auto_terminate"): "auto_terminate",
     ("response", "quarantine_dir"): "quarantine_dir",
@@ -202,6 +194,8 @@ _YAML_KEY_MAP: dict[tuple[str, ...], str] = {
     ("fleet", "heartbeat_interval"): "fleet_heartbeat_interval",
     ("fleet", "queue_max_size"): "fleet_queue_max_size",
     ("fleet", "retry_max"): "fleet_retry_max",
+    ("graph", "max_memory_mb"): "graph_max_memory_mb",
+    ("graph", "ttl_hours"): "graph_ttl_hours",
 }
 
 
@@ -340,6 +334,10 @@ tray:
   notification_cooldown_seconds: 60
   notify_on_high: true
   notify_on_critical: true
+
+graph:
+  max_memory_mb: 512          # KùzuDB buffer pool size limit (MB)
+  ttl_hours: 24               # Delete graph edges older than this (hours)
 
 fleet:
   enabled: false              # Enable fleet forwarding to central server

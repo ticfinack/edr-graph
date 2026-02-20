@@ -56,9 +56,13 @@ DEFAULT_EXCLUDED_PATHS = [
 ]
 
 # Default excluded extensions
-DEFAULT_EXCLUDED_EXTENSIONS = frozenset({
-    ".log", ".tmp", ".cache",
-})
+DEFAULT_EXCLUDED_EXTENSIONS = frozenset(
+    {
+        ".log",
+        ".tmp",
+        ".cache",
+    }
+)
 
 # Always excluded filenames
 _ALWAYS_EXCLUDED = frozenset({".DS_Store"})
@@ -132,9 +136,7 @@ class _FSEventsHandler(FileSystemEventHandler):
             # Evict stale entries periodically
             if len(self._recent) > 5000:
                 cutoff = now - _DEDUP_WINDOW * 2
-                self._recent = {
-                    k: v for k, v in self._recent.items() if v > cutoff
-                }
+                self._recent = {k: v for k, v in self._recent.items() if v > cutoff}
 
         raw = RawEvent(
             timestamp=datetime.now(UTC),
@@ -157,7 +159,8 @@ class _FSEventsHandler(FileSystemEventHandler):
         now = time.monotonic()
         with self._recent_lock:
             return {
-                k for k, v in self._recent.items()
+                k
+                for k, v in self._recent.items()
                 if (now - v) < 15.0  # wider window for poller dedup
             }
 
@@ -203,9 +206,7 @@ class MacOSFSEventsCollector(Collector):
         for path in self._watched_paths:
             expanded = os.path.expanduser(path)
             if os.path.isdir(expanded):
-                self._observer.schedule(
-                    self._handler, expanded, recursive=True
-                )
+                self._observer.schedule(self._handler, expanded, recursive=True)
                 logger.debug("FSEvents watching: %s", expanded)
             else:
                 logger.debug("FSEvents skipping non-existent path: %s", expanded)

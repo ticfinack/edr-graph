@@ -71,9 +71,7 @@ class AuditdCollector(Collector):
         if self._thread is not None:
             return
         self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._consume, daemon=True, name="auditd-consumer"
-        )
+        self._thread = threading.Thread(target=self._consume, daemon=True, name="auditd-consumer")
         self._thread.start()
 
     def stop(self) -> None:
@@ -115,9 +113,7 @@ class AuditdCollector(Collector):
                         break
                     raise
         except PermissionError:
-            logger.warning(
-                "Auditd collector requires root or CAP_AUDIT_READ — disabled"
-            )
+            logger.warning("Auditd collector requires root or CAP_AUDIT_READ — disabled")
         except OSError as e:
             logger.debug("Auditd netlink error: %s", e)
         except Exception:
@@ -148,7 +144,7 @@ class AuditdCollector(Collector):
             if msg_len < _NLMSG_HDR.size or offset + msg_len > len(data):
                 break
 
-            payload = data[offset + _NLMSG_HDR.size: offset + msg_len]
+            payload = data[offset + _NLMSG_HDR.size : offset + msg_len]
             self._handle_audit_message(msg_type, payload)
 
             # Align to 4-byte boundary

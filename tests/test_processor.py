@@ -96,6 +96,7 @@ class TestEntityExtraction:
         assert entities.ips[0].id == "10.0.0.1"
 
     def test_process_without_actor(self):
+        """Without an OCSF actor, psutil fallback may still resolve the user."""
         event = ProcessActivity(
             activity_id=1,
             severity_id=1,
@@ -110,5 +111,5 @@ class TestEntityExtraction:
         entities = extract_entities(event, event_id=5)
 
         assert len(entities.processes) == 1
-        assert len(entities.users) == 0
-        assert len(entities.spawned_edges) == 0
+        # psutil fallback enriches live PIDs with their OS user
+        assert len(entities.users) == len(entities.spawned_edges)

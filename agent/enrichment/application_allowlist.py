@@ -218,9 +218,7 @@ BUILTIN_ALLOWLIST: list[AllowlistEntry] = [
 _BUNDLE_INDEX: dict[str, AllowlistEntry] = {e.bundle_id: e for e in BUILTIN_ALLOWLIST}
 
 # Index by process name (lowercase) for fallback
-_NAME_INDEX: dict[str, AllowlistEntry] = {
-    e.app_name.lower(): e for e in BUILTIN_ALLOWLIST
-}
+_NAME_INDEX: dict[str, AllowlistEntry] = {e.app_name.lower(): e for e in BUILTIN_ALLOWLIST}
 
 
 def _rebuild_indexes(entries: list[AllowlistEntry]) -> None:
@@ -239,12 +237,14 @@ def load_custom_entries(custom_entries: list[dict]) -> None:
         try:
             patterns = []
             for p in entry_dict.get("expected_network", []):
-                patterns.append(NetworkPattern(
-                    pattern_type=p.get("pattern_type", "domain"),
-                    value=p.get("value", ""),
-                    ports=p.get("ports", []),
-                    description=p.get("description", ""),
-                ))
+                patterns.append(
+                    NetworkPattern(
+                        pattern_type=p.get("pattern_type", "domain"),
+                        value=p.get("value", ""),
+                        ports=p.get("ports", []),
+                        description=p.get("description", ""),
+                    )
+                )
             entry = AllowlistEntry(
                 bundle_id=entry_dict.get("bundle_id", ""),
                 app_name=entry_dict.get("app_name", ""),
@@ -309,10 +309,7 @@ def check_allowlist(
             result.is_allowed = True
             result.matched_entry = entry
             result.matched_pattern = pattern
-            result.explanation = (
-                f"Allowed: {entry.app_name} — {pattern.description} "
-                f"(confidence: {confidence})"
-            )
+            result.explanation = f"Allowed: {entry.app_name} — {pattern.description} (confidence: {confidence})"
             result.risk_reduction = f"Known {entry.category} application: {entry.app_name}"
             return result
 

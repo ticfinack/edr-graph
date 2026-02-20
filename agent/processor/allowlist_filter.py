@@ -47,33 +47,23 @@ def filter_entities(entities: ExtractedEntities, rules: list[dict]) -> int:
     if matched_proc_ids:
         # Remove edges referencing matched processes
         before = len(entities.spawned_edges)
-        entities.spawned_edges = [
-            e for e in entities.spawned_edges if e["process_id"] not in matched_proc_ids
-        ]
+        entities.spawned_edges = [e for e in entities.spawned_edges if e["process_id"] not in matched_proc_ids]
         removed += before - len(entities.spawned_edges)
 
         before = len(entities.connected_edges)
-        entities.connected_edges = [
-            e for e in entities.connected_edges if e["process_id"] not in matched_proc_ids
-        ]
+        entities.connected_edges = [e for e in entities.connected_edges if e["process_id"] not in matched_proc_ids]
         removed += before - len(entities.connected_edges)
 
         before = len(entities.resolved_edges)
-        entities.resolved_edges = [
-            e for e in entities.resolved_edges if e["process_id"] not in matched_proc_ids
-        ]
+        entities.resolved_edges = [e for e in entities.resolved_edges if e["process_id"] not in matched_proc_ids]
         removed += before - len(entities.resolved_edges)
 
         before = len(entities.file_edges)
-        entities.file_edges = [
-            e for e in entities.file_edges if e["process_id"] not in matched_proc_ids
-        ]
+        entities.file_edges = [e for e in entities.file_edges if e["process_id"] not in matched_proc_ids]
         removed += before - len(entities.file_edges)
 
         before = len(entities.registry_edges)
-        entities.registry_edges = [
-            e for e in entities.registry_edges if e["process_id"] not in matched_proc_ids
-        ]
+        entities.registry_edges = [e for e in entities.registry_edges if e["process_id"] not in matched_proc_ids]
         removed += before - len(entities.registry_edges)
 
     # --- IPs ---
@@ -90,15 +80,11 @@ def filter_entities(entities: ExtractedEntities, rules: list[dict]) -> int:
 
     if matched_ip_ids:
         before = len(entities.connected_edges)
-        entities.connected_edges = [
-            e for e in entities.connected_edges if e["ip_id"] not in matched_ip_ids
-        ]
+        entities.connected_edges = [e for e in entities.connected_edges if e["ip_id"] not in matched_ip_ids]
         removed += before - len(entities.connected_edges)
 
         before = len(entities.resolves_to_edges)
-        entities.resolves_to_edges = [
-            e for e in entities.resolves_to_edges if e["ip_id"] not in matched_ip_ids
-        ]
+        entities.resolves_to_edges = [e for e in entities.resolves_to_edges if e["ip_id"] not in matched_ip_ids]
         removed += before - len(entities.resolves_to_edges)
 
     # --- Domains ---
@@ -115,15 +101,11 @@ def filter_entities(entities: ExtractedEntities, rules: list[dict]) -> int:
 
     if matched_domain_ids:
         before = len(entities.resolved_edges)
-        entities.resolved_edges = [
-            e for e in entities.resolved_edges if e["domain_id"] not in matched_domain_ids
-        ]
+        entities.resolved_edges = [e for e in entities.resolved_edges if e["domain_id"] not in matched_domain_ids]
         removed += before - len(entities.resolved_edges)
 
         before = len(entities.resolves_to_edges)
-        entities.resolves_to_edges = [
-            e for e in entities.resolves_to_edges if e["domain_id"] not in matched_domain_ids
-        ]
+        entities.resolves_to_edges = [e for e in entities.resolves_to_edges if e["domain_id"] not in matched_domain_ids]
         removed += before - len(entities.resolves_to_edges)
 
     # --- Files ---
@@ -140,9 +122,7 @@ def filter_entities(entities: ExtractedEntities, rules: list[dict]) -> int:
 
     if matched_file_ids:
         before = len(entities.file_edges)
-        entities.file_edges = [
-            e for e in entities.file_edges if e["file_id"] not in matched_file_ids
-        ]
+        entities.file_edges = [e for e in entities.file_edges if e["file_id"] not in matched_file_ids]
         removed += before - len(entities.file_edges)
 
     # --- Orphaned users ---
