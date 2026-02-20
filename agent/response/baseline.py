@@ -13,6 +13,8 @@ import fnmatch
 import ipaddress
 import logging
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -248,6 +250,14 @@ class ResponseAllowlist:
         "chain_pattern",
     }
 
+    GRAPH_FILTERABLE_TYPES = {
+        "process_name",
+        "dst_ip",
+        "dst_cidr",
+        "domain",
+        "file_path",
+    }
+
     def __init__(self, db_path: Path) -> None:
         self._db_path = str(db_path)
         self._migrated = False
@@ -266,6 +276,8 @@ class ResponseAllowlist:
             self._migrated = True
         return conn
 
+    MAX_PATTERN_LENGTH = 500
+
     def add_rule(self, rule_type: str, pattern: str, description: str = "", chain_filter: str = "") -> int:
         """Add an allowlist rule. Returns rule ID.
 
@@ -275,6 +287,10 @@ class ResponseAllowlist:
         """
         if rule_type not in self.VALID_RULE_TYPES:
             raise ValueError(f"Invalid rule_type: {rule_type}")
+        if len(pattern) > self.MAX_PATTERN_LENGTH:
+            raise ValueError(f"Pattern too long (max {self.MAX_PATTERN_LENGTH} chars)")
+        if chain_filter and len(chain_filter) > self.MAX_PATTERN_LENGTH:
+            raise ValueError(f"Chain filter too long (max {self.MAX_PATTERN_LENGTH} chars)")
         conn = self._conn()
         try:
             cur = conn.execute(
@@ -342,6 +358,63 @@ class ResponseAllowlist:
             return [dict(r) for r in rows]
         finally:
             conn.close()
+
+    def get_graph_filterable_rules(self) -> list[dict]:
+        """Return rules whose type can be applied at the graph-insertion stage.
+
+        Excludes rules with a chain_filter (chain context is unavailable
+        pre-LLM) and rule types that only make sense in the response engine
+        (finding_title, chain_pattern).
+        """
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM response_allowlist ORDER BY id"
+            ).fetchall()
+            return [
+                dict(r)
+                for r in rows
+                if r["rule_type"] in self.GRAPH_FILTERABLE_TYPES
+                and not r["chain_filter"]
+            ]
+        finally:
+            conn.close()
+
+
+class AllowlistRuleCache:
+    """Thread-safe cache of graph-filterable allowlist rules.
+
+    Refreshes from SQLite at most every ``refresh_interval`` seconds to
+    avoid hammering the database on every event batch.
+    """
+
+    def __init__(
+        self,
+        allowlist: ResponseAllowlist,
+        refresh_interval: float = 5.0,
+    ) -> None:
+        self._allowlist = allowlist
+        self._refresh_interval = refresh_interval
+        self._lock = threading.Lock()
+        self._rules: list[dict] = []
+        self._last_refresh: float = 0.0
+        self._invalidated = True  # force initial load
+
+    def get_rules(self) -> list[dict]:
+        """Return cached graph-filterable rules, refreshing if stale."""
+        now = time.monotonic()
+        if self._invalidated or (now - self._last_refresh >= self._refresh_interval):
+            with self._lock:
+                # Double-check after acquiring lock
+                if self._invalidated or (now - self._last_refresh >= self._refresh_interval):
+                    self._rules = self._allowlist.get_graph_filterable_rules()
+                    self._last_refresh = now
+                    self._invalidated = False
+        return self._rules
+
+    def invalidate(self) -> None:
+        """Force a refresh on the next ``get_rules()`` call."""
+        self._invalidated = True
 
 
 class ResponseBlocklist:

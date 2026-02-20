@@ -732,6 +732,8 @@ async def get_allowlist():
 @app.post("/api/response/allowlist")
 async def add_allowlist_rule(body: dict):
     """Add an allowlist rule."""
+    from agent.response.baseline import ResponseAllowlist
+
     allowlist = _state.get("allowlist")
     if allowlist is None:
         raise HTTPException(503, "Allowlist not initialized")
@@ -745,9 +747,30 @@ async def add_allowlist_rule(body: dict):
         rule_id = allowlist.add_rule(rule_type, pattern, description, chain_filter=chain_filter)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
-    except Exception as e:
-        raise HTTPException(500, f"Database error: {e}") from e
-    return {"status": "ok", "rule_id": rule_id}
+    except Exception:
+        logger.exception("Failed to add allowlist rule")
+        raise HTTPException(500, "Failed to add allowlist rule")
+
+    # Retroactive graph purge for graph-filterable rule types
+    graph_purged = 0
+    if (
+        rule_type in ResponseAllowlist.GRAPH_FILTERABLE_TYPES
+        and not chain_filter
+    ):
+        try:
+            from agent.graph.cleanup import purge_by_rule
+
+            conn = _get_conn()
+            graph_purged = purge_by_rule(conn, rule_type, pattern)
+        except Exception:
+            logger.warning("Graph purge failed for rule %s/%s", rule_type, pattern, exc_info=True)
+
+    # Invalidate the processor's allowlist rule cache
+    allowlist_cache = _state.get("allowlist_cache")
+    if allowlist_cache is not None:
+        allowlist_cache.invalidate()
+
+    return {"status": "ok", "rule_id": rule_id, "graph_purged": graph_purged}
 
 
 @app.delete("/api/response/allowlist/{rule_id}")
@@ -786,8 +809,9 @@ async def add_blocklist_rule(body: dict):
         rule_id = blocklist.add_rule(rule_type, pattern, description, chain_filter=chain_filter)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
-    except Exception as e:
-        raise HTTPException(500, f"Database error: {e}") from e
+    except Exception:
+        logger.exception("Failed to add blocklist rule")
+        raise HTTPException(500, "Failed to add blocklist rule")
     return {"status": "ok", "rule_id": rule_id}
 
 
@@ -974,6 +998,7 @@ def init_dashboard(
     baseline=None,
     allowlist=None,
     blocklist=None,
+    allowlist_cache=None,
 ) -> None:
     """Initialize dashboard state. Called once from main.py."""
     _state["queue"] = queue
@@ -986,6 +1011,7 @@ def init_dashboard(
     _state["baseline"] = baseline
     _state["allowlist"] = allowlist
     _state["blocklist"] = blocklist
+    _state["allowlist_cache"] = allowlist_cache
 
 
 def start_dashboard_server(port: int = 9200) -> threading.Thread:

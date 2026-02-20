@@ -34,6 +34,11 @@ llm_verdicts = Counter(
     ["severity"],
 )
 
+events_allowlist_filtered = Counter(
+    "edr_events_allowlist_filtered_total",
+    "Entities filtered by allowlist before graph insertion",
+)
+
 dga_detections_total = Counter(
     "edr_dga_detections_total",
     "Total DGA candidate domain detections",

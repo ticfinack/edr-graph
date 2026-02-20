@@ -30,7 +30,7 @@ from agent.processor.entity_extractor import extract_entities
 from agent.processor.graph_builder import GraphBuilder
 from agent.queue.sqlite_queue import SqliteQueue
 from agent.response.actions import ResponsePolicy
-from agent.response.baseline import BehaviorBaseline, ResponseAllowlist, ResponseBlocklist
+from agent.response.baseline import AllowlistRuleCache, BehaviorBaseline, ResponseAllowlist, ResponseBlocklist
 from agent.response.engine import ResponseAuditLog, ResponseEngine
 from agent.schema.kuzu_schema import init_graph_schema
 from agent.watchdog import write_heartbeat
@@ -95,8 +95,11 @@ def processor_thread(
     queue: SqliteQueue,
     kuzu_db: kuzu.Database,
     ioc_db=None,
+    allowlist_cache: AllowlistRuleCache | None = None,
 ) -> None:
     """Process queued events: normalize, extract entities, write to graph."""
+    from agent.processor.allowlist_filter import filter_entities, has_entities
+
     builder = GraphBuilder(kuzu_db)
     _last_prune = time.monotonic()
     _PRUNE_INTERVAL = 300.0  # Run retention pruning every 5 minutes
@@ -157,6 +160,13 @@ def processor_thread(
                                 e for e in entities.file_edges
                                 if e["operation"] != "READ"
                             ]
+                        # Pre-graph allowlist filter
+                        if allowlist_cache:
+                            al_removed = filter_entities(entities, allowlist_cache.get_rules())
+                            if al_removed:
+                                metrics.events_allowlist_filtered.inc(al_removed)
+                            if not has_entities(entities):
+                                continue
                         entity_batch.append(entities)
                         metrics.events_processed_total.labels(
                             source=raw.source,
@@ -739,6 +749,7 @@ def main() -> None:
     audit_log = ResponseAuditLog(response_conn)
     baseline = BehaviorBaseline(settings.db_path)
     allowlist = ResponseAllowlist(settings.db_path)
+    allowlist_cache = AllowlistRuleCache(allowlist)
     blocklist = ResponseBlocklist(settings.db_path)
     response_engine = ResponseEngine(
         policy=policy,
@@ -826,7 +837,7 @@ def main() -> None:
 
     t = threading.Thread(
         target=processor_thread,
-        args=(settings, queue, kuzu_db, ioc_db),
+        args=(settings, queue, kuzu_db, ioc_db, allowlist_cache),
         daemon=True,
         name="processor",
     )
@@ -890,6 +901,7 @@ def main() -> None:
                 baseline=baseline,
                 allowlist=allowlist,
                 blocklist=blocklist,
+                allowlist_cache=allowlist_cache,
             )
             start_dashboard_server(port=settings.dashboard_port)
             logger.info("Dashboard server started on http://127.0.0.1:%d", settings.dashboard_port)
