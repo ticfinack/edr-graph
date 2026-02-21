@@ -5,8 +5,8 @@ After=network.target auditd.service
 Wants=network.target
 
 [Service]
-Type=notify
-ExecStart=/usr/local/bin/edr-graph --no-dashboard --log-format json
+Type=simple
+ExecStart=/opt/edr-graph/.venv/bin/edr-graph --log-format json
 ExecReload=/bin/kill -HUP $MAINPID
 
 # Run as root — BPF requires the bpf() syscall which needs root
@@ -16,9 +16,6 @@ Group=root
 # Auto-restart on any failure
 Restart=always
 RestartSec=5
-
-# Watchdog: systemd kills and restarts if no heartbeat within 30s
-WatchdogSec=30
 
 # Resource limits
 LimitNOFILE=65536
