@@ -107,6 +107,12 @@ async def get_status():
             if sample.name == "edr_events_dropped_total":
                 events_dropped += int(sample.value)
 
+    events_fast_blocked = 0
+    for metric in metrics.events_fast_blocked.collect():
+        for sample in metric.samples:
+            if sample.name == "edr_events_fast_blocked_total":
+                events_fast_blocked += int(sample.value)
+
     return {
         "agent_status": "paused" if _state["paused"] else "running",
         "uptime_seconds": round(uptime, 1),
@@ -115,6 +121,7 @@ async def get_status():
         "events_dropped": events_dropped,
         "events_per_second": round(events_processed / max(uptime, 1), 1),
         "queue_depth": queue.count_unprocessed(),
+        "events_fast_blocked": events_fast_blocked,
     }
 
 
@@ -882,6 +889,10 @@ async def add_blocklist_rule(body: dict):
     except Exception:
         logger.exception("Failed to add blocklist rule")
         raise HTTPException(500, "Failed to add blocklist rule") from None
+    # Invalidate fast-path blocklist enforcer cache
+    fb = _state.get("fast_blocklist")
+    if fb:
+        fb.invalidate()
     return {"status": "ok", "rule_id": rule_id}
 
 
@@ -893,6 +904,10 @@ async def delete_blocklist_rule(rule_id: int):
         raise HTTPException(503, "Blocklist not initialized")
     if not blocklist.remove_rule(rule_id):
         raise HTTPException(404, "Rule not found")
+    # Invalidate fast-path blocklist enforcer cache
+    fb = _state.get("fast_blocklist")
+    if fb:
+        fb.invalidate()
     return {"status": "ok"}
 
 

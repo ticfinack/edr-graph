@@ -890,7 +890,7 @@ async function approveAction(id, action) {
 
 // ── Settings ───────────────────────────────────────────────────
 async function refreshSettings() {
-  const [data, iocStats, modeData, baselineStats, allowlistData, blocklistData, netStatus] = await Promise.all([
+  const [data, iocStats, modeData, baselineStats, allowlistData, blocklistData, netStatus, statusData] = await Promise.all([
     api('/api/settings'),
     api('/api/intel/ioc-stats'),
     api('/api/response/mode'),
@@ -898,6 +898,7 @@ async function refreshSettings() {
     api('/api/response/allowlist'),
     api('/api/response/blocklist'),
     api('/api/response/network-status'),
+    api('/api/status'),
   ]);
   if (!data || Object.keys(data).length === 0) { document.getElementById('settings-content').innerHTML = '<div class="empty-state">Settings not available</div>'; return; }
   const groups = {
@@ -939,6 +940,9 @@ async function refreshSettings() {
   }
   if (allowlistData && allowlistData.rules) {
     html += '<div style="color:var(--dim);font-size:13px;margin-top:4px">Allowlist: <strong style="color:var(--text)">' + allowlistData.rules.length + '</strong> rules</div>';
+  }
+  if (statusData && statusData.events_fast_blocked > 0) {
+    html += '<div style="color:var(--dim);font-size:13px;margin-top:4px">Fast-blocked: <strong style="color:var(--critical)">' + fmtNum(statusData.events_fast_blocked) + '</strong> events</div>';
   }
   html += '<div style="margin-top:8px"><button class="btn btn-danger" style="font-size:11px" onclick="clearBaseline()">Clear Baseline</button></div>';
   html += '</div></div>';

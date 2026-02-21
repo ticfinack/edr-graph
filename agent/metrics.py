@@ -49,6 +49,11 @@ edges_baseline_gated = Counter(
     "Edges filtered by baseline gating before graph insertion",
 )
 
+events_fast_blocked = Counter(
+    "edr_events_fast_blocked_total",
+    "Events blocked by synchronous fast-path blocklist enforcer",
+)
+
 dga_detections_total = Counter(
     "edr_dga_detections_total",
     "Total DGA candidate domain detections",

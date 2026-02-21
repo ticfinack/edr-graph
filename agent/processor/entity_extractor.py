@@ -46,6 +46,7 @@ def _ensure_identity_import():
 _ppid_cache: dict[int, int] = {}  # pid -> parent_pid, populated once per PID
 _create_time_cache: dict[int, float] = {}  # pid -> create_time epoch, populated once per PID
 _username_cache: dict[int, str] = {}  # pid -> username (empty string = unresolvable)
+_name_cache: dict[int, str] = {}  # pid -> process_name, for fast-path enforcer chain building
 
 
 def _resolve_start_time(pid: int, fallback: datetime) -> datetime:
@@ -79,6 +80,7 @@ def _resolve_start_time(pid: int, fallback: datetime) -> datetime:
             # Also invalidate ppid cache on PID reuse
             if cached is not None and cached > 0 and abs(cached - ct) >= 1.0:
                 _ppid_cache.pop(pid, None)
+                _name_cache.pop(pid, None)
             return datetime.fromtimestamp(ct)
     except Exception:
         pass
@@ -101,6 +103,9 @@ def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
     if pid > 0 and not proc_node.parent_pid:
         if pid in _ppid_cache:
             proc_node.parent_pid = _ppid_cache[pid]
+            # Ensure name cache is populated even on cache-hit path
+            if pid not in _name_cache and proc_node.name:
+                _name_cache[pid] = proc_node.name
         else:
             try:
                 import psutil
@@ -110,6 +115,8 @@ def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
                 if ppid and ppid > 0:
                     proc_node.parent_pid = ppid
                     _ppid_cache[pid] = ppid
+                if proc_node.name:
+                    _name_cache[pid] = proc_node.name
                 # Also fill in cmd_line and exe_path if missing
                 if not proc_node.cmd_line:
                     try:
@@ -123,6 +130,16 @@ def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
                         proc_node.exe_path = p.exe()
             except Exception:
                 _ppid_cache[pid] = 0  # Don't retry for dead processes
+                if proc_node.name:
+                    _name_cache[pid] = proc_node.name
+
+    # Always populate caches for fast-path chain building, even when parent_pid
+    # was already set by the normalizer (e.g. from PsutilCollector ppid field).
+    if pid > 0:
+        if proc_node.parent_pid and pid not in _ppid_cache:
+            _ppid_cache[pid] = proc_node.parent_pid
+        if proc_node.name and pid not in _name_cache:
+            _name_cache[pid] = proc_node.name
 
     _ensure_identity_import()
     if not _get_process_identity or not proc_node.exe_path:
@@ -153,6 +170,9 @@ def _extract_user_for_process(
     if actor_user:
         user_name = actor_user.name
         user_uid = actor_user.uid
+        # Populate cache for fast-path chain building
+        if user_name and pid > 0 and pid not in _username_cache:
+            _username_cache[pid] = user_name
 
     # Tier 2: psutil fallback
     if not user_name and pid > 0:

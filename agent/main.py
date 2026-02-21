@@ -105,6 +105,8 @@ def processor_thread(
     ioc_db=None,
     allowlist_cache: AllowlistRuleCache | None = None,
     baseline_gate: BaselineGateCache | None = None,
+    response_engine: ResponseEngine | None = None,
+    blocklist: ResponseBlocklist | None = None,
 ) -> None:
     """Process queued events: normalize, extract entities, write to graph."""
     from agent.processor.allowlist_filter import filter_entities, has_entities
@@ -127,6 +129,22 @@ def processor_thread(
             logger.info("Port mapper initialized (refresh every %.0fs)", settings.port_mapper_refresh_interval)
         except Exception:
             logger.debug("Port mapper not available", exc_info=True)
+
+    # Initialize synchronous fast-path blocklist enforcer
+    fast_blocklist = None
+    if blocklist is not None:
+        from agent.processor.synchronous_enforcer import FastBlocklist
+
+        fast_blocklist = FastBlocklist(blocklist)
+        logger.info("Fast-path blocklist enforcer initialized")
+
+    # Store in dashboard state for invalidation from API endpoints
+    try:
+        from agent.dashboard import server as dashboard_server
+
+        dashboard_server._state["fast_blocklist"] = fast_blocklist
+    except Exception:
+        pass
 
     logger.info("Started processor thread")
 
@@ -174,6 +192,20 @@ def processor_thread(
                             metrics.events_self_filtered.inc(self_removed)
                         if not has_entities(entities):
                             continue
+                        # ── Synchronous fast-path enforcement ──
+                        if fast_blocklist and response_engine:
+                            hit = fast_blocklist.evaluate(entities, ocsf, event_id)
+                            if hit:
+                                finding, match_desc = hit
+                                queue.store_finding(finding)
+                                _push_finding_notification(finding)
+                                try:
+                                    _trigger_response(response_engine, finding, [(event_id, ocsf)])
+                                except Exception:
+                                    logger.exception("Fast-path response failed for event %d", event_id)
+                                metrics.events_fast_blocked.inc()
+                                event_ids.append(event_id)
+                                continue  # Skip graph insertion and LLM pipeline
                         # Gate file READ edges behind config flag
                         if not settings.file_read_tracking:
                             entities.file_edges = [e for e in entities.file_edges if e["operation"] != "READ"]
@@ -900,7 +932,7 @@ def main() -> None:
 
     t = threading.Thread(
         target=processor_thread,
-        args=(settings, queue, kuzu_db, ioc_db, allowlist_cache, baseline_gate),
+        args=(settings, queue, kuzu_db, ioc_db, allowlist_cache, baseline_gate, response_engine, blocklist),
         daemon=True,
         name="processor",
     )

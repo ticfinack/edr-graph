@@ -19,11 +19,11 @@ Built from scratch as a single-developer project. Combines real-time telemetry c
 │                                                                              │
 │  ┌─────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐  │
 │  │  Collectors  │──▶│  Normalizer  │──▶│  Processor   │──▶│  Graph DB    │  │
-│  │  (per-OS)   │   │  (OCSF)      │   │  (entities)  │   │  (Kuzu)      │  │
-│  └─────────────┘   └──────────────┘   └──────────────┘   └──────┬───────┘  │
-│        │                                                         │          │
-│        ▼                                                         ▼          │
-│  ┌─────────────┐   ┌──────────────────────────────────────────────────────┐ │
+│  │  (per-OS)   │   │  (OCSF)      │   │  (entities + │   │  (Kuzu)      │  │
+│  └─────────────┘   └──────────────┘   │   fast-path)  │   └──────┬───────┘  │
+│        │                               └──────┬───────┘          │          │
+│        ▼                                      │ (blocked)        ▼          │
+│  ┌─────────────┐   ┌──────────────────────────┼───────────────────────────┐ │
 │  │  SQLite     │   │                 LLM Analyzer                         │ │
 │  │  Queue      │   │  ┌──────────┐  ┌───────────┐  ┌──────────────────┐  │ │
 │  │  + Findings │   │  │ Preflight│─▶│ Tool-Use  │─▶│ Finding Builder  │  │ │
@@ -39,7 +39,7 @@ Built from scratch as a single-developer project. Combines real-time telemetry c
 │                                          │                                  │
 │                                          ▼                                  │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │                      Response Engine                                  │  │
+│  │                      Response Engine  ◀── fast-path (skip LLM)        │  │
 │  │  Severity ──▶ Baseline/Allow/Block ──▶ Approval ──▶ Execute ──▶ Audit │  │
 │  │                                                                       │  │
 │  │  Actions: Suspend │ Terminate │ Isolate Network │ Block IP            │  │
@@ -57,7 +57,7 @@ Built from scratch as a single-developer project. Combines real-time telemetry c
 
 1. **Collect** — Platform-native collectors gather process, network, file, DNS, and registry events
 2. **Normalize** — Raw events are standardized to OCSF (Open Cybersecurity Schema Framework)
-3. **Extract & Graph** — Entities (processes, IPs, domains, files) and relationships are written to a Kuzu property graph
+3. **Extract & Enforce** — Entities are extracted and checked against the synchronous fast-path blocklist. Matches are blocked instantly. Non-blocked entities are written to the Kuzu property graph
 4. **Analyze** — An LLM with tool-use capabilities investigates novel behaviors using graph context, threat intel, and external APIs
 5. **Respond** — A policy engine maps severity to actions, checks baselines/allowlists, requests approval, executes, and audits everything
 
@@ -162,6 +162,21 @@ A three-mode response engine that maps LLM severity verdicts to automated or sup
 4. **Policy** — map severity to response actions, check protected process list, request approval
 
 **Protected process list** prevents the agent from terminating system-critical processes (`launchd`, `csrss.exe`, `systemd`, `sshd`, etc.) regardless of severity.
+
+### Synchronous Fast-Path Blocklist (EPP)
+
+The fast-path enforcer evaluates blocklist rules **synchronously in the processor pipeline**, immediately after entity extraction — before the event reaches the graph database or LLM analyzer.
+
+**How it works:**
+
+- Blocklist rules are compiled into O(1) in-memory structures: IP hash sets, domain hash sets, CIDR prefix lists, and glob pattern lists
+- On every event, entities are checked in evaluation order: **IPs → CIDRs → domains → process names → file paths → chain patterns**
+- On match: a CRITICAL finding is generated and the response engine is triggered immediately, **skipping both the graph write and LLM analysis**
+- The compiled rule set is thread-safe with periodic SQLite refresh (5s default) and instant invalidation when rules are added or removed via the dashboard
+
+**Why it matters:** Known-bad indicators (C2 IPs, malicious domains, prohibited process chains) are blocked in sub-millisecond time — no waiting for the LLM analysis cycle. This turns the EDR from a detect-and-alert system into a real-time enforcement point for known threats.
+
+The dashboard shows a **fast-blocked event counter** on the Overview tab when events have been blocked by this path.
 
 ### User Identity Enrichment
 
@@ -283,6 +298,7 @@ edr_llm_call_latency_seconds
 edr_llm_verdicts_total{severity}
 edr_dga_detections_total
 edr_persistence_detections_total{type}
+edr_events_fast_blocked_total
 edr_response_actions_total{action, result}
 edr_tamper_detections_total{event_type}
 edr_agent_uptime_seconds
@@ -311,7 +327,13 @@ macOS system tray icon provides live status, native notifications for HIGH/CRITI
 │  IOC matching │    │  Severity verdict + findings     │    │  Approval gate   │
 │  Code signing │    │                                  │    │  Action executor │
 └──────────────┘    └──────────────────────────────────┘    │  Audit trail     │
-                                                            └──────────────────┘
+                                                            └────────▲─────────┘
+                                                                     │
+┌───────────────────────────────────────────────────────────────┐    │
+│  Fast-Path Blocklist Enforcer (in Processor)                  │────┘
+│  IPs → CIDRs → domains → process names → file paths → chains │
+│  O(1) compiled in-memory structures, sub-ms evaluation        │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **Defense-in-depth layers:**
@@ -319,11 +341,12 @@ macOS system tray icon provides live status, native notifications for HIGH/CRITI
 1. **Collection** — Native OS APIs for high-fidelity telemetry (ETW, auditd, FSEvents, Unified Log)
 2. **Normalization** — OCSF standardization ensures consistent analysis regardless of platform
 3. **Graph Correlation** — Entity relationships reveal multi-step attack patterns invisible in flat logs
-4. **Real-Time Detection** — DGA, persistence, and IOC detectors catch known patterns immediately
-5. **AI Reasoning** — LLM analyzes novel behaviors with graph context and external intelligence
-6. **Response Orchestration** — Graduated actions (log → alert → suspend → terminate → isolate) with approval gates
-7. **Behavioral Baseline** — Learning mode builds a profile of normal behavior; active mode only responds to deviations
-8. **Self-Protection** — Tamper detection, protected process list, heartbeat monitoring
+4. **Real-Time Detection** — DGA, persistence, IOC, and fast-path blocklist detectors catch known patterns immediately
+5. **Fast-Path Enforcement** — Synchronous blocklist evaluates IPs, domains, CIDRs, process names, file paths, and chain patterns in the processor hot loop — blocking known threats instantly without LLM analysis
+6. **AI Reasoning** — LLM analyzes novel behaviors with graph context and external intelligence
+7. **Response Orchestration** — Graduated actions (log → alert → suspend → terminate → isolate) with approval gates
+8. **Behavioral Baseline** — Learning mode builds a profile of normal behavior; active mode only responds to deviations
+9. **Self-Protection** — Tamper detection, protected process list, heartbeat monitoring
 
 ---
 
@@ -341,7 +364,7 @@ macOS system tray icon provides live status, native notifications for HIGH/CRITI
 | Process Info | psutil |
 | macOS Tray | rumps |
 | Logging | structlog (JSON/text) |
-| Testing | pytest (~500 tests) |
+| Testing | pytest (~550 tests) |
 
 ---
 
@@ -360,7 +383,72 @@ export DEEPINFRA_API_KEY="your-key-here"
 sudo .venv/bin/python3 -m agent.main --config config.yaml --log-level INFO
 ```
 
-Dashboard opens at `http://localhost:9200`. The agent starts in **learning mode** by default — switch to **active** mode via the Settings tab when ready to enforce response actions.
+Dashboard opens at `http://localhost:9200`. The agent starts in **passive** mode by default — switch to **learning** to build a behavioral baseline, then **active** to enforce.
+
+---
+
+## Usage Guide
+
+### Response Modes
+
+The agent operates in one of three modes, switchable at runtime via the dashboard **Settings** tab or the API:
+
+| Mode | What happens on a threat | When to use |
+|------|-------------------------|-------------|
+| **Learning** | Records all observed behaviors to a baseline. No alerts, no enforcement. | First deployment — build a profile of normal activity before enabling detection. |
+| **Passive** | Generates findings and alerts (dashboard + tray notifications). No enforcement actions. | Day-to-day monitoring when you want visibility without automated response. |
+| **Active** | Evaluates findings against blocklist → allowlist → baseline → policy, then executes response actions (suspend, terminate, isolate, etc.) with approval gates. | Production enforcement — the agent actively responds to threats. |
+
+### Recommended Workflow
+
+1. **Start in Learning mode** — Let the agent observe normal behavior and build a baseline.
+   - **Development machines**: 24 hours is usually sufficient
+   - **Servers / production hosts**: 1–7 days to capture periodic jobs, maintenance windows, and varied workloads
+2. **Switch to Passive mode** — Review findings in the dashboard. Add allowlist rules for known-good behaviors that generate false positives. Add blocklist rules for known-bad indicators you want blocked immediately.
+3. **Switch to Active mode** — The agent now enforces. Baselined behaviors are silently passed, allowlisted behaviors are skipped, blocklisted behaviors are blocked instantly (via the fast-path enforcer), and novel threats go through the LLM → policy → approval → action pipeline.
+
+### Switching Modes
+
+**Dashboard:** Settings tab → Response Mode dropdown → select mode.
+
+**API:**
+```bash
+curl -X POST http://localhost:9200/api/response/mode \
+  -H 'Content-Type: application/json' \
+  -d '{"mode": "active"}'
+```
+
+### Adding Blocklist / Allowlist Rules
+
+**Dashboard:** Settings tab → scroll to Blocklist or Allowlist section → fill in rule type, pattern, and optional chain filter → Add.
+
+**API:**
+```bash
+# Block a specific IP
+curl -X POST http://localhost:9200/api/response/blocklist \
+  -H 'Content-Type: application/json' \
+  -d '{"rule_type": "dst_ip", "pattern": "203.0.113.50", "description": "Known C2 server"}'
+
+# Block a process chain pattern
+curl -X POST http://localhost:9200/api/response/blocklist \
+  -H 'Content-Type: application/json' \
+  -d '{"rule_type": "chain_pattern", "pattern": "** > curl > sh", "description": "Pipe curl to shell"}'
+
+# Allowlist a known-good connection with chain scope
+curl -X POST http://localhost:9200/api/response/allowlist \
+  -H 'Content-Type: application/json' \
+  -d '{"rule_type": "dst_ip", "pattern": "18.97.36.79", "chain_filter": "launchd > Claude", "description": "Claude → Anthropic API"}'
+```
+
+Rule types: `dst_ip`, `dst_cidr`, `domain`, `process_name`, `file_path`, `chain_pattern`. See [Chain-Aware Allow/Block Rules](#chain-aware-allowblock-rules) for the full chain pattern syntax.
+
+### What Happens When a Threat Is Detected
+
+| Stage | Learning | Passive | Active |
+|-------|----------|---------|--------|
+| Fast-path blocklist match | Skipped | Alert only | **Block immediately** — CRITICAL finding + response action |
+| LLM severity verdict | Recorded to baseline | Finding + alert | Finding → blocklist → allowlist → baseline → policy → approval → action |
+| Response action execution | Never | Never | Executes (with approval gate for destructive actions unless `auto_respond` is enabled) |
 
 ---
 
@@ -374,7 +462,7 @@ edr-graph/
 │   ├── collectors/             # 10+ platform-native event sources
 │   ├── normalizer/             # OCSF normalization (6 event types)
 │   ├── schema/                 # Kuzu DDL, SQLite DDL, OCSF types
-│   ├── processor/              # Entity extraction → graph writes
+│   ├── processor/              # Entity extraction, fast-path enforcement → graph writes
 │   ├── graph/                  # Attack chain queries
 │   ├── analyzer/               # LLM tool-use analyzer + preflight
 │   ├── analysis/               # Lightweight detectors (DGA, persistence)
@@ -384,7 +472,7 @@ edr-graph/
 │   ├── dashboard/              # FastAPI server + SPA frontend
 │   ├── platform/               # Tamper detection, Windows service
 │   └── tray/                   # macOS menu bar integration
-├── tests/                      # 40 test modules, ~500 tests
+├── tests/                      # 42 test modules, ~550 tests
 ├── config.yaml                 # Runtime configuration
 └── README.md
 ```
