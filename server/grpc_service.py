@@ -74,6 +74,7 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
             )
 
         info = request.agent_info
+        grpc_peer_ip = _extract_peer_ip(context)
         agent_data = {
             "agent_id": info.agent_id,
             "hostname": info.hostname,
@@ -81,7 +82,10 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
             "os_version": info.os_version,
             "agent_version": info.agent_version,
             "registered_at": info.registered_at,
-            "ip_address": info.ip_address or _extract_peer_ip(context),
+            "ip_address": info.ip_address or grpc_peer_ip,
+            "ip_addresses": list(info.ip_addresses) if info.ip_addresses else [],
+            "public_ip": info.public_ip or "",
+            "grpc_peer_ip": grpc_peer_ip,
         }
 
         try:
@@ -144,12 +148,16 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
         )
 
     def Heartbeat(self, request, context):
-        """Update agent heartbeat in Neo4j, including clock offset."""
+        """Update agent heartbeat in Neo4j, including clock offset and IPs."""
         try:
+            ip_addresses = list(request.ip_addresses) if request.ip_addresses else None
+            public_ip = request.public_ip or None
             self._neo4j.update_heartbeat(
                 request.agent_id,
                 request.timestamp,
                 clock_offset_ms=request.clock_offset_ms,
+                ip_addresses=ip_addresses,
+                public_ip=public_ip,
             )
             return fleet_pb2.HeartbeatResponse(acknowledged=True, message="ok")
         except Exception:

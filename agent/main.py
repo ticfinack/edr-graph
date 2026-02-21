@@ -896,7 +896,7 @@ def main() -> None:
         tamper_checker.start()
         logger.info("Tamper detection started (%d files baselined)", len(tamper_checker.baseline))
 
-    # Initialize IOC feed database
+    # Initialize IOC feed database (download in background to avoid blocking startup)
     ioc_db = None
     if settings.ioc_feeds_enabled:
         try:
@@ -906,7 +906,15 @@ def main() -> None:
                 refresh_interval_hours=settings.ioc_feeds_refresh_hours,
                 exclusion_patterns=settings.ioc_exclusion_patterns,
             )
-            ioc_db.download_feeds()
+
+            def _download_feeds_bg():
+                try:
+                    ioc_db.download_feeds()
+                except Exception:
+                    logger.warning("Failed to download IOC feeds", exc_info=True)
+
+            t = threading.Thread(target=_download_feeds_bg, daemon=True, name="ioc-download")
+            t.start()
         except Exception:
             logger.warning("Failed to initialize IOC feed database", exc_info=True)
 
@@ -1016,7 +1024,11 @@ def main() -> None:
                 start_dashboard_server,
             )
 
-            collector_names = []
+            # Collector thread may have already populated _state["collector_names"]
+            # before init_dashboard runs, so read the current value to avoid clobbering.
+            from agent.dashboard.server import _state as _ds
+
+            collector_names = _ds.get("collector_names", [])
 
             init_dashboard(
                 queue=queue,

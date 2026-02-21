@@ -45,12 +45,21 @@ class Neo4jClient:
             h.os_version = $os_version,
             h.agent_version = $agent_version,
             h.ip_address = $ip_address,
+            h.ip_addresses = $ip_addresses,
+            h.public_ip = $public_ip,
+            h.grpc_peer_ip = $grpc_peer_ip,
             h.registered_at = $registered_at,
             h.last_seen = $registered_at
         """
-        # Ensure ip_address is present (may come from AgentInfo or gRPC peer)
+        # Ensure required fields are present
         if "ip_address" not in agent_info:
             agent_info["ip_address"] = ""
+        if "ip_addresses" not in agent_info:
+            agent_info["ip_addresses"] = []
+        if "public_ip" not in agent_info:
+            agent_info["public_ip"] = ""
+        if "grpc_peer_ip" not in agent_info:
+            agent_info["grpc_peer_ip"] = ""
         with self._driver.session() as session:
             session.run(query, agent_info)
             if registration_key:
@@ -64,22 +73,37 @@ class Neo4jClient:
                 )
         logger.info("Registered agent %s (%s)", agent_info["agent_id"], agent_info["hostname"])
 
-    def update_heartbeat(self, agent_id: str, timestamp: int, clock_offset_ms: int = 0) -> None:
-        """Update Host.last_seen and clock_offset_ms."""
-        query = """
-        MATCH (h:Host {agent_id: $agent_id})
-        SET h.last_seen = $timestamp,
-            h.clock_offset_ms = $clock_offset_ms
+    def update_heartbeat(
+        self,
+        agent_id: str,
+        timestamp: int,
+        clock_offset_ms: int = 0,
+        ip_addresses: list[str] | None = None,
+        public_ip: str | None = None,
+    ) -> None:
+        """Update Host.last_seen, clock_offset_ms, and optionally IPs."""
+        # Build SET clauses dynamically to avoid overwriting with None from old agents
+        set_clauses = "SET h.last_seen = $timestamp, h.clock_offset_ms = $clock_offset_ms"
+        params: dict = {
+            "agent_id": agent_id,
+            "timestamp": timestamp,
+            "clock_offset_ms": clock_offset_ms,
+        }
+        if ip_addresses is not None:
+            set_clauses += ", h.ip_addresses = $ip_addresses"
+            params["ip_addresses"] = ip_addresses
+        if public_ip is not None:
+            set_clauses += ", h.public_ip = $public_ip"
+            params["public_ip"] = public_ip
+
+        # Safety: set_clauses is built entirely from trusted literals above
+        # (never from user input). All values are passed as $parameters.
+        query = f"""
+        MATCH (h:Host {{agent_id: $agent_id}})
+        {set_clauses}
         """
         with self._driver.session() as session:
-            session.run(
-                query,
-                {
-                    "agent_id": agent_id,
-                    "timestamp": timestamp,
-                    "clock_offset_ms": clock_offset_ms,
-                },
-            )
+            session.run(query, params)
 
     # ── Finding ingestion ──
 
@@ -428,6 +452,9 @@ class Neo4jClient:
                h.os_version AS os_version,
                h.agent_version AS agent_version,
                h.ip_address AS ip_address,
+               h.ip_addresses AS ip_addresses,
+               h.public_ip AS public_ip,
+               h.grpc_peer_ip AS grpc_peer_ip,
                h.registered_at AS registered_at,
                h.last_seen AS last_seen,
                h.clock_offset_ms AS clock_offset_ms,
@@ -502,6 +529,9 @@ class Neo4jClient:
                h.platform AS platform,
                h.agent_version AS agent_version,
                h.ip_address AS ip_address,
+               h.ip_addresses AS ip_addresses,
+               h.public_ip AS public_ip,
+               h.grpc_peer_ip AS grpc_peer_ip,
                h.last_seen AS last_seen,
                h.clock_offset_ms AS clock_offset_ms,
                count(f) AS finding_count
@@ -519,6 +549,9 @@ class Neo4jClient:
                         "platform": record["platform"],
                         "agent_version": record["agent_version"],
                         "ip_address": record["ip_address"],
+                        "ip_addresses": record["ip_addresses"] or [],
+                        "public_ip": record["public_ip"] or "",
+                        "grpc_peer_ip": record["grpc_peer_ip"] or "",
                         "last_seen": last_seen,
                         "clock_offset_ms": record["clock_offset_ms"],
                         "finding_count": record["finding_count"],

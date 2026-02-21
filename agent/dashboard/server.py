@@ -113,6 +113,24 @@ def get_status():
             if sample.name == "edr_events_fast_blocked_total":
                 events_fast_blocked += int(sample.value)
 
+    ioc_db = _state.get("ioc_db")
+    ioc_status = None
+    if ioc_db is not None:
+        st = ioc_db.stats()
+        total = st["ip_count"] + st["domain_count"] + st["hash_count"]
+        ioc_status = {
+            "loaded": total > 0,
+            "total_indicators": total,
+            "ip_count": st["ip_count"],
+            "domain_count": st["domain_count"],
+            "hash_count": st["hash_count"],
+            "last_refresh": st["last_refresh"],
+            "downloading": st.get("downloading", False),
+            "download_progress": st.get("download_progress", ""),
+            "feeds_done": st.get("feeds_done", 0),
+            "feeds_total": st.get("feeds_total", 0),
+        }
+
     return {
         "agent_status": "paused" if _state["paused"] else "running",
         "uptime_seconds": round(uptime, 1),
@@ -122,6 +140,7 @@ def get_status():
         "events_per_second": round(events_processed / max(uptime, 1), 1),
         "queue_depth": queue.count_unprocessed(),
         "events_fast_blocked": events_fast_blocked,
+        "threat_feeds": ioc_status,
     }
 
 

@@ -7,7 +7,7 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 DESCRIPTOR: _descriptor.FileDescriptor
 
 class AgentInfo(_message.Message):
-    __slots__ = ("agent_id", "hostname", "platform", "os_version", "agent_version", "ip_address", "registered_at")
+    __slots__ = ("agent_id", "hostname", "platform", "os_version", "agent_version", "ip_address", "registered_at", "ip_addresses", "public_ip")
     AGENT_ID_FIELD_NUMBER: _ClassVar[int]
     HOSTNAME_FIELD_NUMBER: _ClassVar[int]
     PLATFORM_FIELD_NUMBER: _ClassVar[int]
@@ -15,6 +15,8 @@ class AgentInfo(_message.Message):
     AGENT_VERSION_FIELD_NUMBER: _ClassVar[int]
     IP_ADDRESS_FIELD_NUMBER: _ClassVar[int]
     REGISTERED_AT_FIELD_NUMBER: _ClassVar[int]
+    IP_ADDRESSES_FIELD_NUMBER: _ClassVar[int]
+    PUBLIC_IP_FIELD_NUMBER: _ClassVar[int]
     agent_id: str
     hostname: str
     platform: str
@@ -22,7 +24,9 @@ class AgentInfo(_message.Message):
     agent_version: str
     ip_address: str
     registered_at: int
-    def __init__(self, agent_id: _Optional[str] = ..., hostname: _Optional[str] = ..., platform: _Optional[str] = ..., os_version: _Optional[str] = ..., agent_version: _Optional[str] = ..., ip_address: _Optional[str] = ..., registered_at: _Optional[int] = ...) -> None: ...
+    ip_addresses: _containers.RepeatedScalarFieldContainer[str]
+    public_ip: str
+    def __init__(self, agent_id: _Optional[str] = ..., hostname: _Optional[str] = ..., platform: _Optional[str] = ..., os_version: _Optional[str] = ..., agent_version: _Optional[str] = ..., ip_address: _Optional[str] = ..., registered_at: _Optional[int] = ..., ip_addresses: _Optional[_Iterable[str]] = ..., public_ip: _Optional[str] = ...) -> None: ...
 
 class ChainStep(_message.Message):
     __slots__ = ("entity_type", "entity_id", "entity_name", "pid", "timestamp")
@@ -123,20 +127,24 @@ class SendEventsResponse(_message.Message):
     def __init__(self, accepted_count: _Optional[int] = ..., message: _Optional[str] = ...) -> None: ...
 
 class HeartbeatRequest(_message.Message):
-    __slots__ = ("agent_id", "timestamp", "queue_depth", "findings_count", "status", "clock_offset_ms")
+    __slots__ = ("agent_id", "timestamp", "queue_depth", "findings_count", "status", "clock_offset_ms", "ip_addresses", "public_ip")
     AGENT_ID_FIELD_NUMBER: _ClassVar[int]
     TIMESTAMP_FIELD_NUMBER: _ClassVar[int]
     QUEUE_DEPTH_FIELD_NUMBER: _ClassVar[int]
     FINDINGS_COUNT_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     CLOCK_OFFSET_MS_FIELD_NUMBER: _ClassVar[int]
+    IP_ADDRESSES_FIELD_NUMBER: _ClassVar[int]
+    PUBLIC_IP_FIELD_NUMBER: _ClassVar[int]
     agent_id: str
     timestamp: int
     queue_depth: int
     findings_count: int
     status: str
     clock_offset_ms: int
-    def __init__(self, agent_id: _Optional[str] = ..., timestamp: _Optional[int] = ..., queue_depth: _Optional[int] = ..., findings_count: _Optional[int] = ..., status: _Optional[str] = ..., clock_offset_ms: _Optional[int] = ...) -> None: ...
+    ip_addresses: _containers.RepeatedScalarFieldContainer[str]
+    public_ip: str
+    def __init__(self, agent_id: _Optional[str] = ..., timestamp: _Optional[int] = ..., queue_depth: _Optional[int] = ..., findings_count: _Optional[int] = ..., status: _Optional[str] = ..., clock_offset_ms: _Optional[int] = ..., ip_addresses: _Optional[_Iterable[str]] = ..., public_ip: _Optional[str] = ...) -> None: ...
 
 class HeartbeatResponse(_message.Message):
     __slots__ = ("acknowledged", "message")

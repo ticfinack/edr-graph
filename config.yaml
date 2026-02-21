@@ -43,7 +43,7 @@ metrics:
   port: 9100
 
 dashboard:
-  port: 8080
+  port: 9200
   refresh_interval: 5.0
 
 graph:
@@ -53,6 +53,7 @@ graph:
 fleet:
   enabled: false              # Enable fleet forwarding to central server
   url: ""                     # Central server gRPC address (host:port)
+  # registration_key: ""      # Set via config or EDR_REGISTRATION_KEY env var
   # agent_id: ""              # Auto-generated UUID if empty
   # ca_cert: ""               # Path to CA certificate for mTLS
   # client_cert: ""           # Path to client certificate

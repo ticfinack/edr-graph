@@ -120,6 +120,8 @@ svg .edge-arrow{fill:var(--dim)}
 .rule-info{display:flex;gap:8px;align-items:center}
 .rule-type-badge{display:inline-block;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:500;background:rgba(59,130,246,0.15);color:var(--accent);font-family:"SF Mono",Menlo,monospace}
 .net-item{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)}
+.spinner-sm{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -347,14 +349,24 @@ async function refreshOverview() {
   const iocStats = await api('/api/intel/ioc-stats');
   const iocEl = document.getElementById('ov-ioc-stats');
   if (iocStats && iocStats.enabled) {
-    const refreshAgo = iocStats.last_refresh ? fmtAgo(iocStats.last_refresh) : 'never';
-    iocEl.innerHTML =
-      '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:8px">' +
-      '<div><div style="font-size:20px;font-weight:600">' + fmtNum(iocStats.ip_count||0) + '</div><div style="color:var(--dim);font-size:11px">IPs</div></div>' +
-      '<div><div style="font-size:20px;font-weight:600">' + fmtNum(iocStats.domain_count||0) + '</div><div style="color:var(--dim);font-size:11px">Domains</div></div>' +
-      '<div><div style="font-size:20px;font-weight:600">' + fmtNum(iocStats.hash_count||0) + '</div><div style="color:var(--dim);font-size:11px">Hashes</div></div>' +
-      '</div>' +
-      '<div style="color:var(--dim);font-size:11px;margin-top:8px">Last refresh: ' + refreshAgo + '</div>';
+    if (!iocStats.last_refresh && (iocStats.ip_count||0) === 0) {
+      let feedMsg = 'Downloading threat feeds...';
+      if (iocStats.download_progress) {
+        feedMsg = 'Downloading ' + iocStats.download_progress + '... (' + (iocStats.feeds_done||0) + '/' + (iocStats.feeds_total||8) + ')';
+      }
+      iocEl.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-top:8px">' +
+        '<div class="spinner-sm"></div>' +
+        '<span style="color:var(--medium)">' + feedMsg + '</span></div>';
+    } else {
+      const refreshAgo = iocStats.last_refresh ? fmtAgo(iocStats.last_refresh) : 'never';
+      iocEl.innerHTML =
+        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:8px">' +
+        '<div><div style="font-size:20px;font-weight:600">' + fmtNum(iocStats.ip_count||0) + '</div><div style="color:var(--dim);font-size:11px">IPs</div></div>' +
+        '<div><div style="font-size:20px;font-weight:600">' + fmtNum(iocStats.domain_count||0) + '</div><div style="color:var(--dim);font-size:11px">Domains</div></div>' +
+        '<div><div style="font-size:20px;font-weight:600">' + fmtNum(iocStats.hash_count||0) + '</div><div style="color:var(--dim);font-size:11px">Hashes</div></div>' +
+        '</div>' +
+        '<div style="color:var(--dim);font-size:11px;margin-top:8px">Last refresh: ' + refreshAgo + '</div>';
+    }
   } else {
     iocEl.innerHTML = '<span style="color:var(--dim)">IOC feeds disabled</span>';
   }
