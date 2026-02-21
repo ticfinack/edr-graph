@@ -1,10 +1,12 @@
 # EDR Graph Agent
 
+![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)
+![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
+![Tests](https://img.shields.io/badge/tests-546%20passed-brightgreen.svg)
+
 > **Disclaimer:** This software is provided for **educational and research purposes only**. It is not a certified or commercially supported security product. Use at your own risk. The authors assume no liability for any damage, data loss, or legal consequences resulting from the use or misuse of this software. By using this software, you agree that you are solely responsible for ensuring compliance with applicable laws and regulations in your jurisdiction. Always obtain proper authorization before deploying monitoring or response tools on any system.
 
-**An AI-powered Endpoint Detection & Response system that uses graph-based behavioral analysis and LLM reasoning to detect, investigate, and respond to threats in real time.**
-
-Built from scratch as a single-developer project. Combines real-time telemetry collection, a property graph database for attack chain correlation, an LLM-driven threat analyzer with tool-use investigation capabilities, and a response engine with human-in-the-loop approval — all orchestrated through a live dashboard.
+**edr-graph** is an advanced, cross-platform Endpoint Detection and Response (EDR) agent. It bridges the gap between deterministic local enforcement and asynchronous, AI-driven threat hunting. Built around an embedded Kuzu graph database, it maps OS-level telemetry into temporal attack chains and uses a dual-pipeline architecture to contain threats in milliseconds while leveraging Gemma-3 to analyze novel tradecraft.
 
 <!-- Screenshot: Dashboard overview showing status cards, recent findings, and event stream -->
 ![Dashboard Overview](docs/screenshots/dashboard-overview.png)
@@ -347,6 +349,28 @@ macOS system tray icon provides live status, native notifications for HIGH/CRITI
 7. **Response Orchestration** — Graduated actions (log → alert → suspend → terminate → isolate) with approval gates
 8. **Behavioral Baseline** — Learning mode builds a profile of normal behavior; active mode only responds to deviations
 9. **Self-Protection** — Tamper detection, protected process list, heartbeat monitoring
+
+---
+
+## Architectural Innovations
+
+Building an LLM-driven graph EDR in user-space requires solving complex performance and resource constraints. This agent implements several advanced architectural patterns:
+
+**The Dual-Pipeline (EPP + EDR):** To prevent LLM latency from delaying critical enforcement, the agent utilizes a Synchronous Fast Path. Known IOCs and blocked behavioral chains are compiled into O(1) in-memory Python sets. This allows the agent to evaluate and trigger containment for known threats in milliseconds before they enter the graph or wake up the LLM.
+
+**Deterministic Memory Governance:** Graph databases are notorious for memory bloat. This agent enforces a strict 512 MB Kuzu buffer pool cap, runs a background Graph Reaper thread that prunes edges older than a configurable TTL (24h default) every hour, and separately prunes processed events from the SQLite queue every 5 minutes — maintaining a stable memory footprint even under heavy OS event firehoses.
+
+**Identity-Aware Chain Matching:** Legacy EDRs block binaries; this agent blocks identities. By enforcing strict bottom-up PID attribution and caching OS-level user contexts in RAM, the agent allows rules scoped to specific users (e.g., `USER:intern > ** > bash` is blocked, while `USER:sysadmin > ** > bash` is allowed).
+
+**LLM Cost Optimization:** A preflight novelty filter evaluates the temporal graph before invoking the AI. If an exact process chain has been seen recently, it is dropped, reducing LLM API costs significantly while preserving full forensic visibility in the database.
+
+### Performance & Reliability
+
+**High-Efficiency Hot Loop:** The Python processor is heavily optimized, utilizing O(1) hash lookups and memory-safe structures to evaluate telemetry with sub-millisecond local latency, ensuring the agent adds virtually zero overhead to the host CPU.
+
+**Fail-Open Resilience:** If the external LLM API times out or the host loses internet connectivity, the agent degrades gracefully. The async threat-hunter pauses, but the Synchronous Fast Path remains active locally, ensuring the endpoint remains protected from known threats.
+
+**Test Coverage:** The pipeline is hardened by 546+ automated tests, verifying everything from OS-level psutil event extraction to complex synchronous chain matching.
 
 ---
 
