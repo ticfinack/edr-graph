@@ -13,6 +13,10 @@ ExecReload=/bin/kill -HUP $MAINPID
 User=root
 Group=root
 
+# Shutdown: SIGTERM the main process, then SIGKILL any remaining threads after 15s
+KillMode=mixed
+TimeoutStopSec=15
+
 # Auto-restart on any failure
 Restart=always
 RestartSec=5
