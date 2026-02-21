@@ -5,37 +5,112 @@ from __future__ import annotations
 import contextlib
 import logging
 import time
+from typing import Generator
 
 import kuzu
 
 from agent import metrics
+from agent.graph.pid_index import get_pid_index
 
 logger = logging.getLogger(__name__)
 
+# ── PID-index-aware query helpers ─────────────────────────────────────────
+
+
+def _rows_for_pid(
+    conn: kuzu.Connection,
+    pid: int,
+    id_query: str,
+    pid_query: str,
+    extra_params: dict | None = None,
+) -> Generator[list, None, None]:
+    """Yield result rows for all Process nodes matching *pid*.
+
+    Uses the in-memory PID index for O(1) primary-key lookups when
+    available.  Falls back to the original ``{pid: $pid}`` property scan
+    (full table walk) when the index hasn't been built yet.
+
+    *id_query* must use ``{id: $id}`` as the Process matcher.
+    *pid_query* must use ``{pid: $pid}`` as the Process matcher.
+    """
+    index = get_pid_index()
+    params = extra_params or {}
+
+    if index.is_built:
+        node_ids = index.get_node_ids(pid)
+        for nid in node_ids:
+            result = conn.execute(id_query, {"id": nid, **params})
+            while result.has_next():
+                yield result.get_next()
+    else:
+        result = conn.execute(pid_query, {"pid": pid, **params})
+        while result.has_next():
+            yield result.get_next()
+
 
 def _query_process_fields(conn: kuzu.Connection, pid: int) -> dict | None:
-    """Fetch full fields for a process by PID."""
-    result = conn.execute(
-        "MATCH (p:Process {pid: $pid}) "
-        "RETURN p.id, p.name, p.pid, p.cmd_line, p.exe_path, p.hostname, "
-        "p.parent_pid, p.bundle_id, p.code_signed, p.signing_authority",
-        {"pid": pid},
+    """Fetch full fields for a process by PID.
+
+    Uses the PID index for O(1) primary-key lookup when available.
+    Evicts stale pointers when an indexed node_id no longer exists in Kuzu.
+    """
+    _FIELDS = (
+        "p.id, p.name, p.pid, p.cmd_line, p.exe_path, p.hostname, "
+        "p.parent_pid, p.bundle_id, p.code_signed, p.signing_authority"
     )
-    if not result.has_next():
+    index = get_pid_index()
+    if index.is_built:
+        node_ids = index.get_node_ids(pid)
+        stale: list[str] = []
+        for nid in node_ids:
+            result = conn.execute(
+                f"MATCH (p:Process {{id: $id}}) RETURN {_FIELDS}",
+                {"id": nid},
+            )
+            if result.has_next():
+                row = result.get_next()
+                # Evict any stale entries found before this hit
+                if stale:
+                    index.remove_nodes(stale)
+                return {
+                    "id": row[0],
+                    "name": row[1],
+                    "pid": row[2],
+                    "cmd_line": row[3],
+                    "exe_path": row[4],
+                    "hostname": row[5],
+                    "parent_pid": row[6],
+                    "bundle_id": row[7],
+                    "code_signed": row[8],
+                    "signing_authority": row[9],
+                }
+            else:
+                stale.append(nid)
+        # All entries were stale
+        if stale:
+            index.remove_nodes(stale)
         return None
-    row = result.get_next()
-    return {
-        "id": row[0],
-        "name": row[1],
-        "pid": row[2],
-        "cmd_line": row[3],
-        "exe_path": row[4],
-        "hostname": row[5],
-        "parent_pid": row[6],
-        "bundle_id": row[7],
-        "code_signed": row[8],
-        "signing_authority": row[9],
-    }
+    else:
+        # Fallback: full scan
+        result = conn.execute(
+            f"MATCH (p:Process {{pid: $pid}}) RETURN {_FIELDS}",
+            {"pid": pid},
+        )
+        if result.has_next():
+            row = result.get_next()
+            return {
+                "id": row[0],
+                "name": row[1],
+                "pid": row[2],
+                "cmd_line": row[3],
+                "exe_path": row[4],
+                "hostname": row[5],
+                "parent_pid": row[6],
+                "bundle_id": row[7],
+                "code_signed": row[8],
+                "signing_authority": row[9],
+            }
+        return None
 
 
 def get_process_chain(conn: kuzu.Connection, pid: int) -> list[dict]:
@@ -88,14 +163,56 @@ def get_process_chain(conn: kuzu.Connection, pid: int) -> list[dict]:
         return []
 
 
-def get_process_children(conn: kuzu.Connection, pid: int) -> list[dict]:
-    """Get direct child processes via parent_pid."""
+def get_process_children(conn: kuzu.Connection, pid: int, limit: int = 50) -> list[dict]:
+    """Get direct child processes via parent_pid.
+
+    Uses the PID index ``ppid → child_pids`` mapping for O(1) lookup,
+    then fetches each child by primary key.
+    """
+    _FIELDS = (
+        "p.id, p.name, p.pid, p.cmd_line, p.exe_path, p.hostname, "
+        "p.parent_pid, p.bundle_id, p.code_signed, p.signing_authority"
+    )
     try:
+        index = get_pid_index()
+        if index.is_built:
+            child_pids = index.get_children_pids(pid)[:limit]
+            children = []
+            stale: list[str] = []
+            for cpid in child_pids:
+                nid = index.get_latest_node_id(cpid)
+                if nid is None:
+                    continue
+                result = conn.execute(
+                    f"MATCH (p:Process {{id: $id}}) RETURN {_FIELDS}",
+                    {"id": nid},
+                )
+                if result.has_next():
+                    row = result.get_next()
+                    children.append(
+                        {
+                            "id": row[0],
+                            "name": row[1],
+                            "pid": row[2],
+                            "cmd_line": row[3],
+                            "exe_path": row[4],
+                            "hostname": row[5],
+                            "parent_pid": row[6],
+                            "bundle_id": row[7],
+                            "code_signed": row[8],
+                            "signing_authority": row[9],
+                        }
+                    )
+                else:
+                    stale.append(nid)
+            if stale:
+                index.remove_nodes(stale)
+            return children
+
+        # Fallback: full scan by parent_pid property
         result = conn.execute(
-            "MATCH (p:Process {parent_pid: $pid}) "
-            "RETURN p.id, p.name, p.pid, p.cmd_line, p.exe_path, p.hostname, "
-            "p.parent_pid, p.bundle_id, p.code_signed, p.signing_authority",
-            {"pid": pid},
+            f"MATCH (p:Process {{parent_pid: $pid}}) RETURN {_FIELDS} LIMIT $limit",
+            {"pid": pid, "limit": limit},
         )
         children = []
         while result.has_next():
@@ -121,33 +238,29 @@ def get_process_children(conn: kuzu.Connection, pid: int) -> list[dict]:
 
 
 def _get_pid_network(conn: kuzu.Connection, pid: int) -> list[dict]:
-    """Compact network info for all Process nodes sharing this PID.
-
-    Queries by PID rather than node ID to tolerate any historical duplicate
-    Process nodes that may exist from before the create-time cache fix.
-    """
+    """Compact network info for all Process nodes sharing this PID."""
     items = []
     try:
-        result = conn.execute(
-            "MATCH (p:Process {pid: $pid})-[c:CONNECTED_TO]->(ip:IP) RETURN ip.address, c.dst_port, c.protocol",
-            {"pid": pid},
-        )
         seen = set()
-        while result.has_next():
-            row = result.get_next()
+        for row in _rows_for_pid(
+            conn,
+            pid,
+            "MATCH (p:Process {id: $id})-[c:CONNECTED_TO]->(ip:IP) RETURN ip.address, c.dst_port, c.protocol",
+            "MATCH (p:Process {pid: $pid})-[c:CONNECTED_TO]->(ip:IP) RETURN ip.address, c.dst_port, c.protocol",
+        ):
             key = (row[0], row[1])
             if key not in seen:
                 seen.add(key)
                 items.append({"address": row[0], "port": row[1], "protocol": row[2]})
 
         # DNS (direct)
-        dns_result = conn.execute(
+        seen_domains: set[str] = set()
+        for row in _rows_for_pid(
+            conn,
+            pid,
+            "MATCH (p:Process {id: $id})-[:RESOLVED]->(d:Domain) RETURN d.name, d.is_dga_candidate",
             "MATCH (p:Process {pid: $pid})-[:RESOLVED]->(d:Domain) RETURN d.name, d.is_dga_candidate",
-            {"pid": pid},
-        )
-        seen_domains = set()
-        while dns_result.has_next():
-            row = dns_result.get_next()
+        ):
             if row[0] not in seen_domains:
                 seen_domains.add(row[0])
                 items.append({"domain": row[0], "is_dga": row[1]})
@@ -182,13 +295,14 @@ def _get_pid_files(conn: kuzu.Connection, pid: int) -> list[dict]:
             ("DELETED_FILE", "DELETED"),
             ("READ_FILE", "READ"),
         ]:
-            result = conn.execute(
+            for row in _rows_for_pid(
+                conn,
+                pid,
+                f"MATCH (p:Process {{id: $id}})-[r:{rel_type}]->(f:File) "
+                f"RETURN f.path, r.timestamp ORDER BY r.timestamp DESC LIMIT 5",
                 f"MATCH (p:Process {{pid: $pid}})-[r:{rel_type}]->(f:File) "
                 f"RETURN f.path, r.timestamp ORDER BY r.timestamp DESC LIMIT 5",
-                {"pid": pid},
-            )
-            while result.has_next():
-                row = result.get_next()
+            ):
                 items.append(
                     {
                         "file_path": row[0],
@@ -226,20 +340,37 @@ def get_process_tree(conn: kuzu.Connection, pid: int) -> dict | None:
             ancestors.insert(0, parent)
             current = parent
 
-        # BFS descendants
+        # BFS descendants (capped to prevent fan-out explosion on PIDs like
+        # kthreadd which parent thousands of kernel threads)
+        _max_descendants = 100
+        _descendant_count = 0
+
         def _build_subtree(root_pid: int, depth: int) -> list[dict]:
-            if depth <= 0:
+            nonlocal _descendant_count
+            if depth <= 0 or _descendant_count >= _max_descendants:
                 return []
-            children = get_process_children(conn, root_pid)
+            children = get_process_children(conn, root_pid, limit=25)
+            many_children = len(children) > 10
             result = []
             for child in children:
+                if _descendant_count >= _max_descendants:
+                    break
                 cpid = child["pid"]
                 if cpid in visited:
                     continue
                 visited.add(cpid)
-                child["network"] = _get_pid_network(conn, cpid)
-                child["files"] = _get_pid_files(conn, cpid)
-                child["children"] = _build_subtree(cpid, depth - 1)
+                _descendant_count += 1
+                # Skip expensive per-child enrichment when there are many
+                # siblings (e.g. kthreadd's kernel threads have no
+                # network/file activity anyway).
+                if many_children:
+                    child["network"] = []
+                    child["files"] = []
+                    child["children"] = []
+                else:
+                    child["network"] = _get_pid_network(conn, cpid)
+                    child["files"] = _get_pid_files(conn, cpid)
+                    child["children"] = _build_subtree(cpid, depth - 1)
                 result.append(child)
             return result
 
@@ -282,16 +413,18 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
     }
 
     try:
-        # Get direct IP connections (by PID to catch all node variants)
-        ip_result = conn.execute(
+        # Get direct IP connections
+        seen_ips = set()
+        for row in _rows_for_pid(
+            conn,
+            pid,
+            "MATCH (p:Process {id: $id})-[c:CONNECTED_TO]->(ip:IP) "
+            "RETURN ip.address, c.dst_port, c.protocol, "
+            "ip.country, ip.classification, ip.provider_name",
             "MATCH (p:Process {pid: $pid})-[c:CONNECTED_TO]->(ip:IP) "
             "RETURN ip.address, c.dst_port, c.protocol, "
             "ip.country, ip.classification, ip.provider_name",
-            {"pid": pid},
-        )
-        seen_ips = set()
-        while ip_result.has_next():
-            row = ip_result.get_next()
+        ):
             key = (row[0], row[1])
             if key not in seen_ips:
                 seen_ips.add(key)
@@ -306,14 +439,14 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
                     }
                 )
 
-        # Get direct DNS resolutions (by PID)
-        dns_result = conn.execute(
+        # Get direct DNS resolutions
+        seen_domains: set[str] = set()
+        for row in _rows_for_pid(
+            conn,
+            pid,
+            "MATCH (p:Process {id: $id})-[:RESOLVED]->(d:Domain) RETURN d.name, d.first_seen, d.is_dga_candidate",
             "MATCH (p:Process {pid: $pid})-[:RESOLVED]->(d:Domain) RETURN d.name, d.first_seen, d.is_dga_candidate",
-            {"pid": pid},
-        )
-        seen_domains = set()
-        while dns_result.has_next():
-            row = dns_result.get_next()
+        ):
             if row[0] not in seen_domains:
                 seen_domains.add(row[0])
                 result["domains"].append(
@@ -324,10 +457,8 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
                     }
                 )
 
-        # Infer domains from IP connections: if Process→IP and Domain→IP,
-        # the process likely queried that domain.  DNS events go to
-        # mDNSResponder (PID 0), so direct RESOLVED edges are usually
-        # missing for the actual initiating process.
+        # Infer domains from IP connections: if Process->IP and Domain->IP,
+        # the process likely queried that domain.
         connected_ips = {ip["address"] for ip in result["ips"]}
         if connected_ips:
             for ip_addr in connected_ips:
@@ -369,14 +500,14 @@ def get_process_network_footprint(conn: kuzu.Connection, pid: int) -> dict:
                     }
                 )
 
-        # Get listening ports (by PID)
+        # Get listening ports
         try:
-            listen_result = conn.execute(
+            for row in _rows_for_pid(
+                conn,
+                pid,
+                "MATCH (p:Process {id: $id})-[l:LISTENING_ON]->(ip:IP) RETURN ip.address, l.port, l.protocol",
                 "MATCH (p:Process {pid: $pid})-[l:LISTENING_ON]->(ip:IP) RETURN ip.address, l.port, l.protocol",
-                {"pid": pid},
-            )
-            while listen_result.has_next():
-                row = listen_result.get_next()
+            ):
                 result["listening_ports"].append(
                     {
                         "address": row[0],
@@ -464,16 +595,15 @@ def get_persistence_artifacts(conn: kuzu.Connection, pid: int) -> list[dict]:
     """
     artifacts = []
     try:
-        # Get all processes in the tree (starting from the given pid)
-        # For simplicity, query direct registry activity from the process
         for rel_type in ("CREATED_REG", "MODIFIED_REG"):
-            result = conn.execute(
+            for row in _rows_for_pid(
+                conn,
+                pid,
+                f"MATCH (p:Process {{id: $id}})-[:{rel_type}]->(r:RegistryKey) "
+                f"RETURN r.path, r.value_name, r.value_data, p.pid",
                 f"MATCH (p:Process {{pid: $pid}})-[:{rel_type}]->(r:RegistryKey) "
                 f"RETURN r.path, r.value_name, r.value_data, p.pid",
-                {"pid": pid},
-            )
-            while result.has_next():
-                row = result.get_next()
+            ):
                 artifacts.append(
                     {
                         "registry_path": row[0],
@@ -668,14 +798,14 @@ def _get_process_file_activity(conn: kuzu.Connection, pid: int) -> list[dict]:
             ("DELETED_FILE", "DELETED"),
             ("READ_FILE", "READ"),
         ]:
-            query_result = conn.execute(
+            for row in _rows_for_pid(
+                conn,
+                pid,
+                f"MATCH (p:Process {{id: $id}})-[r:{rel_type}]->(f:File) "
+                f"RETURN f.path, r.timestamp ORDER BY r.timestamp DESC LIMIT 10",
                 f"MATCH (p:Process {{pid: $pid}})-[r:{rel_type}]->(f:File) "
-                f"RETURN f.path, r.timestamp "
-                f"ORDER BY r.timestamp DESC LIMIT 10",
-                {"pid": pid},
-            )
-            while query_result.has_next():
-                row = query_result.get_next()
+                f"RETURN f.path, r.timestamp ORDER BY r.timestamp DESC LIMIT 10",
+            ):
                 results.append(
                     {
                         "file_path": row[0],

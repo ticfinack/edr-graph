@@ -15,10 +15,27 @@ __all__ = ["collect_all", "get_collectors", "Collector", "RawEvent"]
 
 def get_collectors(db_path: str | None = None) -> list[Collector]:
     """Return collectors appropriate for the current platform."""
-    collectors: list[Collector] = [PsutilCollector()]
+    collectors: list[Collector] = []
     system = platform.system()
 
     if system == "Linux":
+        ebpf_available = False
+        try:
+            from .ebpf_collector import EbpfCollector
+
+            _probe = EbpfCollector()
+            _probe.start()  # verify BPF loads
+            _probe.stop()
+            collectors.append(EbpfCollector())  # fresh instance
+            ebpf_available = True
+            logger.info("eBPF collector active, psutil in snapshot-only mode")
+        except Exception:
+            logger.info(
+                "eBPF collector not available (requires root + BCC + kernel headers), falling back to psutil polling"
+            )
+
+        collectors.append(PsutilCollector(snapshot_only=ebpf_available))
+
         from .linux import LinuxCollector
 
         collectors.append(LinuxCollector())
@@ -29,6 +46,7 @@ def get_collectors(db_path: str | None = None) -> list[Collector]:
         except Exception:
             logger.debug("Auditd collector not available", exc_info=True)
     elif system == "Darwin":
+        collectors.append(PsutilCollector())
         from .macos import MacOSCollector
 
         collectors.append(MacOSCollector())
@@ -63,6 +81,7 @@ def get_collectors(db_path: str | None = None) -> list[Collector]:
         except Exception:
             logger.debug("Connection metadata collector not available", exc_info=True)
     elif system == "Windows":
+        collectors.append(PsutilCollector())
         from .windows import WindowsCollector
 
         collectors.append(WindowsCollector())
@@ -73,6 +92,7 @@ def get_collectors(db_path: str | None = None) -> list[Collector]:
         except Exception:
             logger.debug("ETW collector not available", exc_info=True)
     else:
+        collectors.append(PsutilCollector())
         logger.warning("Unknown platform %s, using psutil only", system)
 
     return collectors

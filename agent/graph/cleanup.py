@@ -13,6 +13,8 @@ import logging
 
 import kuzu
 
+from agent.graph.pid_index import get_pid_index
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,6 +67,7 @@ def _purge_process_name(conn: kuzu.Connection, pattern: str) -> int:
             {"id": proc_id},
         )
     if to_delete:
+        get_pid_index().remove_nodes(to_delete)
         logger.info("Purged %d Process nodes matching %r", len(to_delete), pattern)
     return len(to_delete)
 

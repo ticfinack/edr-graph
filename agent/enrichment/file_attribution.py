@@ -34,6 +34,7 @@ class FileAttributionCache:
     def __init__(self, refresh_interval: float = 30.0) -> None:
         self._refresh_interval = refresh_interval
         self._dir_to_procs: dict[str, list[FileOwner]] = {}
+        self._file_to_procs: dict[str, list[FileOwner]] = {}
         self._lock = threading.Lock()
         self._last_refresh = 0.0
         self._agent_pid = 0
@@ -44,26 +45,31 @@ class FileAttributionCache:
     def lookup(self, file_path: str) -> FileOwner | None:
         """Find the most likely process that owns a file.
 
-        Walks up the directory tree looking for processes with open files
-        in that directory. Returns the first match (deepest dir wins).
+        Uses a strict 2-tier check: exact file path match first, then
+        immediate parent directory. No further tree walking — if nothing
+        matches, returns None to avoid misattribution.
         """
         self._maybe_refresh()
 
         with self._lock:
-            # Walk up directory tree for best match
-            path = file_path
-            for _ in range(5):  # max 5 levels up
-                parent = path.rsplit("/", 1)[0] if "/" in path else ""
-                if not parent:
-                    break
+            # Tier 1: exact file path match
+            procs = self._file_to_procs.get(file_path)
+            if procs:
+                for p in procs:
+                    if p.pid > 0 and p.pid != self._agent_pid:
+                        return p
+
+            # Tier 2: immediate parent directory match
+            parent = file_path.rsplit("/", 1)[0] if "/" in file_path else ""
+            if parent:
                 procs = self._dir_to_procs.get(parent)
                 if procs:
-                    # Return the first non-system process
                     for p in procs:
                         if p.pid > 0 and p.pid != self._agent_pid:
                             return p
-                path = parent
-        return None
+
+            # No match — return None (safe fallback)
+            return None
 
     def _maybe_refresh(self) -> None:
         now = time.monotonic()
@@ -76,6 +82,7 @@ class FileAttributionCache:
 
     def _refresh(self) -> None:
         dir_map: dict[str, list[FileOwner]] = {}
+        file_map: dict[str, list[FileOwner]] = {}
         count = 0
         try:
             for proc in psutil.process_iter(["pid", "name", "ppid"]):
@@ -93,7 +100,13 @@ class FileAttributionCache:
                         parent_pid=info["ppid"] or 0,
                     )
                     seen_dirs: set[str] = set()
+                    seen_files: set[str] = set()
                     for f in files:
+                        # Exact file path index
+                        if f.path and f.path not in seen_files:
+                            seen_files.add(f.path)
+                            file_map.setdefault(f.path, []).append(owner)
+                        # Parent directory index
                         parent_dir = f.path.rsplit("/", 1)[0] if "/" in f.path else ""
                         if parent_dir and parent_dir not in seen_dirs:
                             seen_dirs.add(parent_dir)
@@ -106,6 +119,7 @@ class FileAttributionCache:
 
         with self._lock:
             self._dir_to_procs = dir_map
+            self._file_to_procs = file_map
         logger.debug("File attribution cache refreshed: %d dir->process mappings", count)
 
 

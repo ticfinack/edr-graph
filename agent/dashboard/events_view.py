@@ -35,6 +35,8 @@ def create(queue: SqliteQueue, refresh_interval: float = 5.0) -> None:
                     "All",
                     "psutil_process",
                     "psutil_network",
+                    "ebpf_execve",
+                    "ebpf_network",
                     "auth",
                     "auditd",
                     "syslog",

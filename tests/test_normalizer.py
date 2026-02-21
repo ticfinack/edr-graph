@@ -109,6 +109,34 @@ class TestNetworkNormalization:
         assert result.dst_endpoint.port == 443
         assert result.process.name == "curl"
 
+    def test_ebpf_network(self):
+        """source='ebpf_network' produces NetworkActivity with correct log_source."""
+        raw = RawEvent(
+            timestamp=datetime(2025, 1, 15, 10, 0),
+            source="ebpf_network",
+            message="connect: curl -> 93.184.216.34:443",
+            fields={
+                "pid": "5678",
+                "process_name": "curl",
+                "src_ip": "192.168.1.10",
+                "src_port": "0",
+                "dst_ip": "93.184.216.34",
+                "dst_port": "443",
+                "status": "ESTABLISHED",
+                "type": "TCP",
+                "uid": "1000",
+                "username": "alice",
+            },
+            hostname="testhost",
+        )
+        result = normalize(raw)
+        assert isinstance(result, NetworkActivity)
+        assert result.class_uid == 4001
+        assert result.dst_endpoint.ip == "93.184.216.34"
+        assert result.dst_endpoint.port == 443
+        assert result.process.name == "curl"
+        assert result.metadata.log_source == "ebpf_network"
+
 
 class TestAuthNormalization:
     def test_successful_login(self):

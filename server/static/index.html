@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EDR Graph SOC</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0a0f;--card:#12121a;--border:#1e1e2e;--text:#e0e0e0;--dim:#6b7280;
+  --accent:#3b82f6;--critical:#ef4444;--high:#f97316;--medium:#eab308;--low:#22c55e;--info:#6b7280;
+  --lateral:#c084fc;--vertical:#f472b6;
+}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display",system-ui,sans-serif;font-size:14px}
+.mono{font-family:"SF Mono",Menlo,Monaco,monospace;font-size:13px}
+a{color:var(--accent);text-decoration:none;cursor:pointer}
+a:hover{text-decoration:underline}
+input,select{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px;font-family:inherit}
+input:focus,select:focus{outline:none;border-color:var(--accent)}
+button{cursor:pointer;font-family:inherit}
+
+/* Login */
+.login-screen{display:flex;align-items:center;justify-content:center;height:100vh}
+.login-box{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:40px;width:360px}
+.login-box h1{font-size:20px;font-weight:600;margin-bottom:8px;letter-spacing:-0.3px}
+.login-box p{color:var(--dim);font-size:13px;margin-bottom:24px}
+.login-box .field{margin-bottom:16px}
+.login-box label{display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px}
+.login-box input{width:100%;padding:10px 12px}
+.login-box .error{color:var(--critical);font-size:13px;margin-bottom:12px;display:none}
+.btn{padding:8px 16px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:13px;font-weight:500}
+.btn:hover{border-color:var(--accent)}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;width:100%;padding:10px}
+.btn-primary:hover{background:#2563eb}
+
+/* Header */
+.header{display:flex;align-items:center;justify-content:space-between;padding:12px 24px;background:var(--card);border-bottom:1px solid var(--border)}
+.header-left{display:flex;align-items:center;gap:16px}
+.header-title{font-size:16px;font-weight:600;letter-spacing:-0.3px}
+.header-right{display:flex;align-items:center;gap:16px;color:var(--dim);font-size:13px}
+.user-badge{color:var(--accent)}
+.btn-logout{padding:4px 12px;font-size:12px}
+
+/* Tabs */
+.tab-bar{display:flex;gap:0;background:var(--card);border-bottom:1px solid var(--border)}
+.tab-btn{padding:10px 20px;background:none;border:none;color:var(--dim);cursor:pointer;font-size:13px;font-weight:500;border-bottom:2px solid transparent;transition:all .15s}
+.tab-btn:hover{color:var(--text)}
+.tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab-count{display:inline-block;padding:1px 6px;border-radius:10px;font-size:11px;margin-left:6px;background:rgba(59,130,246,0.15);color:var(--accent)}
+.tab-count.warn{background:rgba(239,68,68,0.15);color:var(--critical)}
+
+/* Content */
+.content{padding:24px;max-width:1600px;margin:0 auto}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+.hidden{display:none!important}
+
+/* Cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px}
+.card-label{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px}
+.card-value{font-size:24px;font-weight:600}
+.card-sub{color:var(--dim);font-size:12px;margin-top:4px}
+
+/* Tables */
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:8px 12px;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border);font-weight:500;white-space:nowrap}
+td{padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px}
+tr.clickable{cursor:pointer}
+tr.clickable:hover{background:rgba(59,130,246,0.05)}
+.severity-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase}
+.severity-critical{background:rgba(239,68,68,0.15);color:var(--critical)}
+.severity-high{background:rgba(249,115,22,0.15);color:var(--high)}
+.severity-medium{background:rgba(234,179,8,0.15);color:var(--medium)}
+.severity-low{background:rgba(34,197,94,0.15);color:var(--low)}
+.severity-info{background:rgba(107,114,128,0.15);color:var(--info)}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.status-dot.online{background:var(--low)}
+.status-dot.offline{background:var(--dim)}
+.drift-warn{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;background:rgba(234,179,8,0.15);color:var(--medium)}
+td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Filter bar */
+.filter-bar{display:flex;gap:12px;margin-bottom:16px;align-items:center;flex-wrap:wrap}
+.filter-bar input{width:250px}
+.filter-bar select{min-width:120px}
+
+/* Detail panel */
+.detail-panel{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px;margin-top:16px}
+.detail-section{margin-top:16px}
+.detail-section h4{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border)}
+.detail-grid{display:grid;grid-template-columns:140px 1fr;gap:4px 16px}
+.detail-grid dt{color:var(--dim)}
+.detail-grid dd{word-break:break-all}
+.back-link{display:inline-block;margin-bottom:16px;font-size:13px}
+
+/* Chain visualization */
+.chain-viz{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:20px;margin-top:12px;overflow-x:auto}
+.chain-flow{display:flex;align-items:center;gap:0;min-width:max-content}
+.chain-step{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px 14px;min-width:120px;text-align:center}
+.chain-step .step-type{color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px}
+.chain-step .step-name{font-weight:500;font-size:13px;word-break:break-all}
+.chain-step .step-pid{color:var(--dim);font-size:11px;margin-top:2px}
+.chain-step.type-ip{border-color:var(--accent)}
+.chain-step.type-process{border-color:#818cf8}
+.chain-step.type-user{border-color:var(--medium)}
+.chain-step.type-domain{border-color:#34d399}
+.chain-step.type-file{border-color:#fbbf24}
+.chain-arrow{color:var(--dim);font-size:18px;padding:0 6px;flex-shrink:0}
+.chain-pivot{background:rgba(192,132,252,0.1);border:2px solid var(--lateral);border-radius:6px;padding:10px 14px;text-align:center}
+.chain-pivot .step-type{color:var(--lateral);font-size:11px;text-transform:uppercase;margin-bottom:4px}
+.chain-pivot .step-name{font-weight:600;color:var(--lateral)}
+
+/* Lateral movement stitched view */
+.stitch-container{display:flex;gap:0;align-items:stretch;margin-top:12px;overflow-x:auto}
+.stitch-host{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;min-width:250px}
+.stitch-host h4{font-size:13px;font-weight:600;margin-bottom:12px}
+.stitch-pivot-arrow{display:flex;align-items:center;padding:0 12px;color:var(--lateral);font-size:24px;flex-direction:column;justify-content:center;gap:4px}
+.stitch-pivot-ip{font-size:11px;color:var(--lateral)}
+
+/* Empty state */
+.empty-state{text-align:center;padding:60px 20px;color:var(--dim)}
+.empty-state .icon{font-size:48px;margin-bottom:16px;opacity:0.3}
+.empty-state h3{font-size:16px;color:var(--text);margin-bottom:8px}
+.empty-state p{font-size:13px}
+
+/* Key status badges */
+.key-status{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase}
+.key-status.active{background:rgba(34,197,94,0.15);color:var(--low)}
+.key-status.revoked{background:rgba(239,68,68,0.15);color:var(--critical)}
+.key-status.expired{background:rgba(107,114,128,0.15);color:var(--dim)}
+.key-status.exhausted{background:rgba(234,179,8,0.15);color:var(--medium)}
+
+/* Loading */
+.loading{text-align:center;padding:40px;color:var(--dim)}
+.spinner{display:inline-block;width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;margin-right:8px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<!-- Login Screen -->
+<div id="loginScreen" class="login-screen">
+  <div class="login-box">
+    <h1>EDR Graph SOC</h1>
+    <p>Sign in to the fleet management console</p>
+    <div id="loginError" class="error"></div>
+    <div class="field">
+      <label>Username</label>
+      <input id="loginUser" type="text" placeholder="admin" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input id="loginPass" type="password" placeholder="Password" autocomplete="current-password">
+    </div>
+    <button class="btn btn-primary" onclick="doLogin()">Sign In</button>
+  </div>
+</div>
+
+<!-- Main App -->
+<div id="mainApp" class="hidden">
+  <div class="header">
+    <div class="header-left">
+      <div class="header-title">EDR Graph SOC</div>
+    </div>
+    <div class="header-right">
+      <span class="user-badge" id="userBadge"></span>
+      <button class="btn btn-logout" onclick="doLogout()">Sign Out</button>
+    </div>
+  </div>
+
+  <div class="tab-bar" id="tabBar">
+    <button class="tab-btn active" data-tab="fleet">Fleet Overview</button>
+    <button class="tab-btn" data-tab="findings">Findings <span id="findingsCount" class="tab-count">0</span></button>
+    <button class="tab-btn" data-tab="lateral">Lateral Movement <span id="lateralCount" class="tab-count warn">0</span></button>
+    <button class="tab-btn" data-tab="vertical">Vertical Movement <span id="verticalCount" class="tab-count warn">0</span></button>
+    <button class="tab-btn" data-tab="regkeys">Registration Keys</button>
+  </div>
+
+  <div class="content">
+    <!-- Fleet Overview -->
+    <div class="tab-panel active" id="panel-fleet">
+      <div class="cards" id="fleetCards"></div>
+      <div id="fleetAgentDetail" class="hidden"></div>
+      <div id="fleetAgentList">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:40px"></th>
+              <th>Hostname</th>
+              <th>Platform</th>
+              <th>Version</th>
+              <th>IP</th>
+              <th>Findings</th>
+              <th>NTP Offset</th>
+              <th>Last Seen</th>
+            </tr>
+          </thead>
+          <tbody id="agentTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Findings -->
+    <div class="tab-panel" id="panel-findings">
+      <div class="filter-bar">
+        <input id="findingsSearch" placeholder="Search findings..." oninput="renderFindings()">
+        <select id="findingsSeverity" onchange="renderFindings()">
+          <option value="">All Severities</option>
+          <option value="critical">Critical</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+          <option value="info">Info</option>
+        </select>
+      </div>
+      <div id="findingDetail" class="hidden"></div>
+      <div id="findingsList">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Severity</th>
+              <th style="width:160px">Time</th>
+              <th>Host</th>
+              <th>Title</th>
+              <th style="width:60px">Chain</th>
+            </tr>
+          </thead>
+          <tbody id="findingsTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Lateral Movement -->
+    <div class="tab-panel" id="panel-lateral">
+      <div id="lateralDetail" class="hidden"></div>
+      <div id="lateralList">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Severity</th>
+              <th>Source Host</th>
+              <th>Source Finding</th>
+              <th style="width:120px">Pivot IP</th>
+              <th>Dest Host</th>
+              <th>Dest Finding</th>
+              <th style="width:160px">Time</th>
+            </tr>
+          </thead>
+          <tbody id="lateralTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Vertical Movement -->
+    <div class="tab-panel" id="panel-vertical">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:80px">Severity</th>
+            <th>Host</th>
+            <th>Finding</th>
+            <th>Original User</th>
+            <th>Escalated To</th>
+            <th style="width:160px">Time</th>
+          </tr>
+        </thead>
+        <tbody id="verticalTableBody"></tbody>
+      </table>
+    </div>
+
+    <!-- Registration Keys -->
+    <div class="tab-panel" id="panel-regkeys">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h3 style="font-size:16px;font-weight:600">Registration Keys</h3>
+        <button class="btn" onclick="showGenerateKeyForm()" id="btnGenerateKey">Generate Key</button>
+      </div>
+
+      <!-- Generate key form (hidden by default) -->
+      <div id="generateKeyForm" class="hidden" style="margin-bottom:20px">
+        <div class="detail-panel">
+          <h4 style="margin-bottom:12px;font-size:14px;font-weight:600">Generate New Registration Key</h4>
+          <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+            <div>
+              <label style="display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Label (required)</label>
+              <input id="keyLabel" type="text" placeholder="e.g. Production fleet" style="width:220px">
+            </div>
+            <div>
+              <label style="display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Max Uses</label>
+              <input id="keyMaxUses" type="number" placeholder="Unlimited" min="1" style="width:120px">
+            </div>
+            <div>
+              <label style="display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Expires</label>
+              <select id="keyExpiry" style="width:140px">
+                <option value="">Never</option>
+                <option value="3600">1 hour</option>
+                <option value="86400">24 hours</option>
+                <option value="604800">7 days</option>
+                <option value="2592000">30 days</option>
+              </select>
+            </div>
+            <button class="btn btn-primary" style="width:auto;padding:8px 20px" onclick="doGenerateKey()">Generate</button>
+            <button class="btn" onclick="hideGenerateKeyForm()">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Created key display (hidden by default) -->
+      <div id="createdKeyPanel" class="hidden" style="margin-bottom:20px">
+        <div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:16px">
+          <div style="color:var(--low);font-weight:600;font-size:13px;margin-bottom:8px">Key Generated Successfully</div>
+          <div style="color:var(--dim);font-size:12px;margin-bottom:12px">Copy this command to register an agent. The full key is only shown once.</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input id="createdKeyCommand" type="text" readonly class="mono" style="flex:1;background:var(--bg);font-size:12px;padding:10px">
+            <button class="btn" onclick="copyKeyCommand()" id="btnCopyKey">Copy</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Keys table -->
+      <table>
+        <thead>
+          <tr>
+            <th>Label</th>
+            <th>Key Preview</th>
+            <th>Created</th>
+            <th>Created By</th>
+            <th>Uses</th>
+            <th>Expires</th>
+            <th>Status</th>
+            <th style="width:140px">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="regkeysTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──
+let token = localStorage.getItem('soc_token');
+let currentUser = null;
+let fleetData = {agents:[], findings:[], lateral:[], vertical:[], hostConns:[]};
+let refreshTimer = null;
+
+// ── API helpers ──
+async function api(path, opts={}) {
+  const headers = {'Content-Type':'application/json'};
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const res = await fetch(path, {...opts, headers});
+  if (res.status === 401) { doLogout(); throw new Error('Unauthorized'); }
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// ── Auth ──
+async function doLogin() {
+  const user = document.getElementById('loginUser').value.trim();
+  const pass = document.getElementById('loginPass').value;
+  const errEl = document.getElementById('loginError');
+  errEl.style.display = 'none';
+  try {
+    const data = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({username: user, password: pass})
+    }).then(r => {
+      if (!r.ok) throw new Error('Invalid credentials');
+      return r.json();
+    });
+    token = data.token;
+    currentUser = {username: data.username, role: data.role};
+    localStorage.setItem('soc_token', token);
+    showApp();
+  } catch(e) {
+    errEl.textContent = e.message;
+    errEl.style.display = 'block';
+  }
+}
+
+function doLogout() {
+  token = null;
+  currentUser = null;
+  localStorage.removeItem('soc_token');
+  if (refreshTimer) clearInterval(refreshTimer);
+  document.getElementById('mainApp').classList.add('hidden');
+  document.getElementById('loginScreen').style.display = 'flex';
+}
+
+// Enter key on password field triggers login
+document.getElementById('loginPass').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+
+// ── App init ──
+async function showApp() {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('mainApp').classList.remove('hidden');
+  document.getElementById('userBadge').textContent = currentUser ? currentUser.username : '';
+  await refreshAll();
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(refreshAll, 15000);
+}
+
+async function refreshAll() {
+  try {
+    const [agents, findings, lateral, vertical, hostConns] = await Promise.all([
+      api('/api/fleet/agents'),
+      api('/api/fleet/findings?limit=200'),
+      api('/api/fleet/lateral-movements?limit=100'),
+      api('/api/fleet/vertical-movements?limit=100'),
+      api('/api/fleet/host-connections?limit=100'),
+    ]);
+    fleetData = {agents, findings, lateral, vertical, hostConns};
+    renderFleet();
+    renderFindings();
+    renderLateral();
+    renderVertical();
+    updateCounts();
+    loadRegKeys();
+  } catch(e) {
+    console.error('Refresh failed:', e);
+  }
+}
+
+function updateCounts() {
+  document.getElementById('findingsCount').textContent = fleetData.findings.length;
+  const lc = document.getElementById('lateralCount');
+  lc.textContent = fleetData.lateral.length;
+  lc.className = 'tab-count' + (fleetData.lateral.length > 0 ? ' warn' : '');
+  const vc = document.getElementById('verticalCount');
+  vc.textContent = fleetData.vertical.length;
+  vc.className = 'tab-count' + (fleetData.vertical.length > 0 ? ' warn' : '');
+}
+
+// ── Tabs ──
+document.getElementById('tabBar').addEventListener('click', e => {
+  const btn = e.target.closest('.tab-btn');
+  if (!btn) return;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
+  // Reset detail views when switching tabs
+  hideAllDetails();
+});
+
+function hideAllDetails() {
+  document.getElementById('fleetAgentDetail').classList.add('hidden');
+  document.getElementById('fleetAgentList').classList.remove('hidden');
+  document.getElementById('findingDetail').classList.add('hidden');
+  document.getElementById('findingsList').classList.remove('hidden');
+  document.getElementById('lateralDetail').classList.add('hidden');
+  document.getElementById('lateralList').classList.remove('hidden');
+}
+
+// ── Helpers ──
+function sevBadge(sev) {
+  const s = (sev||'info').toLowerCase();
+  return `<span class="severity-badge severity-${s}">${s}</span>`;
+}
+
+function fmtTime(ts) {
+  if (!ts) return '-';
+  const d = new Date(typeof ts === 'number' ? ts * 1000 : ts);
+  return d.toLocaleString('en-US', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+}
+
+function fmtAgo(ts) {
+  if (!ts) return '-';
+  const secs = Math.floor(Date.now()/1000 - ts);
+  if (secs < 60) return secs + 's ago';
+  if (secs < 3600) return Math.floor(secs/60) + 'm ago';
+  if (secs < 86400) return Math.floor(secs/3600) + 'h ago';
+  return Math.floor(secs/86400) + 'd ago';
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+// ── Fleet Overview ──
+function renderFleet() {
+  const agents = fleetData.agents;
+  const online = agents.filter(a => a.status === 'online').length;
+  const offline = agents.length - online;
+  const totalFindings = agents.reduce((s,a) => s + (a.finding_count||0), 0);
+  const drifting = agents.filter(a => Math.abs(a.clock_offset_ms||0) > 500).length;
+
+  document.getElementById('fleetCards').innerHTML = `
+    <div class="card"><div class="card-label">Total Agents</div><div class="card-value">${agents.length}</div><div class="card-sub">${online} online, ${offline} offline</div></div>
+    <div class="card"><div class="card-label">Total Findings</div><div class="card-value">${totalFindings}</div></div>
+    <div class="card"><div class="card-label">Lateral Movements</div><div class="card-value" style="color:var(--lateral)">${fleetData.lateral.length}</div></div>
+    <div class="card"><div class="card-label">Clock Drift Warnings</div><div class="card-value" style="color:${drifting?'var(--medium)':'var(--low)'}">${drifting}</div><div class="card-sub">${drifting ? 'Agents with >500ms offset' : 'All clocks synchronized'}</div></div>
+  `;
+
+  const tbody = document.getElementById('agentTableBody');
+  if (agents.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--dim);padding:40px">No agents registered</td></tr>';
+    return;
+  }
+  tbody.innerHTML = agents.map(a => {
+    const offsetMs = a.clock_offset_ms || 0;
+    const driftWarn = Math.abs(offsetMs) > 500 ? `<span class="drift-warn">${offsetMs}ms</span>` : `${offsetMs}ms`;
+    return `<tr class="clickable" onclick="showAgentDetail('${esc(a.agent_id)}')">
+      <td><span class="status-dot ${a.status}"></span></td>
+      <td>${esc(a.hostname)}</td>
+      <td>${esc(a.platform)}</td>
+      <td class="mono">${esc(a.agent_version)}</td>
+      <td class="mono">${esc(a.ip_address||'-')}</td>
+      <td>${a.finding_count}</td>
+      <td>${driftWarn}</td>
+      <td>${fmtAgo(a.last_seen)}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function showAgentDetail(agentId) {
+  document.getElementById('fleetAgentList').classList.add('hidden');
+  const panel = document.getElementById('fleetAgentDetail');
+  panel.classList.remove('hidden');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span> Loading agent detail...</div>';
+
+  try {
+    const [detail, findings, chains] = await Promise.all([
+      api(`/api/fleet/agents/${agentId}`),
+      api(`/api/fleet/agents/${agentId}/findings?limit=50`),
+      api(`/api/fleet/agents/${agentId}/chains?limit=100`),
+    ]);
+
+    const offsetMs = detail.clock_offset_ms || 0;
+    const driftWarn = Math.abs(offsetMs) > 500 ? `<span class="drift-warn">DRIFT: ${offsetMs}ms</span>` : `${offsetMs}ms`;
+
+    panel.innerHTML = `
+      <a class="back-link" onclick="hideAgentDetail()">&larr; Back to fleet</a>
+      <h3 style="font-size:18px;margin-bottom:16px">${esc(detail.hostname)} <span class="status-dot ${detail.status}" style="margin-left:8px"></span></h3>
+      <div class="detail-grid" style="margin-bottom:24px">
+        <dt>Agent ID</dt><dd class="mono">${esc(detail.agent_id)}</dd>
+        <dt>Platform</dt><dd>${esc(detail.platform)} ${esc(detail.os_version)}</dd>
+        <dt>Version</dt><dd class="mono">${esc(detail.agent_version)}</dd>
+        <dt>IP Address</dt><dd class="mono">${esc(detail.ip_address||'-')}</dd>
+        <dt>NTP Offset</dt><dd>${driftWarn}</dd>
+        <dt>Registered</dt><dd>${fmtTime(detail.registered_at)}</dd>
+        <dt>Last Seen</dt><dd>${fmtTime(detail.last_seen)} (${fmtAgo(detail.last_seen)})</dd>
+      </div>
+
+      <div class="cards" style="grid-template-columns:repeat(5,1fr)">
+        <div class="card"><div class="card-label">Critical</div><div class="card-value" style="color:var(--critical)">${detail.critical_count}</div></div>
+        <div class="card"><div class="card-label">High</div><div class="card-value" style="color:var(--high)">${detail.high_count}</div></div>
+        <div class="card"><div class="card-label">Medium</div><div class="card-value" style="color:var(--medium)">${detail.medium_count}</div></div>
+        <div class="card"><div class="card-label">Low</div><div class="card-value" style="color:var(--low)">${detail.low_count}</div></div>
+        <div class="card"><div class="card-label">Info</div><div class="card-value" style="color:var(--info)">${detail.info_count}</div></div>
+      </div>
+
+      ${chains.length > 0 ? `
+      <div class="detail-section">
+        <h4>Attack Chains</h4>
+        ${renderChainGroups(chains)}
+      </div>` : ''}
+
+      <div class="detail-section">
+        <h4>Recent Findings (${findings.length})</h4>
+        ${findings.length === 0 ? '<div style="color:var(--dim);padding:20px;text-align:center">No findings</div>' : `
+        <table>
+          <thead><tr><th style="width:80px">Severity</th><th style="width:160px">Time</th><th>Title</th><th style="width:60px">Chain</th></tr></thead>
+          <tbody>${findings.map(f => `
+            <tr class="clickable" onclick="showFindingDetailById('${esc(f.finding_id)}')">
+              <td>${sevBadge(f.severity)}</td>
+              <td>${fmtTime(f.timestamp)}</td>
+              <td class="truncate">${esc(f.title)}</td>
+              <td>${f.chain_length||0}</td>
+            </tr>
+          `).join('')}</tbody>
+        </table>`}
+      </div>
+    `;
+  } catch(e) {
+    panel.innerHTML = `<a class="back-link" onclick="hideAgentDetail()">&larr; Back</a><div class="empty-state"><h3>Error</h3><p>${esc(e.message)}</p></div>`;
+  }
+}
+
+function hideAgentDetail() {
+  document.getElementById('fleetAgentDetail').classList.add('hidden');
+  document.getElementById('fleetAgentList').classList.remove('hidden');
+}
+
+function renderChainGroups(chains) {
+  // Group chains by finding_id
+  const groups = {};
+  for (const step of chains) {
+    const fid = step.finding_id;
+    if (!groups[fid]) groups[fid] = [];
+    groups[fid].push(step);
+  }
+  return Object.entries(groups).map(([fid, steps]) => {
+    steps.sort((a,b) => a.step_index - b.step_index);
+    return `<div style="margin-bottom:12px">
+      <div style="font-size:12px;color:var(--dim);margin-bottom:6px">Finding: <span class="mono">${esc(fid.substring(0,8))}...</span></div>
+      ${renderChainFlow(steps)}
+    </div>`;
+  }).join('');
+}
+
+function renderChainFlow(steps) {
+  if (!steps || steps.length === 0) return '<div style="color:var(--dim);font-size:12px">No chain data</div>';
+  return `<div class="chain-viz"><div class="chain-flow">${
+    steps.map((s, i) => {
+      const arrow = i > 0 ? '<div class="chain-arrow">&rarr;</div>' : '';
+      const t = (s.entity_type||'').toLowerCase();
+      return `${arrow}<div class="chain-step type-${t}">
+        <div class="step-type">${esc(s.entity_type)}</div>
+        <div class="step-name">${esc(s.entity_name || s.entity_id)}</div>
+        ${s.pid ? `<div class="step-pid">PID ${s.pid}</div>` : ''}
+      </div>`;
+    }).join('')
+  }</div></div>`;
+}
+
+// ── Findings ──
+function renderFindings() {
+  const search = (document.getElementById('findingsSearch').value||'').toLowerCase();
+  const sevFilter = document.getElementById('findingsSeverity').value;
+  let list = fleetData.findings;
+  if (search) list = list.filter(f => (f.title||'').toLowerCase().includes(search) || (f.hostname||'').toLowerCase().includes(search));
+  if (sevFilter) list = list.filter(f => (f.severity||'').toLowerCase() === sevFilter);
+
+  const tbody = document.getElementById('findingsTableBody');
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--dim);padding:40px">No findings match filter</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(f => `
+    <tr class="clickable" onclick="showFindingDetailById('${esc(f.finding_id)}')">
+      <td>${sevBadge(f.severity)}</td>
+      <td>${fmtTime(f.timestamp)}</td>
+      <td>${esc(f.hostname)}</td>
+      <td class="truncate">${esc(f.title)}</td>
+      <td>${f.chain_length||0}</td>
+    </tr>
+  `).join('');
+}
+
+async function showFindingDetailById(findingId) {
+  document.getElementById('findingsList').classList.add('hidden');
+  const panel = document.getElementById('findingDetail');
+  panel.classList.remove('hidden');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span> Loading finding...</div>';
+
+  try {
+    const f = await api(`/api/fleet/findings/${findingId}`);
+    const chain = (f.chain||[]).filter(s => s.entity_type);
+
+    panel.innerHTML = `
+      <a class="back-link" onclick="hideFindingDetail()">&larr; Back to findings</a>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+        ${sevBadge(f.severity)}
+        <h3 style="font-size:16px">${esc(f.title)}</h3>
+      </div>
+      <div class="detail-grid" style="margin-bottom:16px">
+        <dt>Finding ID</dt><dd class="mono">${esc(f.finding_id)}</dd>
+        <dt>Agent</dt><dd>${esc(f.hostname)} <span class="mono" style="color:var(--dim)">(${esc((f.agent_id||'').substring(0,8))}...)</span></dd>
+        <dt>Time</dt><dd>${fmtTime(f.timestamp)}</dd>
+      </div>
+
+      <div class="detail-section">
+        <h4>Description</h4>
+        <p style="line-height:1.6;font-size:13px">${esc(f.description)}</p>
+      </div>
+
+      ${f.recommendation ? `<div class="detail-section">
+        <h4>Recommendation</h4>
+        <p style="line-height:1.6;font-size:13px">${esc(f.recommendation)}</p>
+      </div>` : ''}
+
+      ${chain.length > 0 ? `<div class="detail-section">
+        <h4>Attack Chain (${chain.length} steps)</h4>
+        ${renderChainFlow(chain)}
+      </div>` : ''}
+
+      ${f.affected_entities ? `<div class="detail-section">
+        <h4>Affected Entities</h4>
+        <p class="mono" style="font-size:12px">${esc(f.affected_entities)}</p>
+      </div>` : ''}
+
+      ${f.iocs ? `<div class="detail-section">
+        <h4>IOCs</h4>
+        <pre class="mono" style="font-size:12px;background:var(--bg);padding:12px;border-radius:6px">${esc(typeof f.iocs === 'string' ? f.iocs : JSON.stringify(f.iocs, null, 2))}</pre>
+      </div>` : ''}
+    `;
+  } catch(e) {
+    panel.innerHTML = `<a class="back-link" onclick="hideFindingDetail()">&larr; Back</a><div class="empty-state"><h3>Error</h3><p>${esc(e.message)}</p></div>`;
+  }
+}
+
+function hideFindingDetail() {
+  document.getElementById('findingDetail').classList.add('hidden');
+  document.getElementById('findingsList').classList.remove('hidden');
+}
+
+// ── Lateral Movement ──
+function renderLateral() {
+  const list = fleetData.lateral;
+  const tbody = document.getElementById('lateralTableBody');
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--dim);padding:40px">No lateral movement detected</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(m => {
+    const maxSev = severityMax(m.src_severity, m.dst_severity);
+    return `<tr class="clickable" onclick="showLateralDetail('${esc(m.src_finding_id)}','${esc(m.dst_finding_id)}')">
+      <td>${sevBadge(maxSev)}</td>
+      <td>${esc(m.src_hostname)}</td>
+      <td class="truncate">${esc(m.src_finding_title)}</td>
+      <td class="mono">${esc(m.pivot_ip)}</td>
+      <td>${esc(m.dst_hostname)}</td>
+      <td class="truncate">${esc(m.dst_finding_title)}</td>
+      <td>${fmtTime(m.src_timestamp)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function severityMax(a, b) {
+  const order = {critical:0,high:1,medium:2,low:3,info:4};
+  const va = order[(a||'info').toLowerCase()] ?? 4;
+  const vb = order[(b||'info').toLowerCase()] ?? 4;
+  return va <= vb ? a : b;
+}
+
+async function showLateralDetail(srcId, dstId) {
+  document.getElementById('lateralList').classList.add('hidden');
+  const panel = document.getElementById('lateralDetail');
+  panel.classList.remove('hidden');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span> Loading stitched chain...</div>';
+
+  try {
+    const d = await api(`/api/fleet/lateral-movements/${srcId}/${dstId}`);
+    if (!d || !d.src_finding_id) throw new Error('Movement pair not found');
+
+    const srcChain = (d.src_chain||[]).filter(s => s.entity_type);
+    const dstChain = (d.dst_chain||[]).filter(s => s.entity_type);
+
+    // Find the pivot IP (IP-type step in src chain)
+    let pivotIp = '';
+    for (const s of srcChain) {
+      if (s.entity_type === 'ip') { pivotIp = s.entity_id; break; }
+    }
+
+    panel.innerHTML = `
+      <a class="back-link" onclick="hideLateralDetail()">&larr; Back to lateral movements</a>
+      <h3 style="font-size:16px;margin-bottom:16px">Lateral Movement: ${esc(d.src_hostname)} &rarr; ${esc(d.dst_hostname)}</h3>
+
+      <div class="stitch-container">
+        <div class="stitch-host">
+          <h4>${esc(d.src_hostname)} <span style="color:var(--dim);font-weight:normal">(${esc((d.src_agent_id||'').substring(0,8))}...)</span></h4>
+          <div style="margin-bottom:8px">${sevBadge(d.src_severity)} <span style="margin-left:8px">${esc(d.src_title)}</span></div>
+          ${renderChainFlow(srcChain)}
+        </div>
+
+        <div class="stitch-pivot-arrow">
+          <div>&rarr;</div>
+          <div class="stitch-pivot-ip">${esc(pivotIp)}</div>
+        </div>
+
+        <div class="stitch-host">
+          <h4>${esc(d.dst_hostname)} <span style="color:var(--dim);font-weight:normal">(${esc((d.dst_agent_id||'').substring(0,8))}...)</span></h4>
+          <div style="margin-bottom:8px">${sevBadge(d.dst_severity)} <span style="margin-left:8px">${esc(d.dst_title)}</span></div>
+          ${renderChainFlow(dstChain)}
+        </div>
+      </div>
+
+      <div class="detail-section" style="margin-top:24px">
+        <h4>Details</h4>
+        <div class="detail-grid">
+          <dt>Source Finding</dt><dd class="mono">${esc(d.src_finding_id)}</dd>
+          <dt>Source Time</dt><dd>${fmtTime(d.src_timestamp)}</dd>
+          <dt>Dest Finding</dt><dd class="mono">${esc(d.dst_finding_id)}</dd>
+          <dt>Dest Time</dt><dd>${fmtTime(d.dst_timestamp)}</dd>
+          <dt>Pivot IP</dt><dd class="mono">${esc(pivotIp)}</dd>
+        </div>
+      </div>
+    `;
+  } catch(e) {
+    panel.innerHTML = `<a class="back-link" onclick="hideLateralDetail()">&larr; Back</a><div class="empty-state"><h3>Error</h3><p>${esc(e.message)}</p></div>`;
+  }
+}
+
+function hideLateralDetail() {
+  document.getElementById('lateralDetail').classList.add('hidden');
+  document.getElementById('lateralList').classList.remove('hidden');
+}
+
+// ── Vertical Movement ──
+function renderVertical() {
+  const list = fleetData.vertical;
+  const tbody = document.getElementById('verticalTableBody');
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:40px">No privilege escalation detected</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(v => `
+    <tr>
+      <td>${sevBadge(v.severity)}</td>
+      <td>${esc(v.hostname)}</td>
+      <td class="truncate">${esc(v.title)}</td>
+      <td class="mono">${esc(v.original_user)}</td>
+      <td class="mono" style="color:var(--critical)">${esc(v.escalated_user)}</td>
+      <td>${fmtTime(v.timestamp)}</td>
+    </tr>
+  `).join('');
+}
+
+// ── Registration Keys ──
+let regkeysData = [];
+
+async function loadRegKeys() {
+  try {
+    regkeysData = await api('/api/fleet/registration-keys');
+    renderRegKeys();
+  } catch(e) {
+    console.error('Failed to load registration keys:', e);
+  }
+}
+
+function renderRegKeys() {
+  const tbody = document.getElementById('regkeysTableBody');
+  if (regkeysData.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--dim);padding:40px">No registration keys. Click "Generate Key" to create one.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = regkeysData.map(k => {
+    const preview = k.key.substring(0, 8) + '...' + k.key.substring(k.key.length - 4);
+    const uses = k.max_uses ? `${k.use_count} / ${k.max_uses}` : `${k.use_count}`;
+    const expires = k.expires_at ? fmtTime(k.expires_at) : 'Never';
+    const canRevoke = k.status === 'active';
+    return `<tr>
+      <td>${esc(k.label)}</td>
+      <td class="mono">${esc(preview)}</td>
+      <td>${fmtTime(k.created_at)}</td>
+      <td>${esc(k.created_by)}</td>
+      <td>${uses}</td>
+      <td>${expires}</td>
+      <td><span class="key-status ${k.status}">${k.status}</span></td>
+      <td>
+        ${canRevoke ? `<button class="btn" style="padding:2px 10px;font-size:12px;margin-right:4px" onclick="doRevokeKey('${esc(k.key)}')">Revoke</button>` : ''}
+        <button class="btn" style="padding:2px 10px;font-size:12px;color:var(--critical)" onclick="doDeleteKey('${esc(k.key)}')">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function showGenerateKeyForm() {
+  document.getElementById('generateKeyForm').classList.remove('hidden');
+  document.getElementById('createdKeyPanel').classList.add('hidden');
+  document.getElementById('keyLabel').value = '';
+  document.getElementById('keyMaxUses').value = '';
+  document.getElementById('keyExpiry').value = '';
+  document.getElementById('keyLabel').focus();
+}
+
+function hideGenerateKeyForm() {
+  document.getElementById('generateKeyForm').classList.add('hidden');
+}
+
+async function doGenerateKey() {
+  const label = document.getElementById('keyLabel').value.trim();
+  if (!label) { document.getElementById('keyLabel').focus(); return; }
+  const maxUses = document.getElementById('keyMaxUses').value ? parseInt(document.getElementById('keyMaxUses').value) : null;
+  const expiryVal = document.getElementById('keyExpiry').value;
+  const expiresIn = expiryVal ? parseInt(expiryVal) : null;
+
+  try {
+    const result = await api('/api/fleet/registration-keys', {
+      method: 'POST',
+      body: JSON.stringify({label, max_uses: maxUses, expires_in: expiresIn}),
+    });
+    hideGenerateKeyForm();
+
+    // Show the created key command
+    const serverAddr = window.location.hostname + ':50051';
+    const cmd = `python -m agent.main --fleet-enabled --fleet-url ${serverAddr} --registration-key ${result.key}`;
+    document.getElementById('createdKeyCommand').value = cmd;
+    document.getElementById('createdKeyPanel').classList.remove('hidden');
+    document.getElementById('btnCopyKey').textContent = 'Copy';
+
+    await loadRegKeys();
+  } catch(e) {
+    alert('Failed to generate key: ' + e.message);
+  }
+}
+
+function copyKeyCommand() {
+  const input = document.getElementById('createdKeyCommand');
+  input.select();
+  navigator.clipboard.writeText(input.value).then(() => {
+    document.getElementById('btnCopyKey').textContent = 'Copied!';
+    setTimeout(() => { document.getElementById('btnCopyKey').textContent = 'Copy'; }, 2000);
+  });
+}
+
+async function doRevokeKey(key) {
+  if (!confirm('Revoke this registration key? Agents already registered will not be affected.')) return;
+  try {
+    await api(`/api/fleet/registration-keys/${key}/revoke`, {method:'POST'});
+    await loadRegKeys();
+  } catch(e) {
+    alert('Failed to revoke key: ' + e.message);
+  }
+}
+
+async function doDeleteKey(key) {
+  if (!confirm('Permanently delete this registration key?')) return;
+  try {
+    await api(`/api/fleet/registration-keys/${key}`, {method:'DELETE'});
+    document.getElementById('createdKeyPanel').classList.add('hidden');
+    await loadRegKeys();
+  } catch(e) {
+    alert('Failed to delete key: ' + e.message);
+  }
+}
+
+// ── Startup ──
+(async function init() {
+  if (token) {
+    try {
+      const me = await api('/api/auth/me');
+      currentUser = {username: me.username, role: me.role};
+      showApp();
+    } catch(e) {
+      // Token invalid/expired
+      doLogout();
+    }
+  }
+})();
+</script>
+</body>
+</html>

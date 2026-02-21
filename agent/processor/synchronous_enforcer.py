@@ -154,9 +154,7 @@ class FastBlocklist:
                 addr = ipaddress.ip_address(ip)
                 for net in self._cidrs:
                     if addr in net:
-                        return self._synthesize(
-                            entities, ocsf, event_id, f"Blocked CIDR {net}: {ip}", "dst_cidr", ip
-                        )
+                        return self._synthesize(entities, ocsf, event_id, f"Blocked CIDR {net}: {ip}", "dst_cidr", ip)
             except ValueError:
                 pass
 
@@ -164,17 +162,19 @@ class FastBlocklist:
         for domain_node in entities.domains:
             name = domain_node.name.lower() if domain_node.name else ""
             if name and name in self._domains:
-                return self._synthesize(
-                    entities, ocsf, event_id, f"Blocked domain: {name}", "domain", name
-                )
+                return self._synthesize(entities, ocsf, event_id, f"Blocked domain: {name}", "domain", name)
 
         # Process name check
         for proc in entities.processes:
             for pat, _desc in self._process_names:
                 if fnmatch.fnmatch(proc.name.lower(), pat.lower()):
                     return self._synthesize(
-                        entities, ocsf, event_id, f"Blocked process: {proc.name} (rule: {pat})",
-                        "process_name", proc.name,
+                        entities,
+                        ocsf,
+                        event_id,
+                        f"Blocked process: {proc.name} (rule: {pat})",
+                        "process_name",
+                        proc.name,
                     )
 
         # File path check
@@ -185,8 +185,12 @@ class FastBlocklist:
             for pat, _desc in self._file_paths:
                 if fnmatch.fnmatch(file_id, pat):
                     return self._synthesize(
-                        entities, ocsf, event_id, f"Blocked file: {file_id} (rule: {pat})",
-                        "file_path", file_id,
+                        entities,
+                        ocsf,
+                        event_id,
+                        f"Blocked file: {file_id} (rule: {pat})",
+                        "file_path",
+                        file_id,
                     )
 
         # Chain pattern check
@@ -197,9 +201,12 @@ class FastBlocklist:
                     if _match_chain_pattern(chain_names, parts):
                         chain_str = " > ".join(chain_names)
                         return self._synthesize(
-                            entities, ocsf, event_id,
+                            entities,
+                            ocsf,
+                            event_id,
                             f"Blocked chain: {chain_str} (rule: {desc})",
-                            "chain_pattern", chain_str,
+                            "chain_pattern",
+                            chain_str,
                         )
 
         return None
@@ -235,13 +242,9 @@ class FastBlocklist:
 
         # Add IP/domain entity to chain if relevant
         if rule_type in ("dst_ip", "dst_cidr"):
-            chain.append(
-                ChainStep(entity_type="ip", entity_id=matched_value, entity_name=matched_value)
-            )
+            chain.append(ChainStep(entity_type="ip", entity_id=matched_value, entity_name=matched_value))
         elif rule_type == "domain":
-            chain.append(
-                ChainStep(entity_type="domain", entity_id=matched_value, entity_name=matched_value)
-            )
+            chain.append(ChainStep(entity_type="domain", entity_id=matched_value, entity_name=matched_value))
 
         iocs: dict = {}
         if rule_type in ("dst_ip", "dst_cidr"):

@@ -19,6 +19,22 @@ from server.neo4j_client import Neo4jClient
 logger = logging.getLogger("server.grpc")
 
 
+def _extract_peer_ip(context) -> str:
+    """Extract the client IP from the gRPC peer string (e.g., 'ipv4:10.0.0.1:12345')."""
+    try:
+        peer = context.peer()
+        if peer:
+            # Format: "ipv4:host:port" or "ipv6:[host]:port"
+            parts = peer.split(":")
+            if parts[0] == "ipv4" and len(parts) >= 2:
+                return parts[1]
+            if parts[0] == "ipv6" and len(parts) >= 2:
+                return ":".join(parts[1:-1]).strip("[]")
+    except Exception:
+        pass
+    return ""
+
+
 class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
     """gRPC service implementation for the central fleet server."""
 
@@ -26,7 +42,37 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
         self._neo4j = neo4j
 
     def RegisterAgent(self, request, context):
-        """Register an agent, store Host node in Neo4j."""
+        """Register an agent, store Host node in Neo4j.
+
+        Requires a valid registration key. Rejects with UNAUTHENTICATED if
+        no key is provided, or PERMISSION_DENIED if the key is invalid.
+        """
+        reg_key = request.registration_key
+        if not reg_key:
+            context.set_code(grpc.StatusCode.UNAUTHENTICATED)
+            context.set_details("registration_key is required")
+            return fleet_pb2.RegisterAgentResponse(
+                accepted=False,
+                agent_id=request.agent_info.agent_id if request.agent_info else "",
+                message="registration_key is required",
+            )
+
+        valid, reason = self._neo4j.validate_registration_key(reg_key)
+        if not valid:
+            context.set_code(grpc.StatusCode.PERMISSION_DENIED)
+            context.set_details(reason)
+            logger.warning(
+                "Agent registration rejected (%s): %s from %s",
+                reason,
+                request.agent_info.agent_id if request.agent_info else "unknown",
+                _extract_peer_ip(context),
+            )
+            return fleet_pb2.RegisterAgentResponse(
+                accepted=False,
+                agent_id=request.agent_info.agent_id if request.agent_info else "",
+                message=reason,
+            )
+
         info = request.agent_info
         agent_data = {
             "agent_id": info.agent_id,
@@ -35,10 +81,11 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
             "os_version": info.os_version,
             "agent_version": info.agent_version,
             "registered_at": info.registered_at,
+            "ip_address": info.ip_address or _extract_peer_ip(context),
         }
 
         try:
-            self._neo4j.register_agent(agent_data)
+            self._neo4j.register_agent(agent_data, registration_key=reg_key)
             logger.info("Agent registered: %s (%s)", info.agent_id, info.hostname)
             return fleet_pb2.RegisterAgentResponse(
                 accepted=True,
@@ -97,9 +144,13 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
         )
 
     def Heartbeat(self, request, context):
-        """Update agent heartbeat in Neo4j."""
+        """Update agent heartbeat in Neo4j, including clock offset."""
         try:
-            self._neo4j.update_heartbeat(request.agent_id, request.timestamp)
+            self._neo4j.update_heartbeat(
+                request.agent_id,
+                request.timestamp,
+                clock_offset_ms=request.clock_offset_ms,
+            )
             return fleet_pb2.HeartbeatResponse(acknowledged=True, message="ok")
         except Exception:
             logger.debug("Heartbeat update failed for %s", request.agent_id, exc_info=True)

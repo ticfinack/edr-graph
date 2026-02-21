@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import kuzu
 
 from agent import metrics
+from agent.graph.pid_index import get_pid_index
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ def _cleanup_orphaned_nodes(conn: kuzu.Connection) -> int:
     Returns the count of deleted nodes.
     """
     deleted = 0
+    deleted_process_ids: list[str] = []
 
     for label, checks in _NODE_EDGE_CHECKS.items():
         try:
@@ -145,7 +147,13 @@ def _cleanup_orphaned_nodes(conn: kuzu.Connection) -> int:
                         {"id": node_id},
                     )
                     deleted += 1
+                    if label == "Process":
+                        deleted_process_ids.append(node_id)
         except Exception:
             logger.debug("Reaper: orphaned %s cleanup failed", label, exc_info=True)
+
+    # Synchronize PID index
+    if deleted_process_ids:
+        get_pid_index().remove_nodes(deleted_process_ids)
 
     return deleted

@@ -131,6 +131,11 @@ class Settings(BaseModel):
     fleet_heartbeat_interval: float = 30.0  # Seconds between heartbeats
     fleet_queue_max_size: int = 10000  # Max items buffered in forwarding queue
     fleet_retry_max: int = 5  # Max retries per queued item
+    fleet_registration_key: str = Field(default_factory=lambda: os.environ.get("EDR_REGISTRATION_KEY", ""))
+
+    # NTP clock synchronization (for fleet time correlation)
+    ntp_server: str = "pool.ntp.org"
+    ntp_sync_interval: int = 300  # seconds
 
     @property
     def db_path(self) -> Path:
@@ -194,8 +199,13 @@ _YAML_KEY_MAP: dict[tuple[str, ...], str] = {
     ("fleet", "heartbeat_interval"): "fleet_heartbeat_interval",
     ("fleet", "queue_max_size"): "fleet_queue_max_size",
     ("fleet", "retry_max"): "fleet_retry_max",
+    ("fleet", "registration_key"): "fleet_registration_key",
+    ("fleet", "ntp_server"): "ntp_server",
+    ("fleet", "ntp_sync_interval"): "ntp_sync_interval",
     ("graph", "max_memory_mb"): "graph_max_memory_mb",
     ("graph", "ttl_hours"): "graph_ttl_hours",
+    ("analysis", "ioc_feeds_enabled"): "ioc_feeds_enabled",
+    ("analysis", "ioc_feeds_refresh_hours"): "ioc_feeds_refresh_hours",
 }
 
 
@@ -351,4 +361,6 @@ fleet:
   heartbeat_interval: 30      # Seconds between heartbeats
   queue_max_size: 10000       # Max items buffered locally
   retry_max: 5                # Max retries per queued item
+  ntp_server: "pool.ntp.org"  # NTP server for clock sync (fleet correlation)
+  ntp_sync_interval: 300      # Seconds between NTP offset measurements
 """

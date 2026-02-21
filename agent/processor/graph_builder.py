@@ -180,6 +180,10 @@ class GraphBuilder:
                     "signing_authority": proc.signing_authority or "",
                 },
             )
+            # Update in-memory PID index for fast dashboard queries
+            from agent.graph.pid_index import get_pid_index
+
+            get_pid_index().on_upsert(proc.id, proc.pid, proc.parent_pid or 0)
         except Exception:
             logger.debug("Failed to upsert process %s", proc.id, exc_info=True)
 

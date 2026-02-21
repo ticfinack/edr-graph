@@ -84,6 +84,7 @@ ignore = [
 "agent/fleet/proto/**" = ["E501", "F401", "N802", "N803", "N806"]
 "server/tests/test_grpc_service.py" = ["F401"]
 "server/tests/test_neo4j_client.py" = ["I001"]
+"server/dashboard.py" = ["B008"]  # FastAPI Depends() in arg defaults is idiomatic
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv", "agent/fleet/proto"]

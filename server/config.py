@@ -26,3 +26,18 @@ class ServerSettings(BaseModel):
     # Server tuning
     grpc_max_workers: int = 10
     grpc_max_message_length: int = 16 * 1024 * 1024  # 16 MB
+
+    # JWT authentication
+    jwt_secret: str = Field(default_factory=lambda: os.environ.get("JWT_SECRET", ""))
+    jwt_ttl_hours: int = 8
+
+    # Bootstrap admin credentials
+    bootstrap_admin_user: str = Field(default_factory=lambda: os.environ.get("ADMIN_USER", "admin"))
+    bootstrap_admin_password: str = Field(default_factory=lambda: os.environ.get("ADMIN_PASSWORD", ""))
+
+    # Lateral movement detection
+    lateral_movement_time_window: int = 300  # seconds
+
+    # NTP clock synchronization
+    ntp_server: str = Field(default_factory=lambda: os.environ.get("NTP_SERVER", "pool.ntp.org"))
+    ntp_sync_interval: int = 300  # seconds

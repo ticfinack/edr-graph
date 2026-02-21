@@ -39,6 +39,10 @@ _NORMALIZERS["evtlog_Microsoft-Windows-Sysmon/Operational"] = normalize_process
 _NORMALIZERS["auditd_execve"] = normalize_process
 _NORMALIZERS["auditd_syscall"] = normalize_process
 
+# eBPF sources
+_NORMALIZERS["ebpf_execve"] = normalize_process
+_NORMALIZERS["ebpf_network"] = normalize_network
+
 # ETW sources
 _NORMALIZERS["etw_process"] = normalize_process
 _NORMALIZERS["etw_network"] = normalize_network

@@ -138,6 +138,17 @@ class SqliteQueue:
             ).fetchall()
         return [self._row_to_finding(row) for row in rows]
 
+    def get_finding_by_id(self, finding_id: str) -> SecurityFinding | None:
+        """Retrieve a single finding by its ID."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM findings WHERE id = ?",
+            (finding_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_finding(row)
+
     def get_findings_in_range(self, start: datetime, end: datetime) -> list[SecurityFinding]:
         """Get findings within a time range (for Sankey)."""
         conn = self._get_conn()

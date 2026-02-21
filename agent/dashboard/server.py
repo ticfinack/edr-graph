@@ -81,7 +81,7 @@ def _get_settings():
 
 
 @app.get("/")
-async def index():
+def index():
     """Serve the dashboard SPA."""
     index_path = STATIC_DIR / "index.html"
     if index_path.exists():
@@ -90,7 +90,7 @@ async def index():
 
 
 @app.get("/api/status")
-async def get_status():
+def get_status():
     """Agent status overview."""
     uptime = time.time() - _state["start_time"]
     queue = _get_queue()
@@ -126,7 +126,7 @@ async def get_status():
 
 
 @app.get("/api/findings")
-async def get_findings(
+def get_findings(
     severity: str | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -145,7 +145,7 @@ async def get_findings(
 
 
 @app.get("/api/findings/{finding_id}")
-async def get_finding_detail(finding_id: str):
+def get_finding_detail(finding_id: str):
     """Full detail for a single finding."""
     queue = _get_queue()
     findings = queue.get_findings(limit=500)
@@ -156,7 +156,7 @@ async def get_finding_detail(finding_id: str):
 
 
 @app.get("/api/graph/process-tree/{pid}")
-async def get_process_tree(pid: int):
+def get_process_tree(pid: int):
     """Process tree for a given PID (ancestors + descendants with activity)."""
     conn = _get_conn()
     tree = gq.get_process_tree(conn, pid)
@@ -166,7 +166,7 @@ async def get_process_tree(pid: int):
 
 
 @app.get("/api/graph/network/{pid}")
-async def get_network_graph(pid: int):
+def get_network_graph(pid: int):
     """Network footprint for a process."""
     conn = _get_conn()
     footprint = gq.get_process_network_footprint(conn, pid)
@@ -174,13 +174,27 @@ async def get_network_graph(pid: int):
     # Get process info
     process = {}
     try:
-        result = conn.execute(
-            "MATCH (p:Process {pid: $pid}) RETURN p.name, p.pid, p.cmd_line",
-            {"pid": pid},
-        )
-        if result.has_next():
-            row = result.get_next()
-            process = {"name": row[0], "pid": row[1], "cmd_line": row[2]}
+        from agent.graph.pid_index import get_pid_index
+
+        index = get_pid_index()
+        if index.is_built:
+            nid = index.get_latest_node_id(pid)
+            if nid:
+                result = conn.execute(
+                    "MATCH (p:Process {id: $id}) RETURN p.name, p.pid, p.cmd_line",
+                    {"id": nid},
+                )
+                if result.has_next():
+                    row = result.get_next()
+                    process = {"name": row[0], "pid": row[1], "cmd_line": row[2]}
+        else:
+            result = conn.execute(
+                "MATCH (p:Process {pid: $pid}) RETURN p.name, p.pid, p.cmd_line",
+                {"pid": pid},
+            )
+            if result.has_next():
+                row = result.get_next()
+                process = {"name": row[0], "pid": row[1], "cmd_line": row[2]}
     except Exception:
         pass
 
@@ -188,7 +202,7 @@ async def get_network_graph(pid: int):
 
 
 @app.get("/api/graph/attack-chain/{pid}")
-async def get_attack_chain(pid: int):
+def get_attack_chain(pid: int):
     """Full attack chain context for a PID."""
     conn = _get_conn()
     chain = gq.build_attack_chain(conn, pid)
@@ -232,18 +246,14 @@ async def get_attack_chain(pid: int):
 
 
 @app.get("/api/graph/ioc-chain/{finding_id}")
-async def get_ioc_chain(finding_id: str):
+def get_ioc_chain(finding_id: str):
     """Build an attack-chain-compatible view for IOC/feed findings without PIDs.
 
     Uses the finding's own chain data + graph domain resolution to produce
     a structure that renderChain() can display.
     """
     queue = _get_queue()
-    finding = None
-    for f in queue.get_findings(limit=500):
-        if f.id == finding_id:
-            finding = f
-            break
+    finding = queue.get_finding_by_id(finding_id)
     if finding is None:
         raise HTTPException(404, "Finding not found")
 
@@ -351,7 +361,7 @@ async def get_ioc_chain(finding_id: str):
 
 
 @app.get("/api/graph/ioc-summary")
-async def get_ioc_summary():
+def get_ioc_summary():
     """Global IOC/IOA summary: all domains, external IPs, and file activity.
 
     Also cross-references with findings IOCs to show which findings mention each indicator.
@@ -457,7 +467,7 @@ async def get_ioc_summary():
 
 
 @app.get("/api/graph/process-by-name/{name}")
-async def get_process_by_name(name: str):
+def get_process_by_name(name: str):
     """Look up Process nodes by name. Returns up to 5 matches with PID and cmd_line."""
     conn = _get_conn()
     try:
@@ -475,7 +485,7 @@ async def get_process_by_name(name: str):
 
 
 @app.get("/api/graph/stats")
-async def get_graph_stats():
+def get_graph_stats():
     """Node and edge counts."""
     conn = _get_conn()
     nodes = {}
@@ -516,7 +526,7 @@ async def get_graph_stats():
 
 
 @app.get("/api/metrics")
-async def get_metrics_json():
+def get_metrics_json():
     """Prometheus metrics as JSON."""
     result = {}
     for metric in REGISTRY.collect():
@@ -530,7 +540,7 @@ async def get_metrics_json():
 
 
 @app.get("/api/audit-trail")
-async def get_audit_trail(
+def get_audit_trail(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -562,7 +572,7 @@ async def get_audit_trail(
 
 
 @app.get("/api/events/recent")
-async def get_recent_events(
+def get_recent_events(
     limit: int = Query(100, ge=1, le=1000),
     source: str = Query("all"),
 ):
@@ -577,7 +587,7 @@ async def get_recent_events(
 
 
 @app.post("/api/response/approve/{response_id}")
-async def approve_response(response_id: str, body: dict):
+def approve_response(response_id: str, body: dict):
     """Approve or deny a pending response action."""
     action = body.get("action")
     if action not in ("approve", "deny"):
@@ -617,7 +627,7 @@ async def approve_response(response_id: str, body: dict):
 
 
 @app.get("/api/connections/{pid}")
-async def get_connections(pid: int, hours: int = Query(1, ge=1, le=168)):
+def get_connections(pid: int, hours: int = Query(1, ge=1, le=168)):
     """Connection metadata for a process within a time window."""
     import sqlite3
 
@@ -651,21 +661,21 @@ async def get_connections(pid: int, hours: int = Query(1, ge=1, le=168)):
 
 
 @app.post("/api/pause")
-async def pause_agent():
+def pause_agent():
     """Pause the processing pipeline. Events still collect but aren't processed."""
     _state["paused"] = True
     return {"status": "ok", "paused": True}
 
 
 @app.post("/api/resume")
-async def resume_agent():
+def resume_agent():
     """Resume the processing pipeline."""
     _state["paused"] = False
     return {"status": "ok", "paused": False}
 
 
 @app.get("/api/settings")
-async def get_settings_info():
+def get_settings_info():
     """Current agent configuration (read-only)."""
     settings = _get_settings()
     if not settings:
@@ -693,7 +703,7 @@ async def get_settings_info():
 
 
 @app.get("/api/intel/ioc-stats")
-async def get_ioc_stats():
+def get_ioc_stats():
     """IOC feed database statistics."""
     ioc_db = _state.get("ioc_db")
     if ioc_db is None:
@@ -707,7 +717,7 @@ async def get_ioc_stats():
 
 
 @app.get("/api/response/mode")
-async def get_response_mode():
+def get_response_mode():
     """Current response mode."""
     engine = _state.get("response_engine")
     if engine is None:
@@ -716,7 +726,7 @@ async def get_response_mode():
 
 
 @app.post("/api/response/mode")
-async def set_response_mode(body: dict):
+def set_response_mode(body: dict):
     """Switch response mode.
 
     When switching FROM learning to active/passive, triggers a retroactive
@@ -749,7 +759,7 @@ async def set_response_mode(body: dict):
 
 
 @app.get("/api/response/baseline/stats")
-async def get_baseline_stats():
+def get_baseline_stats():
     """Baseline statistics."""
     baseline = _state.get("baseline")
     if baseline is None:
@@ -758,7 +768,7 @@ async def get_baseline_stats():
 
 
 @app.get("/api/response/baseline")
-async def get_baseline_entries(limit: int = Query(100, ge=1, le=1000)):
+def get_baseline_entries(limit: int = Query(100, ge=1, le=1000)):
     """Baseline entries."""
     baseline = _state.get("baseline")
     if baseline is None:
@@ -767,7 +777,7 @@ async def get_baseline_entries(limit: int = Query(100, ge=1, le=1000)):
 
 
 @app.post("/api/response/baseline/clear")
-async def clear_baseline():
+def clear_baseline():
     """Clear the behavior baseline."""
     baseline = _state.get("baseline")
     if baseline is None:
@@ -781,7 +791,7 @@ async def clear_baseline():
 
 
 @app.post("/api/response/baseline/purge-graph")
-async def purge_baseline_graph():
+def purge_baseline_graph():
     """On-demand retroactive purge of baselined edges from the graph."""
     baseline_gate = _state.get("baseline_gate")
     if baseline_gate is None:
@@ -801,7 +811,7 @@ async def purge_baseline_graph():
 
 
 @app.get("/api/response/allowlist")
-async def get_allowlist():
+def get_allowlist():
     """Get all allowlist rules."""
     allowlist = _state.get("allowlist")
     if allowlist is None:
@@ -810,7 +820,7 @@ async def get_allowlist():
 
 
 @app.post("/api/response/allowlist")
-async def add_allowlist_rule(body: dict):
+def add_allowlist_rule(body: dict):
     """Add an allowlist rule."""
     from agent.response.baseline import ResponseAllowlist
 
@@ -851,7 +861,7 @@ async def add_allowlist_rule(body: dict):
 
 
 @app.delete("/api/response/allowlist/{rule_id}")
-async def delete_allowlist_rule(rule_id: int):
+def delete_allowlist_rule(rule_id: int):
     """Delete an allowlist rule."""
     allowlist = _state.get("allowlist")
     if allowlist is None:
@@ -862,7 +872,7 @@ async def delete_allowlist_rule(rule_id: int):
 
 
 @app.get("/api/response/blocklist")
-async def get_blocklist():
+def get_blocklist():
     """Get all blocklist rules."""
     blocklist = _state.get("blocklist")
     if blocklist is None:
@@ -871,7 +881,7 @@ async def get_blocklist():
 
 
 @app.post("/api/response/blocklist")
-async def add_blocklist_rule(body: dict):
+def add_blocklist_rule(body: dict):
     """Add a blocklist rule."""
     blocklist = _state.get("blocklist")
     if blocklist is None:
@@ -897,7 +907,7 @@ async def add_blocklist_rule(body: dict):
 
 
 @app.delete("/api/response/blocklist/{rule_id}")
-async def delete_blocklist_rule(rule_id: int):
+def delete_blocklist_rule(rule_id: int):
     """Delete a blocklist rule."""
     blocklist = _state.get("blocklist")
     if blocklist is None:
@@ -912,7 +922,7 @@ async def delete_blocklist_rule(rule_id: int):
 
 
 @app.post("/api/response/block-connection")
-async def block_connection(body: dict):
+def block_connection(body: dict):
     """Block traffic to a specific IP:port."""
     engine = _state.get("response_engine")
     if engine is None:
@@ -934,7 +944,7 @@ async def block_connection(body: dict):
 
 
 @app.post("/api/response/unblock-connection")
-async def unblock_connection(body: dict):
+def unblock_connection(body: dict):
     """Remove a connection block."""
     engine = _state.get("response_engine")
     if engine is None:
@@ -956,7 +966,7 @@ async def unblock_connection(body: dict):
 
 
 @app.post("/api/response/sinkhole")
-async def sinkhole_domain(body: dict):
+def sinkhole_domain(body: dict):
     """Sinkhole a domain to 127.0.0.1."""
     engine = _state.get("response_engine")
     if engine is None:
@@ -971,7 +981,7 @@ async def sinkhole_domain(body: dict):
 
 
 @app.post("/api/response/unsinkhole")
-async def unsinkhole_domain(body: dict):
+def unsinkhole_domain(body: dict):
     """Remove a domain sinkhole."""
     engine = _state.get("response_engine")
     if engine is None:
@@ -986,7 +996,7 @@ async def unsinkhole_domain(body: dict):
 
 
 @app.post("/api/response/panic")
-async def activate_panic():
+def activate_panic():
     """Activate panic mode — block ALL network traffic except loopback."""
     engine = _state.get("response_engine")
     if engine is None:
@@ -996,7 +1006,7 @@ async def activate_panic():
 
 
 @app.post("/api/response/panic/restore")
-async def deactivate_panic():
+def deactivate_panic():
     """Deactivate panic mode — restore network connectivity."""
     engine = _state.get("response_engine")
     if engine is None:
@@ -1006,7 +1016,7 @@ async def deactivate_panic():
 
 
 @app.get("/api/response/network-status")
-async def get_network_status():
+def get_network_status():
     """Current network control status."""
     engine = _state.get("response_engine")
     if engine is None:

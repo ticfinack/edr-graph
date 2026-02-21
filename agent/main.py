@@ -736,6 +736,12 @@ def main() -> None:
         default=None,
         help="Agent UUID for fleet registration",
     )
+    parser.add_argument(
+        "--registration-key",
+        type=str,
+        default=None,
+        help="Registration key for fleet enrollment",
+    )
     args = parser.parse_args()
 
     # Generate config and exit
@@ -775,6 +781,8 @@ def main() -> None:
         settings.fleet_enabled = True
     if args.agent_id:
         settings.fleet_agent_id = args.agent_id
+    if args.registration_key:
+        settings.fleet_registration_key = args.registration_key
     settings.ensure_dirs()
 
     logger.info("Starting edr-graph, data dir: %s", settings.data_dir)
@@ -819,6 +827,11 @@ def main() -> None:
     from agent.processor.graph_builder import backfill_parent_pids
 
     backfill_parent_pids(kuzu_db)
+
+    # Build in-memory PID index for fast dashboard graph queries
+    from agent.graph.pid_index import get_pid_index
+
+    get_pid_index().build(init_conn)
 
     # Initialize file attribution cache (for FSEvents PID 0 attribution)
     from agent.enrichment.file_attribution import get_file_attribution_cache
@@ -954,7 +967,21 @@ def main() -> None:
         try:
             from agent.fleet.forwarder import FleetForwarder
 
-            _fleet_forwarder = FleetForwarder(settings=settings, queue=queue)
+            # Start NTP monitor for clock offset reporting
+            ntp_monitor = None
+            try:
+                from server.ntp_sync import NtpMonitor
+
+                ntp_monitor = NtpMonitor(
+                    ntp_server=settings.ntp_server,
+                    interval=settings.ntp_sync_interval,
+                )
+                ntp_monitor.start()
+                logger.info("NTP monitor started (server=%s)", settings.ntp_server)
+            except Exception:
+                logger.debug("NTP monitor not available", exc_info=True)
+
+            _fleet_forwarder = FleetForwarder(settings=settings, queue=queue, ntp_monitor=ntp_monitor)
             _fleet_forwarder.register()
 
             t = threading.Thread(
@@ -990,11 +1017,6 @@ def main() -> None:
             )
 
             collector_names = []
-            try:
-                collectors = get_collectors()
-                collector_names = [type(c).__name__ for c in collectors]
-            except Exception:
-                pass
 
             init_dashboard(
                 queue=queue,

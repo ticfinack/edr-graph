@@ -63,19 +63,23 @@ def _make_entities(
     if connected_edges:
         for ip in connected_edges:
             ent.connected_edges.append(
-                {"process_id": "host:100:1000", "ip_id": ip, "timestamp": now, "dst_port": 443,
-                 "protocol": "TCP", "direction": "outbound", "event_id": 1}
+                {
+                    "process_id": "host:100:1000",
+                    "ip_id": ip,
+                    "timestamp": now,
+                    "dst_port": 443,
+                    "protocol": "TCP",
+                    "direction": "outbound",
+                    "event_id": 1,
+                }
             )
     if domains:
         for d in domains:
-            ent.domains.append(
-                DomainNode(id=d, name=d, first_seen=now, last_seen=now)
-            )
+            ent.domains.append(DomainNode(id=d, name=d, first_seen=now, last_seen=now))
     if file_edges:
         for fp in file_edges:
             ent.file_edges.append(
-                {"process_id": "host:100:1000", "file_id": fp, "operation": "MODIFIED",
-                 "timestamp": now, "event_id": 1}
+                {"process_id": "host:100:1000", "file_id": fp, "operation": "MODIFIED", "timestamp": now, "event_id": 1}
             )
     return ent
 

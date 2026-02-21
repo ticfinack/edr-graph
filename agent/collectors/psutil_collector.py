@@ -21,22 +21,28 @@ class PsutilCollector(Collector):
     Diffs against previous snapshots to detect new processes and connections.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, snapshot_only: bool = False) -> None:
         self._hostname = socket.gethostname()
         self._prev_pids: set[int] = set()
         self._prev_conns: set[tuple] = set()
         self._initialized = False
         self._agent_pid = os.getpid()
         self._agent_pids: set[int] = set()  # refreshed each cycle
+        self._snapshot_only = snapshot_only
+        self._has_run = False
 
     def name(self) -> str:
         return "psutil"
 
     def collect(self) -> list[RawEvent]:
+        if self._snapshot_only and self._has_run:
+            return []
         self._refresh_agent_pids()
         events: list[RawEvent] = []
         events.extend(self._collect_processes())
         events.extend(self._collect_network())
+        if self._snapshot_only:
+            self._has_run = True
         return events
 
     def _refresh_agent_pids(self) -> None:
@@ -61,7 +67,9 @@ class PsutilCollector(Collector):
                 pid = info["pid"]
                 current_pids.add(pid)
 
-                if self._initialized and pid not in self._prev_pids and pid not in self._agent_pids:
+                if pid not in self._agent_pids and (
+                    self._snapshot_only or (self._initialized and pid not in self._prev_pids)
+                ):
                     cmdline = " ".join(info["cmdline"]) if info["cmdline"] else ""
                     create_time = datetime.fromtimestamp(info["create_time"]) if info["create_time"] else now
                     events.append(
@@ -115,7 +123,9 @@ class PsutilCollector(Collector):
             )
             current_conns.add(conn_key)
 
-            if self._initialized and conn_key not in self._prev_conns and (conn.pid or 0) not in self._agent_pids:
+            if (conn.pid or 0) not in self._agent_pids and (
+                self._snapshot_only or (self._initialized and conn_key not in self._prev_conns)
+            ):
                 proc_name = ""
                 if conn.pid:
                     with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):

@@ -195,9 +195,7 @@ def _extract_user_for_process(
         return
 
     user_id = user_name
-    entities.users.append(
-        UserNode(id=user_id, name=user_name, uid=user_uid, first_seen=now, last_seen=now)
-    )
+    entities.users.append(UserNode(id=user_id, name=user_name, uid=user_uid, first_seen=now, last_seen=now))
     entities.spawned_edges.append(
         {
             "user_id": user_id,
@@ -345,7 +343,12 @@ def _extract_network_activity(
         entities.processes.append(proc_node)
 
         _extract_user_for_process(
-            proc.pid, proc_id, entities, now, event_id, activity_id=event.activity_id,
+            proc.pid,
+            proc_id,
+            entities,
+            now,
+            event_id,
+            activity_id=event.activity_id,
         )
 
         if event.dst_endpoint and event.dst_endpoint.ip:
@@ -477,7 +480,12 @@ def _extract_dns_activity(
         entities.processes.append(proc_node)
 
         _extract_user_for_process(
-            proc.pid, proc_id, entities, now, event_id, activity_id=event.activity_id,
+            proc.pid,
+            proc_id,
+            entities,
+            now,
+            event_id,
+            activity_id=event.activity_id,
         )
 
     if event.query_domain:
@@ -571,7 +579,12 @@ def _extract_file_activity(
         entities.processes.append(proc_node)
 
         _extract_user_for_process(
-            proc.pid, proc_id, entities, now, event_id, activity_id=event.activity_id,
+            proc.pid,
+            proc_id,
+            entities,
+            now,
+            event_id,
+            activity_id=event.activity_id,
         )
 
     if event.file_path:

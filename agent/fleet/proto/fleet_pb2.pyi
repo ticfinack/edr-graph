@@ -73,10 +73,12 @@ class OcsfEvent(_message.Message):
     def __init__(self, class_uid: _Optional[int] = ..., event_json: _Optional[str] = ...) -> None: ...
 
 class RegisterAgentRequest(_message.Message):
-    __slots__ = ("agent_info",)
+    __slots__ = ("agent_info", "registration_key")
     AGENT_INFO_FIELD_NUMBER: _ClassVar[int]
+    REGISTRATION_KEY_FIELD_NUMBER: _ClassVar[int]
     agent_info: AgentInfo
-    def __init__(self, agent_info: _Optional[_Union[AgentInfo, _Mapping]] = ...) -> None: ...
+    registration_key: str
+    def __init__(self, agent_info: _Optional[_Union[AgentInfo, _Mapping]] = ..., registration_key: _Optional[str] = ...) -> None: ...
 
 class RegisterAgentResponse(_message.Message):
     __slots__ = ("accepted", "agent_id", "message")
@@ -121,18 +123,20 @@ class SendEventsResponse(_message.Message):
     def __init__(self, accepted_count: _Optional[int] = ..., message: _Optional[str] = ...) -> None: ...
 
 class HeartbeatRequest(_message.Message):
-    __slots__ = ("agent_id", "timestamp", "queue_depth", "findings_count", "status")
+    __slots__ = ("agent_id", "timestamp", "queue_depth", "findings_count", "status", "clock_offset_ms")
     AGENT_ID_FIELD_NUMBER: _ClassVar[int]
     TIMESTAMP_FIELD_NUMBER: _ClassVar[int]
     QUEUE_DEPTH_FIELD_NUMBER: _ClassVar[int]
     FINDINGS_COUNT_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
+    CLOCK_OFFSET_MS_FIELD_NUMBER: _ClassVar[int]
     agent_id: str
     timestamp: int
     queue_depth: int
     findings_count: int
     status: str
-    def __init__(self, agent_id: _Optional[str] = ..., timestamp: _Optional[int] = ..., queue_depth: _Optional[int] = ..., findings_count: _Optional[int] = ..., status: _Optional[str] = ...) -> None: ...
+    clock_offset_ms: int
+    def __init__(self, agent_id: _Optional[str] = ..., timestamp: _Optional[int] = ..., queue_depth: _Optional[int] = ..., findings_count: _Optional[int] = ..., status: _Optional[str] = ..., clock_offset_ms: _Optional[int] = ...) -> None: ...
 
 class HeartbeatResponse(_message.Message):
     __slots__ = ("acknowledged", "message")

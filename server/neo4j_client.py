@@ -34,34 +34,60 @@ class Neo4jClient:
                     logger.debug("Schema query skipped (may already exist): %s", query[:60])
         logger.info("Neo4j schema initialized")
 
-    def register_agent(self, agent_info: dict) -> None:
-        """MERGE a Host node for the agent."""
+    # ── Agent registration ──
+
+    def register_agent(self, agent_info: dict, registration_key: str = "") -> None:
+        """MERGE a Host node for the agent, optionally linking to a RegistrationKey."""
         query = """
         MERGE (h:Host {agent_id: $agent_id})
         SET h.hostname = $hostname,
             h.platform = $platform,
             h.os_version = $os_version,
             h.agent_version = $agent_version,
+            h.ip_address = $ip_address,
             h.registered_at = $registered_at,
             h.last_seen = $registered_at
         """
+        # Ensure ip_address is present (may come from AgentInfo or gRPC peer)
+        if "ip_address" not in agent_info:
+            agent_info["ip_address"] = ""
         with self._driver.session() as session:
             session.run(query, agent_info)
+            if registration_key:
+                session.run(
+                    """
+                    MATCH (h:Host {agent_id: $agent_id})
+                    MATCH (k:RegistrationKey {key: $key})
+                    MERGE (h)-[:REGISTERED_WITH]->(k)
+                    """,
+                    {"agent_id": agent_info["agent_id"], "key": registration_key},
+                )
         logger.info("Registered agent %s (%s)", agent_info["agent_id"], agent_info["hostname"])
 
-    def update_heartbeat(self, agent_id: str, timestamp: int) -> None:
-        """Update Host.last_seen."""
+    def update_heartbeat(self, agent_id: str, timestamp: int, clock_offset_ms: int = 0) -> None:
+        """Update Host.last_seen and clock_offset_ms."""
         query = """
         MATCH (h:Host {agent_id: $agent_id})
-        SET h.last_seen = $timestamp
+        SET h.last_seen = $timestamp,
+            h.clock_offset_ms = $clock_offset_ms
         """
         with self._driver.session() as session:
-            session.run(query, {"agent_id": agent_id, "timestamp": timestamp})
+            session.run(
+                query,
+                {
+                    "agent_id": agent_id,
+                    "timestamp": timestamp,
+                    "clock_offset_ms": clock_offset_ms,
+                },
+            )
+
+    # ── Finding ingestion ──
 
     def ingest_finding(self, agent_id: str, finding: dict) -> None:
         """Create a Finding node linked to its Host, with entity references.
 
-        Also creates IP/Domain nodes from IOCs for cross-host correlation.
+        Also creates IP/Domain nodes from IOCs for cross-host correlation,
+        and ChainNode graph for attack chain stitching.
         """
         query = """
         MATCH (h:Host {agent_id: $agent_id})
@@ -116,20 +142,80 @@ class Neo4jClient:
                     {"domain": domain, "finding_id": finding["id"]},
                 )
 
+        # Create chain nodes if chain data is present
+        chain = finding.get("chain", [])
+        if chain:
+            self.ingest_finding_chain(agent_id, finding["id"], chain)
+
+    def ingest_finding_chain(self, agent_id: str, finding_id: str, chain: list[dict]) -> None:
+        """Create ChainNode nodes linked by NEXT relationships for a finding's chain."""
+        if not chain:
+            return
+
+        with self._driver.session() as session:
+            prev_node_id = None
+            for idx, step in enumerate(chain):
+                node_id = f"{finding_id}:{idx}"
+                session.run(
+                    """
+                    MERGE (c:ChainNode {chain_node_id: $chain_node_id})
+                    SET c.finding_id = $finding_id,
+                        c.step_index = $step_index,
+                        c.entity_type = $entity_type,
+                        c.entity_id = $entity_id,
+                        c.entity_name = $entity_name,
+                        c.pid = $pid,
+                        c.timestamp = $timestamp,
+                        c.host_agent_id = $host_agent_id
+                    WITH c
+                    MATCH (f:Finding {finding_id: $finding_id})
+                    MERGE (f)-[:HAS_CHAIN {step_index: $step_index}]->(c)
+                    """,
+                    {
+                        "chain_node_id": node_id,
+                        "finding_id": finding_id,
+                        "step_index": idx,
+                        "entity_type": step.get("entity_type", ""),
+                        "entity_id": step.get("entity_id", ""),
+                        "entity_name": step.get("entity_name", ""),
+                        "pid": step.get("pid", 0),
+                        "timestamp": step.get("timestamp", 0),
+                        "host_agent_id": agent_id,
+                    },
+                )
+
+                # Link to previous chain step
+                if prev_node_id is not None:
+                    session.run(
+                        """
+                        MATCH (a:ChainNode {chain_node_id: $prev_id})
+                        MATCH (b:ChainNode {chain_node_id: $curr_id})
+                        MERGE (a)-[:NEXT]->(b)
+                        """,
+                        {"prev_id": prev_node_id, "curr_id": node_id},
+                    )
+                prev_node_id = node_id
+
+    # ── OCSF event ingestion ──
+
     def ingest_ocsf_event(self, agent_id: str, event: dict) -> None:
         """Parse an OCSF event and build cross-host graph nodes/edges.
 
         Creates Process, IP, and Domain nodes with host_id for lateral movement detection.
+        Stores both src and dst endpoints for correlation.
         """
         class_uid = event.get("class_uid", 0)
 
-        # Network activity (class 4001) — key for lateral movement
+        # Network activity (class 4001) -- key for lateral movement
         if class_uid == 4001:
             dst = event.get("dst_endpoint", {})
+            src = event.get("src_endpoint", {})
             dst_ip = dst.get("ip", "")
+            src_ip = src.get("ip", "")
+            process = event.get("process", {})
+            process_name = process.get("name", "unknown")
+
             if dst_ip:
-                process = event.get("process", {})
-                process_name = process.get("name", "unknown")
                 query = """
                 MERGE (h:Host {agent_id: $agent_id})
                 MERGE (p:Process {name: $process_name, host_id: $agent_id})
@@ -137,16 +223,31 @@ class Neo4jClient:
                 MERGE (p)-[:CONNECTED_TO {timestamp: $timestamp}]->(i)
                 MERGE (h)-[:RUNS]->(p)
                 """
+                params = {
+                    "agent_id": agent_id,
+                    "process_name": process_name,
+                    "dst_ip": dst_ip,
+                    "timestamp": event.get("time", ""),
+                }
                 with self._driver.session() as session:
-                    session.run(
-                        query,
-                        {
-                            "agent_id": agent_id,
-                            "process_name": process_name,
-                            "dst_ip": dst_ip,
-                            "timestamp": event.get("time", ""),
-                        },
-                    )
+                    session.run(query, params)
+
+                    # Also store src IP if present (for inbound correlation)
+                    if src_ip:
+                        session.run(
+                            """
+                            MERGE (si:IP {address: $src_ip})
+                            WITH si
+                            MATCH (p:Process {name: $process_name, host_id: $agent_id})
+                            MERGE (si)-[:SOURCE_OF {timestamp: $timestamp}]->(p)
+                            """,
+                            {
+                                "src_ip": src_ip,
+                                "process_name": process_name,
+                                "agent_id": agent_id,
+                                "timestamp": event.get("time", ""),
+                            },
+                        )
 
         # DNS activity (class 4003)
         elif class_uid == 4003:
@@ -167,6 +268,230 @@ class Neo4jClient:
                         },
                     )
 
+    # ── Lateral movement detection ──
+
+    def detect_lateral_movements(self, time_window: int = 300, limit: int = 50) -> list[dict]:
+        """Detect cross-GUID chain stitching: findings from different agents
+        connected through shared IPs within a time window.
+
+        Compensates for clock drift using each host's reported NTP offset.
+        """
+        query = """
+        MATCH (hostA:Host)-[:GENERATED]->(fA:Finding)-[:HAS_CHAIN]->(stepA:ChainNode)
+        WHERE stepA.entity_type = 'ip'
+        MATCH (hostB:Host)-[:RUNS]->(proc:Process)-[:CONNECTED_TO]->(ip:IP {address: stepA.entity_id})
+        WHERE hostA.agent_id <> hostB.agent_id
+        MATCH (hostB)-[:GENERATED]->(fB:Finding)
+        WHERE abs(
+            (fB.timestamp - coalesce(hostB.clock_offset_ms, 0) / 1000.0)
+            - (fA.timestamp - coalesce(hostA.clock_offset_ms, 0) / 1000.0)
+        ) < $time_window
+        RETURN hostA.agent_id AS src_agent_id,
+               hostA.hostname AS src_hostname,
+               hostB.agent_id AS dst_agent_id,
+               hostB.hostname AS dst_hostname,
+               fA.finding_id AS src_finding_id,
+               fA.title AS src_finding_title,
+               fA.severity AS src_severity,
+               fA.timestamp AS src_timestamp,
+               fB.finding_id AS dst_finding_id,
+               fB.title AS dst_finding_title,
+               fB.severity AS dst_severity,
+               fB.timestamp AS dst_timestamp,
+               stepA.entity_id AS pivot_ip
+        ORDER BY fA.timestamp DESC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"time_window": time_window, "limit": limit})
+            return [dict(record) for record in result]
+
+    def get_lateral_movement_detail(self, src_finding_id: str, dst_finding_id: str) -> dict:
+        """Get full stitched chain detail for a lateral movement pair."""
+        query = """
+        MATCH (hA:Host)-[:GENERATED]->(fA:Finding {finding_id: $src_finding_id})
+        OPTIONAL MATCH (fA)-[:HAS_CHAIN]->(cA:ChainNode)
+        WITH hA, fA, cA ORDER BY cA.step_index
+        WITH hA, fA, collect({
+            entity_type: cA.entity_type,
+            entity_id: cA.entity_id,
+            entity_name: cA.entity_name,
+            pid: cA.pid,
+            timestamp: cA.timestamp,
+            step_index: cA.step_index
+        }) AS src_chain
+        MATCH (hB:Host)-[:GENERATED]->(fB:Finding {finding_id: $dst_finding_id})
+        OPTIONAL MATCH (fB)-[:HAS_CHAIN]->(cB:ChainNode)
+        WITH hA, fA, src_chain, hB, fB, cB ORDER BY cB.step_index
+        WITH hA, fA, src_chain, hB, fB, collect({
+            entity_type: cB.entity_type,
+            entity_id: cB.entity_id,
+            entity_name: cB.entity_name,
+            pid: cB.pid,
+            timestamp: cB.timestamp,
+            step_index: cB.step_index
+        }) AS dst_chain
+        RETURN hA.agent_id AS src_agent_id,
+               hA.hostname AS src_hostname,
+               fA.finding_id AS src_finding_id,
+               fA.title AS src_title,
+               fA.severity AS src_severity,
+               fA.timestamp AS src_timestamp,
+               src_chain,
+               hB.agent_id AS dst_agent_id,
+               hB.hostname AS dst_hostname,
+               fB.finding_id AS dst_finding_id,
+               fB.title AS dst_title,
+               fB.severity AS dst_severity,
+               fB.timestamp AS dst_timestamp,
+               dst_chain
+        """
+        with self._driver.session() as session:
+            result = session.run(
+                query,
+                {
+                    "src_finding_id": src_finding_id,
+                    "dst_finding_id": dst_finding_id,
+                },
+            )
+            record = result.single()
+            if record:
+                return dict(record)
+            return {}
+
+    def detect_vertical_movements(self, limit: int = 50) -> list[dict]:
+        """Detect privilege escalation within single-agent chains.
+
+        Looks for chains where a user context changes (e.g., non-root -> root).
+        """
+        query = """
+        MATCH (h:Host)-[:GENERATED]->(f:Finding)-[:HAS_CHAIN]->(c1:ChainNode)
+        WHERE c1.entity_type = 'user'
+        MATCH (f)-[:HAS_CHAIN]->(c2:ChainNode)
+        WHERE c2.entity_type = 'user'
+          AND c2.step_index > c1.step_index
+          AND c2.entity_id <> c1.entity_id
+          AND (c2.entity_name = 'root' OR c2.entity_id = '0')
+        RETURN h.agent_id AS agent_id,
+               h.hostname AS hostname,
+               f.finding_id AS finding_id,
+               f.title AS title,
+               f.severity AS severity,
+               f.timestamp AS timestamp,
+               c1.entity_name AS original_user,
+               c2.entity_name AS escalated_user,
+               c1.step_index AS original_step,
+               c2.step_index AS escalated_step
+        ORDER BY f.timestamp DESC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"limit": limit})
+            return [dict(record) for record in result]
+
+    def get_host_to_host_connections(self, limit: int = 100) -> list[dict]:
+        """Get all inter-host network connections (host-to-host via shared IPs)."""
+        query = """
+        MATCH (hA:Host)-[:RUNS]->(pA:Process)-[:CONNECTED_TO]->(ip:IP)
+        MATCH (hB:Host)-[:RUNS]->(pB:Process)-[:CONNECTED_TO]->(ip)
+        WHERE hA.agent_id <> hB.agent_id
+        RETURN hA.agent_id AS src_agent_id,
+               hA.hostname AS src_hostname,
+               hB.agent_id AS dst_agent_id,
+               hB.hostname AS dst_hostname,
+               pA.name AS src_process,
+               pB.name AS dst_process,
+               ip.address AS shared_ip
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"limit": limit})
+            return [dict(record) for record in result]
+
+    # ── Agent detail queries ──
+
+    def get_agent_detail(self, agent_id: str) -> dict | None:
+        """Get host info + finding counts by severity for a specific agent."""
+        query = """
+        MATCH (h:Host {agent_id: $agent_id})
+        OPTIONAL MATCH (h)-[:GENERATED]->(f:Finding)
+        WITH h,
+             count(f) AS total_findings,
+             sum(CASE WHEN f.severity = 'critical' THEN 1 ELSE 0 END) AS critical_count,
+             sum(CASE WHEN f.severity = 'high' THEN 1 ELSE 0 END) AS high_count,
+             sum(CASE WHEN f.severity = 'medium' THEN 1 ELSE 0 END) AS medium_count,
+             sum(CASE WHEN f.severity = 'low' THEN 1 ELSE 0 END) AS low_count,
+             sum(CASE WHEN f.severity = 'info' THEN 1 ELSE 0 END) AS info_count
+        RETURN h.agent_id AS agent_id,
+               h.hostname AS hostname,
+               h.platform AS platform,
+               h.os_version AS os_version,
+               h.agent_version AS agent_version,
+               h.ip_address AS ip_address,
+               h.registered_at AS registered_at,
+               h.last_seen AS last_seen,
+               h.clock_offset_ms AS clock_offset_ms,
+               total_findings,
+               critical_count,
+               high_count,
+               medium_count,
+               low_count,
+               info_count
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"agent_id": agent_id})
+            record = result.single()
+            if record:
+                data = dict(record)
+                last_seen = data.get("last_seen") or 0
+                data["status"] = "online" if (time.time() - last_seen) < 120 else "offline"
+                return data
+            return None
+
+    def get_agent_findings(self, agent_id: str, limit: int = 100) -> list[dict]:
+        """Get findings for a specific agent, with chain step counts."""
+        query = """
+        MATCH (h:Host {agent_id: $agent_id})-[:GENERATED]->(f:Finding)
+        OPTIONAL MATCH (f)-[:HAS_CHAIN]->(c:ChainNode)
+        WITH f, count(c) AS chain_length
+        RETURN f.finding_id AS finding_id,
+               f.timestamp AS timestamp,
+               f.severity AS severity,
+               f.title AS title,
+               f.description AS description,
+               f.recommendation AS recommendation,
+               f.affected_entities AS affected_entities,
+               f.affected_pids AS affected_pids,
+               f.iocs AS iocs,
+               chain_length
+        ORDER BY f.timestamp DESC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"agent_id": agent_id, "limit": limit})
+            return [dict(record) for record in result]
+
+    def get_agent_chain_steps(self, agent_id: str, limit: int = 200) -> list[dict]:
+        """Get chain steps for all findings belonging to an agent."""
+        query = """
+        MATCH (c:ChainNode {host_agent_id: $agent_id})
+        RETURN c.chain_node_id AS chain_node_id,
+               c.finding_id AS finding_id,
+               c.step_index AS step_index,
+               c.entity_type AS entity_type,
+               c.entity_id AS entity_id,
+               c.entity_name AS entity_name,
+               c.pid AS pid,
+               c.timestamp AS timestamp
+        ORDER BY c.finding_id, c.step_index
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"agent_id": agent_id, "limit": limit})
+            return [dict(record) for record in result]
+
+    # ── Fleet overview ──
+
     def get_fleet_status(self) -> list[dict]:
         """Query all hosts with their status and finding counts."""
         query = """
@@ -176,7 +501,9 @@ class Neo4jClient:
                h.hostname AS hostname,
                h.platform AS platform,
                h.agent_version AS agent_version,
+               h.ip_address AS ip_address,
                h.last_seen AS last_seen,
+               h.clock_offset_ms AS clock_offset_ms,
                count(f) AS finding_count
         ORDER BY h.last_seen DESC
         """
@@ -191,7 +518,9 @@ class Neo4jClient:
                         "hostname": record["hostname"],
                         "platform": record["platform"],
                         "agent_version": record["agent_version"],
+                        "ip_address": record["ip_address"],
                         "last_seen": last_seen,
+                        "clock_offset_ms": record["clock_offset_ms"],
                         "finding_count": record["finding_count"],
                         "status": "online" if (time.time() - last_seen) < 120 else "offline",
                     }
@@ -199,16 +528,19 @@ class Neo4jClient:
             return agents
 
     def get_recent_findings(self, limit: int = 50) -> list[dict]:
-        """Get recent findings across all agents."""
+        """Get recent findings across all agents, with chain step counts."""
         query = """
         MATCH (h:Host)-[:GENERATED]->(f:Finding)
+        OPTIONAL MATCH (f)-[:HAS_CHAIN]->(c:ChainNode)
+        WITH h, f, count(c) AS chain_length
         RETURN h.agent_id AS agent_id,
                h.hostname AS hostname,
                f.finding_id AS finding_id,
                f.timestamp AS timestamp,
                f.severity AS severity,
                f.title AS title,
-               f.description AS description
+               f.description AS description,
+               chain_length
         ORDER BY f.timestamp DESC
         LIMIT $limit
         """
@@ -216,10 +548,44 @@ class Neo4jClient:
             result = session.run(query, {"limit": limit})
             return [dict(record) for record in result]
 
+    def get_finding_detail(self, finding_id: str) -> dict | None:
+        """Get a single finding with full chain data."""
+        query = """
+        MATCH (h:Host)-[:GENERATED]->(f:Finding {finding_id: $finding_id})
+        OPTIONAL MATCH (f)-[:HAS_CHAIN]->(c:ChainNode)
+        WITH h, f, c ORDER BY c.step_index
+        WITH h, f, collect({
+            entity_type: c.entity_type,
+            entity_id: c.entity_id,
+            entity_name: c.entity_name,
+            pid: c.pid,
+            timestamp: c.timestamp,
+            step_index: c.step_index
+        }) AS chain
+        RETURN h.agent_id AS agent_id,
+               h.hostname AS hostname,
+               f.finding_id AS finding_id,
+               f.timestamp AS timestamp,
+               f.severity AS severity,
+               f.title AS title,
+               f.description AS description,
+               f.recommendation AS recommendation,
+               f.affected_entities AS affected_entities,
+               f.affected_pids AS affected_pids,
+               f.iocs AS iocs,
+               chain
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"finding_id": finding_id})
+            record = result.single()
+            if record:
+                return dict(record)
+            return None
+
     def get_cross_host_connections(self, ip: str) -> list[dict]:
         """Find all hosts with processes connecting to a given IP.
 
-        This is the core lateral movement detection query — if multiple
+        This is the core lateral movement detection query -- if multiple
         hosts connect to the same suspicious IP, it may indicate C2 or
         lateral movement.
         """
@@ -233,6 +599,190 @@ class Neo4jClient:
         with self._driver.session() as session:
             result = session.run(query, {"ip": ip})
             return [dict(record) for record in result]
+
+    # ── Dashboard user management ──
+
+    def create_dashboard_user(self, username: str, password_hash: str, role: str = "admin") -> None:
+        """Create a dashboard user for SOC authentication."""
+        query = """
+        MERGE (u:DashboardUser {username: $username})
+        SET u.password_hash = $password_hash,
+            u.role = $role,
+            u.created_at = $created_at
+        """
+        with self._driver.session() as session:
+            session.run(
+                query,
+                {
+                    "username": username,
+                    "password_hash": password_hash,
+                    "role": role,
+                    "created_at": int(time.time()),
+                },
+            )
+
+    def verify_dashboard_user(self, username: str) -> dict | None:
+        """Look up a dashboard user by username."""
+        query = """
+        MATCH (u:DashboardUser {username: $username})
+        RETURN u.username AS username,
+               u.password_hash AS password_hash,
+               u.role AS role
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"username": username})
+            record = result.single()
+            if record:
+                return dict(record)
+            return None
+
+    def count_dashboard_users(self) -> int:
+        """Count dashboard users (for bootstrap check)."""
+        query = "MATCH (u:DashboardUser) RETURN count(u) AS cnt"
+        with self._driver.session() as session:
+            result = session.run(query)
+            record = result.single()
+            return record["cnt"] if record else 0
+
+    # ── Registration key management ──
+
+    def create_registration_key(
+        self,
+        key: str,
+        label: str,
+        created_by: str,
+        expires_at: int | None = None,
+        max_uses: int | None = None,
+    ) -> dict:
+        """Create a new registration key."""
+        query = """
+        CREATE (k:RegistrationKey {
+            key: $key,
+            label: $label,
+            created_at: $created_at,
+            created_by: $created_by,
+            expires_at: $expires_at,
+            max_uses: $max_uses,
+            use_count: 0,
+            revoked: false,
+            revoked_at: null,
+            revoked_by: null
+        })
+        RETURN k.key AS key, k.label AS label, k.created_at AS created_at,
+               k.created_by AS created_by, k.expires_at AS expires_at,
+               k.max_uses AS max_uses, k.use_count AS use_count,
+               k.revoked AS revoked
+        """
+        with self._driver.session() as session:
+            result = session.run(
+                query,
+                {
+                    "key": key,
+                    "label": label,
+                    "created_at": int(time.time()),
+                    "created_by": created_by,
+                    "expires_at": expires_at,
+                    "max_uses": max_uses,
+                },
+            )
+            record = result.single()
+            return dict(record) if record else {}
+
+    def list_registration_keys(self) -> list[dict]:
+        """List all registration keys, ordered by created_at desc."""
+        query = """
+        MATCH (k:RegistrationKey)
+        OPTIONAL MATCH (h:Host)-[:REGISTERED_WITH]->(k)
+        WITH k, count(h) AS host_count
+        RETURN k.key AS key, k.label AS label, k.created_at AS created_at,
+               k.created_by AS created_by, k.expires_at AS expires_at,
+               k.max_uses AS max_uses, k.use_count AS use_count,
+               k.revoked AS revoked, k.revoked_at AS revoked_at,
+               k.revoked_by AS revoked_by, host_count
+        ORDER BY k.created_at DESC
+        """
+        with self._driver.session() as session:
+            result = session.run(query)
+            keys = []
+            now = int(time.time())
+            for record in result:
+                d = dict(record)
+                # Compute status
+                if d["revoked"]:
+                    d["status"] = "revoked"
+                elif d["expires_at"] and d["expires_at"] < now:
+                    d["status"] = "expired"
+                elif d["max_uses"] and d["use_count"] >= d["max_uses"]:
+                    d["status"] = "exhausted"
+                else:
+                    d["status"] = "active"
+                keys.append(d)
+            return keys
+
+    def revoke_registration_key(self, key: str, revoked_by: str) -> bool:
+        """Revoke a registration key. Returns True if found and revoked."""
+        query = """
+        MATCH (k:RegistrationKey {key: $key})
+        SET k.revoked = true,
+            k.revoked_at = $revoked_at,
+            k.revoked_by = $revoked_by
+        RETURN k.key AS key
+        """
+        with self._driver.session() as session:
+            result = session.run(
+                query,
+                {
+                    "key": key,
+                    "revoked_at": int(time.time()),
+                    "revoked_by": revoked_by,
+                },
+            )
+            return result.single() is not None
+
+    def delete_registration_key(self, key: str) -> bool:
+        """Permanently delete a registration key. Returns True if found and deleted."""
+        query = """
+        MATCH (k:RegistrationKey {key: $key})
+        DETACH DELETE k
+        RETURN count(*) AS deleted
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"key": key})
+            record = result.single()
+            return record and record["deleted"] > 0
+
+    def validate_registration_key(self, key: str) -> tuple[bool, str]:
+        """Validate a registration key and atomically increment use_count.
+
+        Returns (valid, reason). On success, use_count is incremented.
+        """
+        with self._driver.session() as session:
+            # Fetch the key
+            result = session.run(
+                "MATCH (k:RegistrationKey {key: $key}) RETURN k",
+                {"key": key},
+            )
+            record = result.single()
+            if not record:
+                return False, "invalid_key"
+
+            node = record["k"]
+            if node["revoked"]:
+                return False, "key_revoked"
+
+            now = int(time.time())
+            if node["expires_at"] is not None and node["expires_at"] < now:
+                return False, "key_expired"
+
+            if node["max_uses"] is not None and node["use_count"] >= node["max_uses"]:
+                return False, "max_uses_exceeded"
+
+            # Increment use_count
+            session.run(
+                "MATCH (k:RegistrationKey {key: $key}) SET k.use_count = k.use_count + 1",
+                {"key": key},
+            )
+            return True, "ok"
 
     def close(self) -> None:
         """Close the Neo4j driver."""

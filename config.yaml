@@ -8,7 +8,7 @@ agent:
   data_dir: "./edr_data"
 
 collector:
-  poll_interval: 1.0       # seconds between collection cycles
+  poll_interval: 10.0      # seconds between collection cycles (eBPF is primary)
   buffer_size: 500          # max events per processing batch
   event_retention_hours: 24  # Auto-prune processed events older than this
 

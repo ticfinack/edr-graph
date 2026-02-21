@@ -1,0 +1,52 @@
+[Unit]
+Description=EDR Graph Agent (eBPF) — Local EDR with eBPF Process Telemetry
+Documentation=https://github.com/edr-graph/edr-graph
+After=network.target auditd.service
+Wants=network.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/edr-graph --no-dashboard --log-format json
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Run as root — BPF requires the bpf() syscall which needs root
+User=root
+Group=root
+
+# Auto-restart on any failure
+Restart=always
+RestartSec=5
+
+# Watchdog: systemd kills and restarts if no heartbeat within 30s
+WatchdogSec=30
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+MemoryMax=512M
+CPUQuota=20%
+
+# Working directory and data paths
+WorkingDirectory=/opt/edr-graph
+Environment=EDR_DATA_DIR=/var/lib/edr-graph
+Environment=EDR_QUARANTINE_DIR=/var/edr-graph/quarantine
+
+# Hardening (relaxed for BPF JIT and cgroup access)
+#   - NoNewPrivileges=no   — root must load BPF programs
+#   - No MemoryDenyWriteExecute — conflicts with BPF JIT (W^X pages)
+#   - ProtectKernelTunables=no — BPF reads /proc/sys/net/core/bpf_jit_*
+#   - ProtectControlGroups=no  — bpf_get_current_cgroup_id() reads cgroup
+NoNewPrivileges=no
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edr-graph
+
+[Install]
+WantedBy=multi-user.target

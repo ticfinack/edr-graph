@@ -767,7 +767,7 @@ async function refreshEvents() {
     const src = e.source || '?';
     const msg = (e.message || e.name || '').substring(0, 120);
     const pid = e.pid || '';
-    const srcMap = {unified_log:'ul',unified_log_dns:'dns',psutil_process:'psu',psutil_network:'net',file_create:'fse',file_modify:'fse',file_delete:'fse',file_rename:'fse'};
+    const srcMap = {unified_log:'ul',unified_log_dns:'dns',psutil_process:'psu',psutil_network:'net',ebpf_execve:'ebpf',ebpf_network:'enet',file_create:'fse',file_modify:'fse',file_delete:'fse',file_rename:'fse'};
     const srcShort = srcMap[src] || src.substring(0,3);
     let typeClass = 'process';
     if (src.includes('dns')) typeClass = 'dns';
@@ -1272,21 +1272,31 @@ async function submitAbRules(endpoint) {
   const checkboxes = document.querySelectorAll('.ab-ioc-cb:checked');
   if (checkboxes.length === 0) { alert('Select at least one IOC to create a rule for.'); return; }
 
-  let ok = 0, fail = 0;
+  let ok = 0, fail = 0, lastErr = '';
   for (const cb of checkboxes) {
     const ruleType = cb.getAttribute('data-type');
     const pattern = cb.getAttribute('data-value');
     if (!pattern) continue;
     const body = {rule_type: ruleType, pattern: pattern, description: desc, chain_filter: chainFilter.trim()};
-    const resp = await fetch(API + endpoint, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if (resp.ok) ok++; else fail++;
+    try {
+      const resp = await fetch(API + endpoint, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if (resp.ok) { ok++; } else {
+        fail++;
+        try { const err = await resp.json(); lastErr = err.detail || JSON.stringify(err); } catch(e) { lastErr = 'HTTP ' + resp.status; }
+        console.error('Rule failed:', resp.status, lastErr, body);
+      }
+    } catch(e) {
+      fail++;
+      lastErr = e.message || 'Network error';
+      console.error('Rule fetch error:', e, body);
+    }
   }
   const formEl = document.getElementById('finding-ab-form');
   if (formEl) {
     if (fail === 0) {
       formEl.innerHTML = '<div style="color:var(--low);padding:8px">' + ok + ' rule' + (ok !== 1 ? 's' : '') + ' added successfully.</div>';
     } else {
-      formEl.innerHTML = '<div style="color:var(--high);padding:8px">' + ok + ' added, ' + fail + ' failed.</div>';
+      formEl.innerHTML = '<div style="color:var(--high);padding:8px">' + ok + ' added, ' + fail + ' failed. ' + esc(lastErr) + '</div>';
     }
   }
 }
@@ -1312,7 +1322,7 @@ async function deleteBlocklistRule(id) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML.replace(/"/g, '&quot;'); }
 function fmtNum(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'k' : String(n); }
 function fmtDuration(s) {
   if (s < 60) return Math.floor(s) + 's';

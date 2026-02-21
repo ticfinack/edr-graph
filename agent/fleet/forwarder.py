@@ -35,13 +35,14 @@ class FleetForwarder:
     handles the concurrent access.
     """
 
-    def __init__(self, settings: Settings, queue: SqliteQueue) -> None:
+    def __init__(self, settings: Settings, queue: SqliteQueue, ntp_monitor=None) -> None:
         self._settings = settings
         self._queue = queue
         self._agent_id = settings.fleet_agent_id or str(uuid.uuid4())
         self._channel: grpc.Channel | None = None
         self._stub: fleet_pb2_grpc.FleetServiceStub | None = None
         self._connected = False
+        self._ntp_monitor = ntp_monitor
 
         self._connect()
 
@@ -75,7 +76,10 @@ class FleetForwarder:
             agent_version="0.1.0",
             registered_at=int(time.time()),
         )
-        request = fleet_pb2.RegisterAgentRequest(agent_info=agent_info)
+        request = fleet_pb2.RegisterAgentRequest(
+            agent_info=agent_info,
+            registration_key=self._settings.fleet_registration_key,
+        )
 
         try:
             response = self._stub.RegisterAgent(request, timeout=10)
@@ -174,13 +178,18 @@ class FleetForwarder:
             logger.warning("Failed to forward events: %s", e)
 
     def send_heartbeat(self) -> None:
-        """Send heartbeat to fleet server."""
+        """Send heartbeat to fleet server, including NTP clock offset."""
+        clock_offset_ms = 0
+        if self._ntp_monitor is not None:
+            clock_offset_ms = self._ntp_monitor.current_offset_ms
+
         request = fleet_pb2.HeartbeatRequest(
             agent_id=self._agent_id,
             timestamp=int(time.time()),
             queue_depth=self._queue.count_unprocessed(),
             findings_count=len(self._queue.get_findings(limit=1)),
             status="healthy",
+            clock_offset_ms=clock_offset_ms,
         )
         try:
             self._stub.Heartbeat(request, timeout=10)

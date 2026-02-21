@@ -50,6 +50,10 @@ def normalize_file(raw: RawEvent) -> FileActivity:
         except Exception:
             pass
 
+    # If attribution failed, don't carry forward placeholder names
+    if pid == 0:
+        process_name = ""
+
     process = None
     if pid or process_name:
         process = ProcessInfo(pid=pid, name=process_name)
