@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import grpc
+
 from agent.fleet.proto import fleet_pb2
 from server.grpc_service import FleetServicer
 
@@ -11,9 +13,8 @@ class TestFleetServicer:
         mock_neo4j = MagicMock()
         return FleetServicer(mock_neo4j), mock_neo4j
 
-    def test_register_agent_success(self):
-        servicer, neo4j = self._make_servicer()
-        request = fleet_pb2.RegisterAgentRequest(
+    def _make_register_request(self, registration_key="valid-key-abc"):
+        return fleet_pb2.RegisterAgentRequest(
             agent_info=fleet_pb2.AgentInfo(
                 agent_id="agent-001",
                 hostname="test-host",
@@ -21,27 +22,85 @@ class TestFleetServicer:
                 os_version="5.15.0",
                 agent_version="0.1.0",
                 registered_at=1700000000,
-            )
+            ),
+            registration_key=registration_key,
         )
+
+    def test_register_agent_success(self):
+        servicer, neo4j = self._make_servicer()
+        neo4j.validate_registration_key.return_value = (True, "ok")
+        request = self._make_register_request()
         context = MagicMock()
         response = servicer.RegisterAgent(request, context)
 
         assert response.accepted is True
         assert response.agent_id == "agent-001"
+        neo4j.validate_registration_key.assert_called_once_with("valid-key-abc")
         neo4j.register_agent.assert_called_once()
-        call_args = neo4j.register_agent.call_args[0][0]
-        assert call_args["hostname"] == "test-host"
-        assert call_args["platform"] == "linux"
+        call_args = neo4j.register_agent.call_args
+        assert call_args[0][0]["hostname"] == "test-host"
+        assert call_args[0][0]["platform"] == "linux"
+        assert call_args[1]["registration_key"] == "valid-key-abc"
+
+    def test_register_agent_no_key(self):
+        servicer, neo4j = self._make_servicer()
+        request = self._make_register_request(registration_key="")
+        context = MagicMock()
+        response = servicer.RegisterAgent(request, context)
+
+        assert response.accepted is False
+        assert "registration_key is required" in response.message
+        context.set_code.assert_called_with(grpc.StatusCode.UNAUTHENTICATED)
+        neo4j.register_agent.assert_not_called()
+
+    def test_register_agent_invalid_key(self):
+        servicer, neo4j = self._make_servicer()
+        neo4j.validate_registration_key.return_value = (False, "invalid_key")
+        request = self._make_register_request(registration_key="bad-key")
+        context = MagicMock()
+        response = servicer.RegisterAgent(request, context)
+
+        assert response.accepted is False
+        assert response.message == "invalid_key"
+        context.set_code.assert_called_with(grpc.StatusCode.PERMISSION_DENIED)
+        neo4j.register_agent.assert_not_called()
+
+    def test_register_agent_revoked_key(self):
+        servicer, neo4j = self._make_servicer()
+        neo4j.validate_registration_key.return_value = (False, "key_revoked")
+        request = self._make_register_request(registration_key="revoked-key")
+        context = MagicMock()
+        response = servicer.RegisterAgent(request, context)
+
+        assert response.accepted is False
+        assert response.message == "key_revoked"
+        context.set_code.assert_called_with(grpc.StatusCode.PERMISSION_DENIED)
+
+    def test_register_agent_expired_key(self):
+        servicer, neo4j = self._make_servicer()
+        neo4j.validate_registration_key.return_value = (False, "key_expired")
+        request = self._make_register_request(registration_key="expired-key")
+        context = MagicMock()
+        response = servicer.RegisterAgent(request, context)
+
+        assert response.accepted is False
+        assert response.message == "key_expired"
+
+    def test_register_agent_max_uses_exceeded(self):
+        servicer, neo4j = self._make_servicer()
+        neo4j.validate_registration_key.return_value = (False, "max_uses_exceeded")
+        request = self._make_register_request(registration_key="exhausted-key")
+        context = MagicMock()
+        response = servicer.RegisterAgent(request, context)
+
+        assert response.accepted is False
+        assert response.message == "max_uses_exceeded"
 
     def test_register_agent_failure(self):
         servicer, neo4j = self._make_servicer()
+        neo4j.validate_registration_key.return_value = (True, "ok")
         neo4j.register_agent.side_effect = RuntimeError("DB error")
-        request = fleet_pb2.RegisterAgentRequest(
-            agent_info=fleet_pb2.AgentInfo(
-                agent_id="agent-002",
-                hostname="fail-host",
-            )
-        )
+        request = self._make_register_request()
         context = MagicMock()
         response = servicer.RegisterAgent(request, context)
 
@@ -139,7 +198,7 @@ class TestFleetServicer:
         response = servicer.Heartbeat(request, context)
 
         assert response.acknowledged is True
-        neo4j.update_heartbeat.assert_called_once_with("agent-001", 1700000000)
+        neo4j.update_heartbeat.assert_called_once_with("agent-001", 1700000000, clock_offset_ms=0)
 
     def test_heartbeat_failure(self):
         servicer, neo4j = self._make_servicer()
