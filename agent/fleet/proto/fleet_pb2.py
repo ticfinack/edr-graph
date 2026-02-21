@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0b\x66leet.proto\x12\tedr.fleet\"\x97\x01\n\tAgentInfo\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\x10\n\x08hostname\x18\x02 \x01(\t\x12\x10\n\x08platform\x18\x03 \x01(\t\x12\x12\n\nos_version\x18\x04 \x01(\t\x12\x15\n\ragent_version\x18\x05 \x01(\t\x12\x12\n\nip_address\x18\x06 \x01(\t\x12\x15\n\rregistered_at\x18\x07 \x01(\x03\"h\n\tChainStep\x12\x13\n\x0b\x65ntity_type\x18\x01 \x01(\t\x12\x11\n\tentity_id\x18\x02 \x01(\t\x12\x13\n\x0b\x65ntity_name\x18\x03 \x01(\t\x12\x0b\n\x03pid\x18\x04 \x01(\x05\x12\x11\n\ttimestamp\x18\x05 \x01(\x03\"\x84\x02\n\x0fSecurityFinding\x12\n\n\x02id\x18\x01 \x01(\t\x12\x11\n\ttimestamp\x18\x02 \x01(\x03\x12\x10\n\x08severity\x18\x03 \x01(\t\x12\r\n\x05title\x18\x04 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x05 \x01(\t\x12\x19\n\x11\x61\x66\x66\x65\x63ted_entities\x18\x06 \x03(\t\x12\x1a\n\x12\x65vidence_event_ids\x18\x07 \x03(\x05\x12\x16\n\x0erecommendation\x18\x08 \x01(\t\x12#\n\x05\x63hain\x18\t \x03(\x0b\x32\x14.edr.fleet.ChainStep\x12\x15\n\raffected_pids\x18\n \x03(\x05\x12\x11\n\tiocs_json\x18\x0b \x01(\t\"2\n\tOcsfEvent\x12\x11\n\tclass_uid\x18\x01 \x01(\x05\x12\x12\n\nevent_json\x18\x02 \x01(\t\"Z\n\x14RegisterAgentRequest\x12(\n\nagent_info\x18\x01 \x01(\x0b\x32\x14.edr.fleet.AgentInfo\x12\x18\n\x10registration_key\x18\x02 \x01(\t\"L\n\x15RegisterAgentResponse\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\x12\x10\n\x08\x61gent_id\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\"U\n\x13SendFindingsRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12,\n\x08\x66indings\x18\x02 \x03(\x0b\x32\x1a.edr.fleet.SecurityFinding\"?\n\x14SendFindingsResponse\x12\x16\n\x0e\x61\x63\x63\x65pted_count\x18\x01 \x01(\x05\x12\x0f\n\x07message\x18\x02 \x01(\t\"K\n\x11SendEventsRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12$\n\x06\x65vents\x18\x02 \x03(\x0b\x32\x14.edr.fleet.OcsfEvent\"=\n\x12SendEventsResponse\x12\x16\n\x0e\x61\x63\x63\x65pted_count\x18\x01 \x01(\x05\x12\x0f\n\x07message\x18\x02 \x01(\t\"\x8d\x01\n\x10HeartbeatRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\x11\n\ttimestamp\x18\x02 \x01(\x03\x12\x13\n\x0bqueue_depth\x18\x03 \x01(\x05\x12\x16\n\x0e\x66indings_count\x18\x04 \x01(\x05\x12\x0e\n\x06status\x18\x05 \x01(\t\x12\x17\n\x0f\x63lock_offset_ms\x18\x06 \x01(\x03\":\n\x11HeartbeatResponse\x12\x14\n\x0c\x61\x63knowledged\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t2\xc6\x02\n\x0c\x46leetService\x12R\n\rRegisterAgent\x12\x1f.edr.fleet.RegisterAgentRequest\x1a .edr.fleet.RegisterAgentResponse\x12O\n\x0cSendFindings\x12\x1e.edr.fleet.SendFindingsRequest\x1a\x1f.edr.fleet.SendFindingsResponse\x12I\n\nSendEvents\x12\x1c.edr.fleet.SendEventsRequest\x1a\x1d.edr.fleet.SendEventsResponse\x12\x46\n\tHeartbeat\x12\x1b.edr.fleet.HeartbeatRequest\x1a\x1c.edr.fleet.HeartbeatResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0b\x66leet.proto\x12\tedr.fleet\"\xc0\x01\n\tAgentInfo\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\x10\n\x08hostname\x18\x02 \x01(\t\x12\x10\n\x08platform\x18\x03 \x01(\t\x12\x12\n\nos_version\x18\x04 \x01(\t\x12\x15\n\ragent_version\x18\x05 \x01(\t\x12\x12\n\nip_address\x18\x06 \x01(\t\x12\x15\n\rregistered_at\x18\x07 \x01(\x03\x12\x14\n\x0cip_addresses\x18\x08 \x03(\t\x12\x11\n\tpublic_ip\x18\t \x01(\t\"h\n\tChainStep\x12\x13\n\x0b\x65ntity_type\x18\x01 \x01(\t\x12\x11\n\tentity_id\x18\x02 \x01(\t\x12\x13\n\x0b\x65ntity_name\x18\x03 \x01(\t\x12\x0b\n\x03pid\x18\x04 \x01(\x05\x12\x11\n\ttimestamp\x18\x05 \x01(\x03\"\x84\x02\n\x0fSecurityFinding\x12\n\n\x02id\x18\x01 \x01(\t\x12\x11\n\ttimestamp\x18\x02 \x01(\x03\x12\x10\n\x08severity\x18\x03 \x01(\t\x12\r\n\x05title\x18\x04 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x05 \x01(\t\x12\x19\n\x11\x61\x66\x66\x65\x63ted_entities\x18\x06 \x03(\t\x12\x1a\n\x12\x65vidence_event_ids\x18\x07 \x03(\x05\x12\x16\n\x0erecommendation\x18\x08 \x01(\t\x12#\n\x05\x63hain\x18\t \x03(\x0b\x32\x14.edr.fleet.ChainStep\x12\x15\n\raffected_pids\x18\n \x03(\x05\x12\x11\n\tiocs_json\x18\x0b \x01(\t\"2\n\tOcsfEvent\x12\x11\n\tclass_uid\x18\x01 \x01(\x05\x12\x12\n\nevent_json\x18\x02 \x01(\t\"Z\n\x14RegisterAgentRequest\x12(\n\nagent_info\x18\x01 \x01(\x0b\x32\x14.edr.fleet.AgentInfo\x12\x18\n\x10registration_key\x18\x02 \x01(\t\"L\n\x15RegisterAgentResponse\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\x12\x10\n\x08\x61gent_id\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\"U\n\x13SendFindingsRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12,\n\x08\x66indings\x18\x02 \x03(\x0b\x32\x1a.edr.fleet.SecurityFinding\"?\n\x14SendFindingsResponse\x12\x16\n\x0e\x61\x63\x63\x65pted_count\x18\x01 \x01(\x05\x12\x0f\n\x07message\x18\x02 \x01(\t\"K\n\x11SendEventsRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12$\n\x06\x65vents\x18\x02 \x03(\x0b\x32\x14.edr.fleet.OcsfEvent\"=\n\x12SendEventsResponse\x12\x16\n\x0e\x61\x63\x63\x65pted_count\x18\x01 \x01(\x05\x12\x0f\n\x07message\x18\x02 \x01(\t\"\xb6\x01\n\x10HeartbeatRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\x11\n\ttimestamp\x18\x02 \x01(\x03\x12\x13\n\x0bqueue_depth\x18\x03 \x01(\x05\x12\x16\n\x0e\x66indings_count\x18\x04 \x01(\x05\x12\x0e\n\x06status\x18\x05 \x01(\t\x12\x17\n\x0f\x63lock_offset_ms\x18\x06 \x01(\x03\x12\x14\n\x0cip_addresses\x18\x07 \x03(\t\x12\x11\n\tpublic_ip\x18\x08 \x01(\t\":\n\x11HeartbeatResponse\x12\x14\n\x0c\x61\x63knowledged\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t2\xc6\x02\n\x0c\x46leetService\x12R\n\rRegisterAgent\x12\x1f.edr.fleet.RegisterAgentRequest\x1a .edr.fleet.RegisterAgentResponse\x12O\n\x0cSendFindings\x12\x1e.edr.fleet.SendFindingsRequest\x1a\x1f.edr.fleet.SendFindingsResponse\x12I\n\nSendEvents\x12\x1c.edr.fleet.SendEventsRequest\x1a\x1d.edr.fleet.SendEventsResponse\x12\x46\n\tHeartbeat\x12\x1b.edr.fleet.HeartbeatRequest\x1a\x1c.edr.fleet.HeartbeatResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -32,29 +32,29 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'fleet_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_AGENTINFO']._serialized_start=27
-  _globals['_AGENTINFO']._serialized_end=178
-  _globals['_CHAINSTEP']._serialized_start=180
-  _globals['_CHAINSTEP']._serialized_end=284
-  _globals['_SECURITYFINDING']._serialized_start=287
-  _globals['_SECURITYFINDING']._serialized_end=547
-  _globals['_OCSFEVENT']._serialized_start=549
-  _globals['_OCSFEVENT']._serialized_end=599
-  _globals['_REGISTERAGENTREQUEST']._serialized_start=601
-  _globals['_REGISTERAGENTREQUEST']._serialized_end=691
-  _globals['_REGISTERAGENTRESPONSE']._serialized_start=693
-  _globals['_REGISTERAGENTRESPONSE']._serialized_end=769
-  _globals['_SENDFINDINGSREQUEST']._serialized_start=771
-  _globals['_SENDFINDINGSREQUEST']._serialized_end=856
-  _globals['_SENDFINDINGSRESPONSE']._serialized_start=858
-  _globals['_SENDFINDINGSRESPONSE']._serialized_end=921
-  _globals['_SENDEVENTSREQUEST']._serialized_start=923
-  _globals['_SENDEVENTSREQUEST']._serialized_end=998
-  _globals['_SENDEVENTSRESPONSE']._serialized_start=1000
-  _globals['_SENDEVENTSRESPONSE']._serialized_end=1061
-  _globals['_HEARTBEATREQUEST']._serialized_start=1064
-  _globals['_HEARTBEATREQUEST']._serialized_end=1205
-  _globals['_HEARTBEATRESPONSE']._serialized_start=1207
-  _globals['_HEARTBEATRESPONSE']._serialized_end=1265
-  _globals['_FLEETSERVICE']._serialized_start=1268
-  _globals['_FLEETSERVICE']._serialized_end=1594
+  _globals['_AGENTINFO']._serialized_end=219
+  _globals['_CHAINSTEP']._serialized_start=221
+  _globals['_CHAINSTEP']._serialized_end=325
+  _globals['_SECURITYFINDING']._serialized_start=328
+  _globals['_SECURITYFINDING']._serialized_end=588
+  _globals['_OCSFEVENT']._serialized_start=590
+  _globals['_OCSFEVENT']._serialized_end=640
+  _globals['_REGISTERAGENTREQUEST']._serialized_start=642
+  _globals['_REGISTERAGENTREQUEST']._serialized_end=732
+  _globals['_REGISTERAGENTRESPONSE']._serialized_start=734
+  _globals['_REGISTERAGENTRESPONSE']._serialized_end=810
+  _globals['_SENDFINDINGSREQUEST']._serialized_start=812
+  _globals['_SENDFINDINGSREQUEST']._serialized_end=897
+  _globals['_SENDFINDINGSRESPONSE']._serialized_start=899
+  _globals['_SENDFINDINGSRESPONSE']._serialized_end=962
+  _globals['_SENDEVENTSREQUEST']._serialized_start=964
+  _globals['_SENDEVENTSREQUEST']._serialized_end=1039
+  _globals['_SENDEVENTSRESPONSE']._serialized_start=1041
+  _globals['_SENDEVENTSRESPONSE']._serialized_end=1102
+  _globals['_HEARTBEATREQUEST']._serialized_start=1105
+  _globals['_HEARTBEATREQUEST']._serialized_end=1287
+  _globals['_HEARTBEATRESPONSE']._serialized_start=1289
+  _globals['_HEARTBEATRESPONSE']._serialized_end=1347
+  _globals['_FLEETSERVICE']._serialized_start=1350
+  _globals['_FLEETSERVICE']._serialized_end=1676
 # @@protoc_insertion_point(module_scope)

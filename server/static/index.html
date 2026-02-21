@@ -32,6 +32,8 @@ button{cursor:pointer;font-family:inherit}
 .btn:hover{border-color:var(--accent)}
 .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;width:100%;padding:10px}
 .btn-primary:hover{background:#2563eb}
+.btn-danger{background:#dc2626;border-color:#dc2626;color:#fff;font-size:12px;padding:6px 12px}
+.btn-danger:hover{background:#b91c1c}
 
 /* Header */
 .header{display:flex;align-items:center;justify-content:space-between;padding:12px 24px;background:var(--card);border-bottom:1px solid var(--border)}
@@ -130,6 +132,13 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
 .key-status.revoked{background:rgba(239,68,68,0.15);color:var(--critical)}
 .key-status.expired{background:rgba(107,114,128,0.15);color:var(--dim)}
 .key-status.exhausted{background:rgba(234,179,8,0.15);color:var(--medium)}
+
+/* IP badges */
+.ip-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-family:"SF Mono",Menlo,Monaco,monospace;margin:2px}
+.ip-badge.local{background:rgba(59,130,246,0.12);color:var(--accent)}
+.ip-badge.public{background:rgba(192,132,252,0.12);color:var(--lateral)}
+.ip-badge.peer{background:rgba(107,114,128,0.1);color:var(--dim)}
+.ip-more{display:inline-block;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;background:rgba(59,130,246,0.12);color:var(--accent);margin-left:4px;cursor:default}
 
 /* Loading */
 .loading{text-align:center;padding:40px;color:var(--dim)}
@@ -479,7 +488,8 @@ function fmtAgo(ts) {
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s || '';
-  return d.innerHTML;
+  // Also escape double-quotes for safe use in HTML attributes (title="...")
+  return d.innerHTML.replace(/"/g, '&quot;');
 }
 
 // ── Fleet Overview ──
@@ -505,12 +515,16 @@ function renderFleet() {
   tbody.innerHTML = agents.map(a => {
     const offsetMs = a.clock_offset_ms || 0;
     const driftWarn = Math.abs(offsetMs) > 500 ? `<span class="drift-warn">${offsetMs}ms</span>` : `${offsetMs}ms`;
+    const ips = a.ip_addresses && a.ip_addresses.length > 0 ? a.ip_addresses : (a.ip_address ? [a.ip_address] : []);
+    const firstIp = ips.length > 0 ? esc(ips[0]) : '-';
+    const moreCount = ips.length > 1 ? ips.length - 1 : 0;
+    const ipCell = firstIp + (moreCount > 0 ? `<span class="ip-more" title="${esc(ips.join(', '))}">+${moreCount}</span>` : '');
     return `<tr class="clickable" onclick="showAgentDetail('${esc(a.agent_id)}')">
       <td><span class="status-dot ${a.status}"></span></td>
       <td>${esc(a.hostname)}</td>
       <td>${esc(a.platform)}</td>
       <td class="mono">${esc(a.agent_version)}</td>
-      <td class="mono">${esc(a.ip_address||'-')}</td>
+      <td class="mono">${ipCell}</td>
       <td>${a.finding_count}</td>
       <td>${driftWarn}</td>
       <td>${fmtAgo(a.last_seen)}</td>
@@ -534,14 +548,24 @@ async function showAgentDetail(agentId) {
     const offsetMs = detail.clock_offset_ms || 0;
     const driftWarn = Math.abs(offsetMs) > 500 ? `<span class="drift-warn">DRIFT: ${offsetMs}ms</span>` : `${offsetMs}ms`;
 
+    // Build IP badges
+    const localIps = detail.ip_addresses && detail.ip_addresses.length > 0 ? detail.ip_addresses : (detail.ip_address ? [detail.ip_address] : []);
+    const localIpBadges = localIps.map(ip => `<span class="ip-badge local">${esc(ip)}</span>`).join('');
+    const publicIpBadge = detail.public_ip ? `<span class="ip-badge public" title="Public IP">&#127760; ${esc(detail.public_ip)}</span>` : '';
+    const peerIp = detail.grpc_peer_ip || '';
+    const peerIpBadge = (peerIp && !localIps.includes(peerIp)) ? `<span class="ip-badge peer" title="gRPC peer">${esc(peerIp)}</span>` : '';
+    const ipBadges = localIpBadges + publicIpBadge + peerIpBadge || '<span style="color:var(--dim)">-</span>';
+
     panel.innerHTML = `
-      <a class="back-link" onclick="hideAgentDetail()">&larr; Back to fleet</a>
+      <div style="margin-bottom:8px">
+        <a class="back-link" onclick="hideAgentDetail()" style="margin-bottom:0">&larr; Back to fleet</a>
+      </div>
       <h3 style="font-size:18px;margin-bottom:16px">${esc(detail.hostname)} <span class="status-dot ${detail.status}" style="margin-left:8px"></span></h3>
       <div class="detail-grid" style="margin-bottom:24px">
         <dt>Agent ID</dt><dd class="mono">${esc(detail.agent_id)}</dd>
         <dt>Platform</dt><dd>${esc(detail.platform)} ${esc(detail.os_version)}</dd>
         <dt>Version</dt><dd class="mono">${esc(detail.agent_version)}</dd>
-        <dt>IP Address</dt><dd class="mono">${esc(detail.ip_address||'-')}</dd>
+        <dt>IP Addresses</dt><dd>${ipBadges}</dd>
         <dt>NTP Offset</dt><dd>${driftWarn}</dd>
         <dt>Registered</dt><dd>${fmtTime(detail.registered_at)}</dd>
         <dt>Last Seen</dt><dd>${fmtTime(detail.last_seen)} (${fmtAgo(detail.last_seen)})</dd>

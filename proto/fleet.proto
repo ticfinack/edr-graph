@@ -26,8 +26,10 @@ message AgentInfo {
   string platform = 3;       // "darwin", "linux", "win32"
   string os_version = 4;
   string agent_version = 5;
-  string ip_address = 6;     // Primary IP of the host
+  string ip_address = 6;     // Primary IP of the host (backward compat)
   int64 registered_at = 7;   // Unix timestamp
+  repeated string ip_addresses = 8;  // All local IPs (no loopback)
+  string public_ip = 9;              // NAT/public IP
 }
 
 // --- Security Findings ---
@@ -101,6 +103,8 @@ message HeartbeatRequest {
   int32 findings_count = 4;  // Total findings generated
   string status = 5;         // "healthy", "degraded", "error"
   int64 clock_offset_ms = 6; // Agent's NTP clock offset in milliseconds
+  repeated string ip_addresses = 7;  // Current local IPs
+  string public_ip = 8;              // Current public IP
 }
 
 message HeartbeatResponse {

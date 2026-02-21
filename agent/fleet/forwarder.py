@@ -12,11 +12,13 @@ import logging
 import platform
 import time
 import uuid
+from pathlib import Path
 
 import grpc
 
 from agent import metrics
 from agent.config import Settings
+from agent.fleet.ip_discovery import PublicIpMonitor, get_local_ips
 from agent.fleet.proto import fleet_pb2, fleet_pb2_grpc
 from agent.fleet.serializers import finding_to_proto
 from agent.fleet.tls import load_mtls_channel_credentials
@@ -38,13 +40,39 @@ class FleetForwarder:
     def __init__(self, settings: Settings, queue: SqliteQueue, ntp_monitor=None) -> None:
         self._settings = settings
         self._queue = queue
-        self._agent_id = settings.fleet_agent_id or str(uuid.uuid4())
+        self._agent_id = settings.fleet_agent_id or self._load_or_create_agent_id(settings.data_dir)
         self._channel: grpc.Channel | None = None
         self._stub: fleet_pb2_grpc.FleetServiceStub | None = None
         self._connected = False
         self._ntp_monitor = ntp_monitor
+        self._public_ip_monitor: PublicIpMonitor | None = None
+        if settings.fleet_public_ip_interval > 0:
+            self._public_ip_monitor = PublicIpMonitor(
+                interval=settings.fleet_public_ip_interval,
+            )
+            self._public_ip_monitor.start()
 
         self._connect()
+
+    @staticmethod
+    def _load_or_create_agent_id(data_dir: Path) -> str:
+        """Load persisted agent_id from disk, or generate and save a new one."""
+        id_file = data_dir / "fleet_agent_id"
+        try:
+            stored = id_file.read_text().strip()
+            if stored:
+                logger.info("Loaded persisted agent_id: %s", stored)
+                return stored
+        except FileNotFoundError:
+            pass
+        new_id = str(uuid.uuid4())
+        try:
+            data_dir.mkdir(parents=True, exist_ok=True)
+            id_file.write_text(new_id)
+            logger.info("Generated new agent_id: %s", new_id)
+        except OSError:
+            logger.warning("Could not persist agent_id to %s", id_file)
+        return new_id
 
     def _connect(self) -> None:
         """Establish the gRPC channel (mTLS or insecure for dev)."""
@@ -68,13 +96,17 @@ class FleetForwarder:
         """Register this agent with the fleet server."""
         import sys
 
+        local_ips = get_local_ips()
         agent_info = fleet_pb2.AgentInfo(
             agent_id=self._agent_id,
             hostname=platform.node(),
             platform=sys.platform,
             os_version=platform.version(),
             agent_version="0.1.0",
+            ip_address=local_ips[0] if local_ips else "",
             registered_at=int(time.time()),
+            ip_addresses=local_ips,
+            public_ip=self._public_ip_monitor.current_ip if self._public_ip_monitor else "",
         )
         request = fleet_pb2.RegisterAgentRequest(
             agent_info=agent_info,
@@ -84,8 +116,15 @@ class FleetForwarder:
         try:
             response = self._stub.RegisterAgent(request, timeout=10)
             if response.accepted:
-                self._agent_id = response.agent_id
+                if response.agent_id and response.agent_id != self._agent_id:
+                    self._agent_id = response.agent_id
                 self._connected = True
+                # Persist agent_id so restarts reuse the same identity
+                try:
+                    id_file = self._settings.data_dir / "fleet_agent_id"
+                    id_file.write_text(self._agent_id)
+                except OSError:
+                    pass
                 logger.info("Registered with fleet server (agent_id=%s)", self._agent_id)
             else:
                 logger.warning("Fleet registration rejected: %s", response.message)
@@ -178,11 +217,12 @@ class FleetForwarder:
             logger.warning("Failed to forward events: %s", e)
 
     def send_heartbeat(self) -> None:
-        """Send heartbeat to fleet server, including NTP clock offset."""
+        """Send heartbeat to fleet server, including NTP clock offset and IPs."""
         clock_offset_ms = 0
         if self._ntp_monitor is not None:
             clock_offset_ms = self._ntp_monitor.current_offset_ms
 
+        local_ips = get_local_ips()
         request = fleet_pb2.HeartbeatRequest(
             agent_id=self._agent_id,
             timestamp=int(time.time()),
@@ -190,6 +230,8 @@ class FleetForwarder:
             findings_count=len(self._queue.get_findings(limit=1)),
             status="healthy",
             clock_offset_ms=clock_offset_ms,
+            ip_addresses=local_ips,
+            public_ip=self._public_ip_monitor.current_ip if self._public_ip_monitor else "",
         )
         try:
             self._stub.Heartbeat(request, timeout=10)
@@ -199,7 +241,9 @@ class FleetForwarder:
             logger.debug("Heartbeat failed: %s", e)
 
     def stop(self) -> None:
-        """Close the gRPC channel."""
+        """Close the gRPC channel and stop background monitors."""
+        if self._public_ip_monitor:
+            self._public_ip_monitor.stop()
         if self._channel:
             self._channel.close()
             self._channel = None

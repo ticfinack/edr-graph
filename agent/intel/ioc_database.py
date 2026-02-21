@@ -116,6 +116,14 @@ class IocDatabase:
         self._last_refresh: float = 0.0
         self._refresh_interval: float = refresh_interval_hours * 3600
         self._lock = threading.Lock()
+        # Progress fields — written by download thread, read by dashboard.
+        # Protected by _progress_lock (separate from _lock to avoid contention
+        # with the lookup-dict lock during long downloads).
+        self._progress_lock = threading.Lock()
+        self._downloading = False
+        self._download_progress: str = ""  # Current feed being downloaded
+        self._feeds_done: int = 0  # Number of feeds completed so far
+        self._feeds_total: int = 0  # Computed at download start
         self._feed_stats: dict[str, int] = {}
         # User-configurable regex exclusions for domains/IPs
         self._exclusion_patterns: list[re.Pattern] = []
@@ -132,55 +140,84 @@ class IocDatabase:
     # -- Public API --------------------------------------------------------
 
     def download_feeds(self) -> None:
-        """Download all feeds (blocking). Safe to call from any thread."""
+        """Download all feeds (blocking). Safe to call from any thread.
+
+        Downloads are performed without holding the lock so that
+        check_ip/check_domain/stats calls are not blocked during the
+        (potentially slow) HTTP fetches. The lock is only held for the
+        final atomic swap of the lookup dicts.
+        """
+        with self._progress_lock:
+            self._downloading = True
+            self._feeds_done = 0
+            self._feeds_total = 8  # 5 IP + ThreatFox + URLhaus + MalBazaar
+        ips: dict[str, IocMatch] = {}
+        domains: dict[str, IocMatch] = {}
+        hashes: dict[str, IocMatch] = {}
+        stats: dict[str, int] = {}
+
+        def _track(name, fn, *args):
+            with self._progress_lock:
+                self._download_progress = name
+            result = fn(*args)
+            with self._progress_lock:
+                self._feeds_done += 1
+            return result
+
+        # IP feeds
+        stats["feodo_tracker"] = _track("Feodo Tracker", self._download_feodo, ips)
+        stats["ipsum"] = _track("IPsum", self._download_ipsum, ips)
+        stats["blocklist_de"] = _track("Blocklist.de", self._download_blocklist_de, ips)
+        stats["c2_tracker"] = _track("C2 Tracker", self._download_c2_tracker, ips)
+        stats["emerging_threats"] = _track("Emerging Threats", self._download_emerging_threats, ips)
+
+        # Domain/IOC feeds
+        with self._progress_lock:
+            self._download_progress = "ThreatFox"
+        tf_ip, tf_dom = self._download_threatfox(ips, domains)
+        with self._progress_lock:
+            self._feeds_done += 1
+        stats["threatfox_ips"] = tf_ip
+        stats["threatfox_domains"] = tf_dom
+        stats["urlhaus"] = _track("URLhaus", self._download_urlhaus, domains)
+
+        # Hash feeds
+        stats["malbazaar"] = _track("MalBazaar", self._download_malbazaar, hashes)
+
+        # Atomic swap under lock
         with self._lock:
-            ips: dict[str, IocMatch] = {}
-            domains: dict[str, IocMatch] = {}
-            hashes: dict[str, IocMatch] = {}
-            stats: dict[str, int] = {}
-
-            # IP feeds
-            stats["feodo_tracker"] = self._download_feodo(ips)
-            stats["ipsum"] = self._download_ipsum(ips)
-            stats["blocklist_de"] = self._download_blocklist_de(ips)
-            stats["c2_tracker"] = self._download_c2_tracker(ips)
-            stats["emerging_threats"] = self._download_emerging_threats(ips)
-
-            # Domain/IOC feeds
-            tf_ip, tf_dom = self._download_threatfox(ips, domains)
-            stats["threatfox_ips"] = tf_ip
-            stats["threatfox_domains"] = tf_dom
-            stats["urlhaus"] = self._download_urlhaus(domains)
-
-            # Hash feeds
-            stats["malbazaar"] = self._download_malbazaar(hashes)
-
             self._ips = ips
             self._domains = domains
             self._hashes = hashes
             self._feed_stats = stats
             self._last_refresh = time.monotonic()
+        with self._progress_lock:
+            self._downloading = False
 
-            logger.info(
-                "IOC feeds loaded: %d IPs, %d domains, %d hashes "
-                "(feodo=%d ipsum=%d blocklist_de=%d c2_tracker=%d et=%d "
-                "threatfox=%d+%d urlhaus=%d malbazaar=%d)",
-                len(self._ips),
-                len(self._domains),
-                len(self._hashes),
-                stats.get("feodo_tracker", 0),
-                stats.get("ipsum", 0),
-                stats.get("blocklist_de", 0),
-                stats.get("c2_tracker", 0),
-                stats.get("emerging_threats", 0),
-                stats.get("threatfox_ips", 0),
-                stats.get("threatfox_domains", 0),
-                stats.get("urlhaus", 0),
-                stats.get("malbazaar", 0),
-            )
+        logger.info(
+            "IOC feeds loaded: %d IPs, %d domains, %d hashes "
+            "(feodo=%d ipsum=%d blocklist_de=%d c2_tracker=%d et=%d "
+            "threatfox=%d+%d urlhaus=%d malbazaar=%d)",
+            len(ips),
+            len(domains),
+            len(hashes),
+            stats.get("feodo_tracker", 0),
+            stats.get("ipsum", 0),
+            stats.get("blocklist_de", 0),
+            stats.get("c2_tracker", 0),
+            stats.get("emerging_threats", 0),
+            stats.get("threatfox_ips", 0),
+            stats.get("threatfox_domains", 0),
+            stats.get("urlhaus", 0),
+            stats.get("malbazaar", 0),
+        )
 
     def refresh_if_stale(self) -> None:
         """Refresh feeds if the refresh interval has elapsed."""
+        with self._progress_lock:
+            downloading = self._downloading
+        if downloading:
+            return
         if time.monotonic() - self._last_refresh > self._refresh_interval:
             logger.info("Refreshing IOC feeds...")
             self.download_feeds()
@@ -202,6 +239,12 @@ class IocDatabase:
 
     def stats(self) -> dict:
         """Return feed database statistics."""
+        with self._progress_lock:
+            downloading = self._downloading
+            progress = self._download_progress
+            feeds_done = self._feeds_done
+            feeds_total = self._feeds_total
+
         with self._lock:
             last_refresh_iso = None
             if self._last_refresh > 0:
@@ -209,7 +252,7 @@ class IocDatabase:
                 wall = datetime.now(UTC).timestamp() - elapsed
                 last_refresh_iso = datetime.fromtimestamp(wall, tz=UTC).isoformat()
 
-            return {
+            result = {
                 "ip_count": len(self._ips),
                 "domain_count": len(self._domains),
                 "hash_count": len(self._hashes),
@@ -217,7 +260,13 @@ class IocDatabase:
                 "refresh_interval_hours": self._refresh_interval / 3600,
                 "feeds": dict(self._feed_stats),
                 "exclusion_patterns": len(self._exclusion_patterns),
+                "downloading": downloading,
             }
+            if downloading:
+                result["download_progress"] = progress
+                result["feeds_done"] = feeds_done
+                result["feeds_total"] = feeds_total
+            return result
 
     # -- HTTP helper -------------------------------------------------------
 
