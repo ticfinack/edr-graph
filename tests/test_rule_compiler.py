@@ -1,9 +1,6 @@
 """Unit tests for tools/rule_compiler.py — Sigma-to-edr-graph translation."""
 
-import textwrap
-from pathlib import Path
 
-import pytest
 import yaml
 
 from tools.rule_compiler import (
@@ -14,12 +11,10 @@ from tools.rule_compiler import (
     _parse_condition,
     _parse_field_key,
     _sigma_modifier_to_fnmatch,
-    _translate_selection,
     filter_rule,
     translate_rule,
     write_output,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper: build a minimal Sigma rule dict

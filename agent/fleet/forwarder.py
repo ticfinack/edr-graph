@@ -311,10 +311,7 @@ class FleetForwarder:
                 continue
             raw = overrides[key]
             try:
-                if converter is bool:
-                    value = str(raw).lower() in ("true", "1", "yes")
-                else:
-                    value = converter(raw)
+                value = str(raw).lower() in ("true", "1", "yes") if converter is bool else converter(raw)
                 if hasattr(self._settings, key):
                     setattr(self._settings, key, value)
             except (ValueError, TypeError):

@@ -7,7 +7,6 @@ SOC dashboard authentication, user management, and settings.
 
 from __future__ import annotations
 
-import re
 import secrets
 import time
 
@@ -383,9 +382,9 @@ def create_tag(body: CreateTagRequest, user: dict = Depends(get_current_user)):
             body.tag_name, description=body.description, color=body.color, priority=body.priority,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception:
-        raise HTTPException(status_code=409, detail="Tag already exists")
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=409, detail="Tag already exists") from e
 
 
 @app.get("/api/settings/tags/{tag_name}")
@@ -434,7 +433,7 @@ def set_tag_policy(tag_name: str, body: TagPolicyRequest, user: dict = Depends(g
         _settings_db.set_tag_policy(tag_name, body.overrides)
         _settings_db.set_tag_rules(tag_name, body.rules)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     return {"status": "updated"}
 
 
@@ -450,7 +449,7 @@ def assign_agent_tag(agent_id: str, body: AssignTagRequest, user: dict = Depends
     try:
         _settings_db.assign_tag(agent_id, body.tag_name, assigned_by=user["sub"])
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"status": "assigned"}
 
 
@@ -475,8 +474,9 @@ def get_resolved_config(agent_id: str, user: dict = Depends(get_current_user)):
 @app.get("/api/threat-intel/rules")
 def get_threat_intel_rules(user: dict = Depends(get_current_user)):
     """Get compiled Sigma rules from the threat intel blocklist."""
-    import yaml
     from pathlib import Path
+
+    import yaml
 
     yaml_path = Path(__file__).parent.parent / "rules" / "defaults" / "stage2_blocklist.yml"
     if not yaml_path.exists():

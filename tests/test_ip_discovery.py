@@ -9,10 +9,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.config import Settings, load_config_file
 import agent.fleet.ip_discovery as ip_disc
+from agent.config import Settings, load_config_file
 from agent.fleet.ip_discovery import PublicIpMonitor, get_local_ips
-
 
 # ── get_local_ips() ──
 

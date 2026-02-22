@@ -4,8 +4,6 @@ Verifies that ResponseAllowlist, ResponseBlocklist, and FastBlocklist
 correctly handle hot-reloaded network rules from the fleet server.
 """
 
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 

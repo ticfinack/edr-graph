@@ -4,8 +4,7 @@ import hashlib
 import hmac
 import json
 import sys
-from pathlib import Path
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -301,9 +300,9 @@ class TestRulesDistribution:
 
 class TestServerSideConfigSigning:
     def test_heartbeat_returns_signed_config(self, tmp_path):
+        from agent.fleet.proto import fleet_pb2
         from server.grpc_service import FleetServicer
         from server.settings_db import SettingsDB
-        from agent.fleet.proto import fleet_pb2
 
         sdb = SettingsDB(tmp_path / "settings.db")
         sdb.set_agent_key("agent-1", "regkey-abc")
@@ -330,9 +329,9 @@ class TestServerSideConfigSigning:
         sdb.close()
 
     def test_heartbeat_no_signature_without_agent_key(self, tmp_path):
+        from agent.fleet.proto import fleet_pb2
         from server.grpc_service import FleetServicer
         from server.settings_db import SettingsDB
-        from agent.fleet.proto import fleet_pb2
 
         sdb = SettingsDB(tmp_path / "settings.db")
 
@@ -353,9 +352,9 @@ class TestServerSideConfigSigning:
         sdb.close()
 
     def test_register_stores_agent_key(self, tmp_path):
+        from agent.fleet.proto import fleet_pb2
         from server.grpc_service import FleetServicer
         from server.settings_db import SettingsDB
-        from agent.fleet.proto import fleet_pb2
 
         sdb = SettingsDB(tmp_path / "settings.db")
         sdb.create_registration_key(key="regkey-xyz", label="Test", created_by="admin")

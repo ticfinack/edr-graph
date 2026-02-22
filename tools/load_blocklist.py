@@ -3,9 +3,8 @@
 
 import json
 import sys
-import urllib.request
 import urllib.error
-from pathlib import Path
+import urllib.request
 
 import yaml
 
@@ -48,7 +47,7 @@ def load_rules(yaml_path: str, api_base: str = "http://127.0.0.1:9200") -> None:
             method="POST",
         )
         with urllib.request.urlopen(req) as resp:
-            result = json.loads(resp.read())
+            json.loads(resp.read())
         loaded += 1
 
     print(f"Loaded {loaded} rules, skipped {skipped} duplicates. "

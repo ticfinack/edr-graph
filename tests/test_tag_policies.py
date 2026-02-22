@@ -1,5 +1,7 @@
 """Tests for tag-based agent policies in server/settings_db.py."""
 
+import sqlite3
+
 import pytest
 
 from server.settings_db import SettingsDB
@@ -44,7 +46,7 @@ class TestTagsCRUD:
 
     def test_create_duplicate_tag_raises(self, db):
         db.create_tag("prod")
-        with pytest.raises(Exception):
+        with pytest.raises(sqlite3.IntegrityError):
             db.create_tag("prod")
 
     def test_list_tags_empty(self, db):

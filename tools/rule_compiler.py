@@ -14,7 +14,6 @@ import logging
 import os
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 import yaml
@@ -654,7 +653,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if not args.dry_run:
         metadata = {
-            "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "generated_at": datetime.datetime.now(datetime.UTC).isoformat(),
             "sigma_commit": sigma_commit,
             "total_compiled": len(compiled_rules),
             "total_skipped": len(skipped_rules),

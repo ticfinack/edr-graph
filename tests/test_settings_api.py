@@ -1,6 +1,5 @@
 """Tests for settings API endpoints in server/dashboard.py."""
 
-import time
 
 import pytest
 from fastapi.testclient import TestClient

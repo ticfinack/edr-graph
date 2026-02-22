@@ -1,7 +1,7 @@
 """Tests for server/settings_db.py: SQLite settings database."""
 
+import sqlite3
 import threading
-import time
 
 import pytest
 
@@ -89,7 +89,7 @@ class TestUsers:
 
     def test_duplicate_user_raises(self, db):
         db.create_user("alice", "h")
-        with pytest.raises(Exception):
+        with pytest.raises(sqlite3.IntegrityError):
             db.create_user("alice", "h2")
 
     def test_is_empty(self, db):
