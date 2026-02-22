@@ -124,6 +124,7 @@ _VALID_RULE_STAGES = {"pre_graph", "fast_path", "response"}
 _VALID_RULE_TYPES = {"process_name", "dst_ip", "dst_cidr", "domain", "file_path", "finding_title", "chain_pattern"}
 
 _TAG_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,49}$")
+_TAG_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 class SettingsDB:
@@ -296,13 +297,22 @@ class SettingsDB:
         now = int(time.time())
         if row["expires_at"] is not None and row["expires_at"] < now:
             return False, "key_expired"
-        if row["max_uses"] is not None and row["use_count"] >= row["max_uses"]:
-            return False, "max_uses_exceeded"
-        conn.execute(
-            "UPDATE registration_keys SET use_count = use_count + 1 WHERE key = ?",
-            (key,),
-        )
-        conn.commit()
+        # Atomic increment with max_uses guard to prevent TOCTOU race
+        if row["max_uses"] is not None:
+            cur = conn.execute(
+                "UPDATE registration_keys SET use_count = use_count + 1 "
+                "WHERE key = ? AND use_count < ?",
+                (key, row["max_uses"]),
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                return False, "max_uses_exceeded"
+        else:
+            conn.execute(
+                "UPDATE registration_keys SET use_count = use_count + 1 WHERE key = ?",
+                (key,),
+            )
+            conn.commit()
         return True, "ok"
 
     def revoke_registration_key(self, key: str, revoked_by: str) -> bool:
@@ -377,6 +387,8 @@ class SettingsDB:
     def create_tag(self, tag_name: str, description: str = "", color: str = "#3b82f6", priority: int = 0) -> dict:
         if not _TAG_NAME_RE.match(tag_name):
             raise ValueError(f"Invalid tag name: {tag_name!r}")
+        if not _TAG_COLOR_RE.match(color):
+            raise ValueError(f"Invalid color: {color!r}. Must be a hex color like #3b82f6")
         conn = self._conn()
         now = int(time.time())
         conn.execute(
@@ -410,6 +422,8 @@ class SettingsDB:
         if description is not None:
             conn.execute("UPDATE tags SET description = ? WHERE tag_name = ?", (description, tag_name))
         if color is not None:
+            if not _TAG_COLOR_RE.match(color):
+                raise ValueError(f"Invalid color: {color!r}. Must be a hex color like #3b82f6")
             conn.execute("UPDATE tags SET color = ? WHERE tag_name = ?", (color, tag_name))
         if priority is not None:
             conn.execute("UPDATE tags SET priority = ? WHERE tag_name = ?", (priority, tag_name))
@@ -493,14 +507,14 @@ class SettingsDB:
         tag = conn.execute("SELECT 1 FROM tags WHERE tag_name = ?", (tag_name,)).fetchone()
         if not tag:
             raise ValueError(f"Tag does not exist: {tag_name!r}")
+        valid = {k: v for k, v in overrides.items() if k in _VALID_AGENT_SETTINGS}
         now = int(time.time())
         conn.execute("DELETE FROM tag_policies WHERE tag_name = ?", (tag_name,))
-        for key, value in overrides.items():
-            if key in _VALID_AGENT_SETTINGS:
-                conn.execute(
-                    "INSERT INTO tag_policies (tag_name, setting_key, setting_value, updated_at) VALUES (?, ?, ?, ?)",
-                    (tag_name, key, str(value), now),
-                )
+        for key, value in valid.items():
+            conn.execute(
+                "INSERT INTO tag_policies (tag_name, setting_key, setting_value, updated_at) VALUES (?, ?, ?, ?)",
+                (tag_name, key, str(value), now),
+            )
         conn.commit()
 
     # ── Tag Rules ──
@@ -511,8 +525,8 @@ class SettingsDB:
         tag = conn.execute("SELECT 1 FROM tags WHERE tag_name = ?", (tag_name,)).fetchone()
         if not tag:
             raise ValueError(f"Tag does not exist: {tag_name!r}")
-        now = int(time.time())
-        conn.execute("DELETE FROM tag_rules WHERE tag_name = ?", (tag_name,))
+        # Validate rules before deleting existing ones
+        valid_rules = []
         for r in rules:
             action = r.get("action", "")
             stage = r.get("stage", "")
@@ -526,10 +540,14 @@ class SettingsDB:
                 continue
             if not pattern:
                 continue
+            valid_rules.append(r)
+        now = int(time.time())
+        conn.execute("DELETE FROM tag_rules WHERE tag_name = ?", (tag_name,))
+        for r in valid_rules:
             conn.execute(
                 "INSERT INTO tag_rules (tag_name, action, stage, rule_type, pattern, chain_filter, description, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (tag_name, action, stage, rule_type, pattern, r.get("chain_filter", ""), r.get("description", ""), now),
+                (tag_name, r["action"], r["stage"], r["rule_type"], r["pattern"], r.get("chain_filter", ""), r.get("description", ""), now),
             )
         conn.commit()
 

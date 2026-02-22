@@ -242,3 +242,59 @@ class TestThreadSafety:
         assert len(errors) == 0
         assert db.count_users() == 10
         db.close()
+
+    def test_concurrent_key_validation_max_uses(self, tmp_path):
+        """Atomic UPDATE prevents TOCTOU: exactly max_uses validations succeed."""
+        db = SettingsDB(tmp_path / "settings.db")
+        db.create_registration_key(key="race-key", label="Race", created_by="admin", max_uses=5)
+
+        results = []
+
+        def validate(_):
+            ok, reason = db.validate_registration_key("race-key")
+            results.append((ok, reason))
+
+        threads = [threading.Thread(target=validate, args=(i,)) for i in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        successes = sum(1 for ok, _ in results if ok)
+        assert successes == 5
+        failures = [(ok, reason) for ok, reason in results if not ok]
+        assert all(reason == "max_uses_exceeded" for _, reason in failures)
+        db.close()
+
+
+class TestTagColorValidation:
+    def test_create_tag_valid_color(self, db):
+        tag = db.create_tag("colortest", color="#ff00aa")
+        assert tag["color"] == "#ff00aa"
+
+    def test_create_tag_invalid_color_rejected(self, db):
+        with pytest.raises(ValueError, match="Invalid color"):
+            db.create_tag("bad-color", color="red")
+
+    def test_create_tag_invalid_color_script_injection(self, db):
+        with pytest.raises(ValueError, match="Invalid color"):
+            db.create_tag("xss", color="<script>alert(1)</script>")
+
+    def test_create_tag_invalid_color_short_hex(self, db):
+        with pytest.raises(ValueError, match="Invalid color"):
+            db.create_tag("shorthex", color="#fff")
+
+    def test_create_tag_invalid_color_long_hex(self, db):
+        with pytest.raises(ValueError, match="Invalid color"):
+            db.create_tag("longhex", color="#ff00aabb")
+
+    def test_update_tag_valid_color(self, db):
+        db.create_tag("updcolor")
+        ok = db.update_tag("updcolor", color="#abcdef")
+        assert ok is True
+        assert db.get_tag("updcolor")["color"] == "#abcdef"
+
+    def test_update_tag_invalid_color_rejected(self, db):
+        db.create_tag("updcolor2")
+        with pytest.raises(ValueError, match="Invalid color"):
+            db.update_tag("updcolor2", color="not-a-color")

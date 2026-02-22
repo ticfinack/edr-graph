@@ -15,7 +15,16 @@ from pydantic import BaseModel
 
 from server.auth import get_current_user
 from server.neo4j_client import Neo4jClient
-from server.settings_db import SettingsDB
+from server.settings_db import _VALID_AGENT_SETTINGS, SettingsDB
+
+_VALID_ROLES = {"admin", "viewer"}
+
+
+def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    """Require admin role for write/mutate endpoints."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
 
 app = FastAPI(title="EDR Fleet Dashboard", version="1.0.0")
 
@@ -207,7 +216,7 @@ def list_registration_keys(user: dict = Depends(get_current_user)):
 
 
 @app.post("/api/fleet/registration-keys")
-def create_registration_key(body: CreateKeyRequest, user: dict = Depends(get_current_user)):
+def create_registration_key(body: CreateKeyRequest, user: dict = Depends(require_admin)):
     """Generate a new registration key."""
     key = secrets.token_hex(32)
     expires_at = None
@@ -225,7 +234,7 @@ def create_registration_key(body: CreateKeyRequest, user: dict = Depends(get_cur
 
 
 @app.post("/api/fleet/registration-keys/{key}/revoke")
-def revoke_registration_key(key: str, user: dict = Depends(get_current_user)):
+def revoke_registration_key(key: str, user: dict = Depends(require_admin)):
     """Revoke a registration key."""
     ok = _settings_db.revoke_registration_key(key, revoked_by=user["sub"])
     if not ok:
@@ -234,7 +243,7 @@ def revoke_registration_key(key: str, user: dict = Depends(get_current_user)):
 
 
 @app.delete("/api/fleet/registration-keys/{key}")
-def delete_registration_key(key: str, user: dict = Depends(get_current_user)):
+def delete_registration_key(key: str, user: dict = Depends(require_admin)):
     """Permanently delete a registration key."""
     ok = _settings_db.delete_registration_key(key)
     if not ok:
@@ -248,7 +257,7 @@ def delete_registration_key(key: str, user: dict = Depends(get_current_user)):
 class CreateUserRequest(BaseModel):
     username: str
     password: str
-    role: str = "admin"
+    role: str = "viewer"
 
 
 class UpdateUserRequest(BaseModel):
@@ -263,17 +272,19 @@ def list_users(user: dict = Depends(get_current_user)):
 
 
 @app.post("/api/settings/users")
-def create_user(body: CreateUserRequest, user: dict = Depends(get_current_user)):
+def create_user(body: CreateUserRequest, user: dict = Depends(require_admin)):
     """Create a new user."""
     from server.auth import hash_password
 
+    if body.role not in _VALID_ROLES:
+        raise HTTPException(status_code=400, detail=f"Invalid role: {body.role!r}. Must be one of {sorted(_VALID_ROLES)}")
     if _settings_db.get_user(body.username):
         raise HTTPException(status_code=409, detail="User already exists")
     return _settings_db.create_user(body.username, hash_password(body.password), role=body.role)
 
 
 @app.put("/api/settings/users/{username}")
-def update_user(username: str, body: UpdateUserRequest, user: dict = Depends(get_current_user)):
+def update_user(username: str, body: UpdateUserRequest, user: dict = Depends(require_admin)):
     """Update a user's password and/or role."""
     from server.auth import hash_password
 
@@ -285,7 +296,7 @@ def update_user(username: str, body: UpdateUserRequest, user: dict = Depends(get
 
 
 @app.delete("/api/settings/users/{username}")
-def delete_user(username: str, user: dict = Depends(get_current_user)):
+def delete_user(username: str, user: dict = Depends(require_admin)):
     """Delete a user. Prevent self-deletion."""
     if user["sub"] == username:
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
@@ -314,7 +325,7 @@ def get_server_settings(user: dict = Depends(get_current_user)):
 
 
 @app.put("/api/settings/server")
-def update_server_settings(body: dict, user: dict = Depends(get_current_user)):
+def update_server_settings(body: dict, user: dict = Depends(require_admin)):
     """Update editable server settings."""
     updated = []
     for key, value in body.items():
@@ -334,13 +345,17 @@ def get_agent_defaults(user: dict = Depends(get_current_user)):
 
 
 @app.put("/api/settings/agent-defaults")
-def update_agent_defaults(body: dict, user: dict = Depends(get_current_user)):
+def update_agent_defaults(body: dict, user: dict = Depends(require_admin)):
     """Update agent default configuration."""
     updated = []
+    skipped = []
     for key, value in body.items():
+        if key not in _VALID_AGENT_SETTINGS:
+            skipped.append(key)
+            continue
         _settings_db.set_agent_default(key, str(value))
         updated.append(key)
-    return {"updated": updated}
+    return {"updated": updated, "skipped": skipped}
 
 
 # ── Tag-based policy endpoints (JWT required) ──
@@ -375,7 +390,7 @@ def list_tags(user: dict = Depends(get_current_user)):
 
 
 @app.post("/api/settings/tags")
-def create_tag(body: CreateTagRequest, user: dict = Depends(get_current_user)):
+def create_tag(body: CreateTagRequest, user: dict = Depends(require_admin)):
     """Create a new tag."""
     try:
         return _settings_db.create_tag(
@@ -397,7 +412,7 @@ def get_tag(tag_name: str, user: dict = Depends(get_current_user)):
 
 
 @app.put("/api/settings/tags/{tag_name}")
-def update_tag(tag_name: str, body: UpdateTagRequest, user: dict = Depends(get_current_user)):
+def update_tag(tag_name: str, body: UpdateTagRequest, user: dict = Depends(require_admin)):
     """Update tag metadata."""
     ok = _settings_db.update_tag(tag_name, description=body.description, color=body.color, priority=body.priority)
     if not ok:
@@ -406,7 +421,7 @@ def update_tag(tag_name: str, body: UpdateTagRequest, user: dict = Depends(get_c
 
 
 @app.delete("/api/settings/tags/{tag_name}")
-def delete_tag(tag_name: str, user: dict = Depends(get_current_user)):
+def delete_tag(tag_name: str, user: dict = Depends(require_admin)):
     """Delete tag (cascades to assignments and policies)."""
     ok = _settings_db.delete_tag(tag_name)
     if not ok:
@@ -427,7 +442,7 @@ def get_tag_policy(tag_name: str, user: dict = Depends(get_current_user)):
 
 
 @app.put("/api/settings/tags/{tag_name}/policy")
-def set_tag_policy(tag_name: str, body: TagPolicyRequest, user: dict = Depends(get_current_user)):
+def set_tag_policy(tag_name: str, body: TagPolicyRequest, user: dict = Depends(require_admin)):
     """Set policy overrides and rules for a tag."""
     try:
         _settings_db.set_tag_policy(tag_name, body.overrides)
@@ -444,7 +459,7 @@ def get_agent_tags(agent_id: str, user: dict = Depends(get_current_user)):
 
 
 @app.post("/api/fleet/agents/{agent_id}/tags")
-def assign_agent_tag(agent_id: str, body: AssignTagRequest, user: dict = Depends(get_current_user)):
+def assign_agent_tag(agent_id: str, body: AssignTagRequest, user: dict = Depends(require_admin)):
     """Assign a tag to an agent."""
     try:
         _settings_db.assign_tag(agent_id, body.tag_name, assigned_by=user["sub"])
@@ -454,7 +469,7 @@ def assign_agent_tag(agent_id: str, body: AssignTagRequest, user: dict = Depends
 
 
 @app.delete("/api/fleet/agents/{agent_id}/tags/{tag_name}")
-def remove_agent_tag(agent_id: str, tag_name: str, user: dict = Depends(get_current_user)):
+def remove_agent_tag(agent_id: str, tag_name: str, user: dict = Depends(require_admin)):
     """Remove a tag from an agent."""
     ok = _settings_db.remove_tag(agent_id, tag_name)
     if not ok:

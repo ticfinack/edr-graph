@@ -272,15 +272,18 @@ class FleetForwarder:
     }
 
     def _verify_config_signature(self, config_json: str, signature: str) -> bool:
-        """Verify HMAC-SHA256 signature of config_json using the registration key."""
+        """Verify HMAC-SHA256 signature of config_json using a per-agent derived key."""
         import hashlib
         import hmac as hmac_mod
 
         reg_key = self._settings.fleet_registration_key
         if not reg_key:
             return False
+        signing_key = hmac_mod.new(
+            reg_key.encode(), self._agent_id.encode(), hashlib.sha256
+        ).digest()
         expected = hmac_mod.new(
-            reg_key.encode(), config_json.encode(), hashlib.sha256
+            signing_key, config_json.encode(), hashlib.sha256
         ).hexdigest()
         return hmac_mod.compare_digest(expected, signature)
 

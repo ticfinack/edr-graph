@@ -47,6 +47,13 @@ def auth_headers(mock_settings):
     return {"Authorization": f"Bearer {token}"}
 
 
+@pytest.fixture
+def viewer_headers(mock_settings, settings_db):
+    settings_db.create_user("viewer1", hash_password("vpass"), role="viewer")
+    token = create_token("viewer1", "viewer", mock_settings.jwt_secret, ttl_hours=1)
+    return {"Authorization": f"Bearer {token}"}
+
+
 class TestLoginEndpoint:
     def test_login_success(self, client):
         res = client.post(
@@ -87,13 +94,13 @@ class TestUserEndpoints:
     def test_create_user(self, client, auth_headers):
         res = client.post(
             "/api/settings/users",
-            json={"username": "analyst1", "password": "secret", "role": "analyst"},
+            json={"username": "analyst1", "password": "secret", "role": "viewer"},
             headers=auth_headers,
         )
         assert res.status_code == 200
         data = res.json()
         assert data["username"] == "analyst1"
-        assert data["role"] == "analyst"
+        assert data["role"] == "viewer"
 
     def test_create_duplicate_user(self, client, auth_headers):
         res = client.post(
@@ -104,7 +111,7 @@ class TestUserEndpoints:
         assert res.status_code == 409
 
     def test_update_user_role(self, client, auth_headers, settings_db):
-        settings_db.create_user("bob", hash_password("pass"), role="analyst")
+        settings_db.create_user("bob", hash_password("pass"), role="viewer")
         res = client.put(
             "/api/settings/users/bob",
             json={"role": "viewer"},
@@ -250,3 +257,172 @@ class TestAgentDefaultsEndpoints:
         # Verify the change persisted
         get_res = client.get("/api/settings/agent-defaults", headers=auth_headers)
         assert get_res.json()["response_mode"] == "enforcing"
+
+    def test_update_agent_defaults_skips_invalid_keys(self, client, auth_headers):
+        res = client.put(
+            "/api/settings/agent-defaults",
+            json={
+                "response_mode": "enforcing",
+                "evil_setting": "injected",
+                "data_dir": "/etc/shadow",
+            },
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert "response_mode" in data["updated"]
+        assert "evil_setting" in data["skipped"]
+        assert "data_dir" in data["skipped"]
+
+    def test_update_agent_defaults_all_invalid_keys(self, client, auth_headers):
+        res = client.put(
+            "/api/settings/agent-defaults",
+            json={"bad_key": "value"},
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        assert res.json()["updated"] == []
+        assert res.json()["skipped"] == ["bad_key"]
+
+
+class TestRBAC:
+    """Viewer role should get 403 on admin-only endpoints, 200 on read endpoints."""
+
+    def test_viewer_can_read_settings(self, client, viewer_headers):
+        res = client.get("/api/settings/server", headers=viewer_headers)
+        assert res.status_code == 200
+
+    def test_viewer_can_read_agent_defaults(self, client, viewer_headers):
+        res = client.get("/api/settings/agent-defaults", headers=viewer_headers)
+        assert res.status_code == 200
+
+    def test_viewer_can_read_users(self, client, viewer_headers):
+        res = client.get("/api/settings/users", headers=viewer_headers)
+        assert res.status_code == 200
+
+    def test_viewer_can_read_tags(self, client, viewer_headers):
+        res = client.get("/api/settings/tags", headers=viewer_headers)
+        assert res.status_code == 200
+
+    def test_viewer_can_read_registration_keys(self, client, viewer_headers):
+        res = client.get("/api/fleet/registration-keys", headers=viewer_headers)
+        assert res.status_code == 200
+
+    def test_viewer_cannot_create_user(self, client, viewer_headers):
+        res = client.post(
+            "/api/settings/users",
+            json={"username": "hacker", "password": "x"},
+            headers=viewer_headers,
+        )
+        assert res.status_code == 403
+
+    def test_viewer_cannot_update_user(self, client, viewer_headers):
+        res = client.put(
+            "/api/settings/users/admin",
+            json={"role": "viewer"},
+            headers=viewer_headers,
+        )
+        assert res.status_code == 403
+
+    def test_viewer_cannot_delete_user(self, client, viewer_headers):
+        res = client.delete("/api/settings/users/admin", headers=viewer_headers)
+        assert res.status_code == 403
+
+    def test_viewer_cannot_update_server_settings(self, client, viewer_headers):
+        res = client.put(
+            "/api/settings/server",
+            json={"jwt_ttl_hours": "1"},
+            headers=viewer_headers,
+        )
+        assert res.status_code == 403
+
+    def test_viewer_cannot_update_agent_defaults(self, client, viewer_headers):
+        res = client.put(
+            "/api/settings/agent-defaults",
+            json={"response_mode": "enforcing"},
+            headers=viewer_headers,
+        )
+        assert res.status_code == 403
+
+    def test_viewer_cannot_create_tag(self, client, viewer_headers):
+        res = client.post(
+            "/api/settings/tags",
+            json={"tag_name": "evil"},
+            headers=viewer_headers,
+        )
+        assert res.status_code == 403
+
+    def test_viewer_cannot_delete_tag(self, client, viewer_headers, settings_db):
+        settings_db.create_tag("prod")
+        res = client.delete("/api/settings/tags/prod", headers=viewer_headers)
+        assert res.status_code == 403
+
+    def test_viewer_cannot_set_tag_policy(self, client, viewer_headers, settings_db):
+        settings_db.create_tag("prod")
+        res = client.put(
+            "/api/settings/tags/prod/policy",
+            json={"overrides": {"response_mode": "enforcing"}, "rules": []},
+            headers=viewer_headers,
+        )
+        assert res.status_code == 403
+
+    def test_viewer_cannot_create_registration_key(self, client, viewer_headers):
+        res = client.post(
+            "/api/fleet/registration-keys",
+            json={"label": "evil"},
+            headers=viewer_headers,
+        )
+        assert res.status_code == 403
+
+    def test_viewer_cannot_assign_agent_tag(self, client, viewer_headers, settings_db):
+        settings_db.create_tag("prod")
+        res = client.post(
+            "/api/fleet/agents/agent-1/tags",
+            json={"tag_name": "prod"},
+            headers=viewer_headers,
+        )
+        assert res.status_code == 403
+
+    def test_viewer_cannot_remove_agent_tag(self, client, viewer_headers):
+        res = client.delete(
+            "/api/fleet/agents/agent-1/tags/prod", headers=viewer_headers
+        )
+        assert res.status_code == 403
+
+    def test_admin_can_write(self, client, auth_headers):
+        """Sanity check: admin still succeeds on write endpoints."""
+        res = client.put(
+            "/api/settings/server",
+            json={"jwt_ttl_hours": "4"},
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+
+
+class TestRoleValidation:
+    def test_create_user_default_role_is_viewer(self, client, auth_headers):
+        res = client.post(
+            "/api/settings/users",
+            json={"username": "newuser", "password": "pass"},
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        assert res.json()["role"] == "viewer"
+
+    def test_create_user_valid_admin_role(self, client, auth_headers):
+        res = client.post(
+            "/api/settings/users",
+            json={"username": "newadmin", "password": "pass", "role": "admin"},
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        assert res.json()["role"] == "admin"
+
+    def test_create_user_invalid_role_rejected(self, client, auth_headers):
+        res = client.post(
+            "/api/settings/users",
+            json={"username": "badrole", "password": "pass", "role": "superadmin"},
+            headers=auth_headers,
+        )
+        assert res.status_code == 400
+        assert "Invalid role" in res.json()["detail"]

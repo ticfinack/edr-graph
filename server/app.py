@@ -208,6 +208,7 @@ def main() -> None:
         logger.info("Shutting down...")
         server.stop(grace=5)
         ntp_monitor.stop()
+        settings_db.close()
         neo4j_client.close()
 
 

@@ -160,6 +160,13 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
 
     def Heartbeat(self, request, context):
         """Update agent heartbeat in Neo4j, including clock offset and IPs."""
+        # Verify agent is registered before processing
+        agent_key = None
+        if self._settings_db:
+            agent_key = self._settings_db.get_agent_key(request.agent_id)
+        if not agent_key:
+            return fleet_pb2.HeartbeatResponse(acknowledged=False, message="unregistered")
+
         try:
             ip_addresses = list(request.ip_addresses) if request.ip_addresses else None
             public_ip = request.public_ip or None
@@ -171,19 +178,19 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
                 public_ip=public_ip,
             )
 
-            # Send agent config defaults, signed with HMAC for authenticity
+            # Send agent config defaults, signed with per-agent derived HMAC key
             config_json = ""
             config_signature = ""
             if self._settings_db:
                 defaults = self._settings_db.resolve_agent_config(request.agent_id)
                 if defaults:
                     config_json = json.dumps(defaults)
-                    # Sign with the agent's registration key via HMAC-SHA256
-                    agent_key = self._settings_db.get_agent_key(request.agent_id)
-                    if agent_key:
-                        config_signature = hmac.new(
-                            agent_key.encode(), config_json.encode(), hashlib.sha256
-                        ).hexdigest()
+                    signing_key = hmac.new(
+                        agent_key.encode(), request.agent_id.encode(), hashlib.sha256
+                    ).digest()
+                    config_signature = hmac.new(
+                        signing_key, config_json.encode(), hashlib.sha256
+                    ).hexdigest()
 
             return fleet_pb2.HeartbeatResponse(
                 acknowledged=True,

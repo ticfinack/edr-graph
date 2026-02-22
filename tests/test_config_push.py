@@ -28,10 +28,14 @@ def queue(tmp_path):
     q.close()
 
 
+_TEST_AGENT_ID = "test-agent-001"
+
+
 @pytest.fixture
 def settings(tmp_path):
     s = Settings(
         data_dir=tmp_path,
+        fleet_agent_id=_TEST_AGENT_ID,
         fleet_registration_key="test-reg-key-abc123",
         response_mode="learning",
         analyzer_interval=60.0,
@@ -40,7 +44,14 @@ def settings(tmp_path):
     return s
 
 
-def _sign(config_json: str, key: str) -> str:
+def _sign(config_json: str, key: str, agent_id: str = "") -> str:
+    """Sign config with per-agent derived HMAC key."""
+    signing_key = hmac.new(key.encode(), agent_id.encode(), hashlib.sha256).digest()
+    return hmac.new(signing_key, config_json.encode(), hashlib.sha256).hexdigest()
+
+
+def _sign_raw(config_json: str, key: str) -> str:
+    """Sign config with raw key (old method, for testing rejection)."""
     return hmac.new(key.encode(), config_json.encode(), hashlib.sha256).hexdigest()
 
 
@@ -53,7 +64,7 @@ class TestConfigPushVerification:
             fwd = FleetForwarder(settings, queue)
 
         config = json.dumps({"response_mode": "enforcing"})
-        sig = _sign(config, "test-reg-key-abc123")
+        sig = _sign(config, "test-reg-key-abc123", _TEST_AGENT_ID)
 
         fwd._apply_config_overrides(config, sig)
         assert settings.response_mode == "enforcing"
@@ -82,12 +93,12 @@ class TestConfigPushVerification:
     def test_no_registration_key_rejects_all(self, queue, tmp_path):
         from agent.fleet.forwarder import FleetForwarder
 
-        s = Settings(data_dir=tmp_path, fleet_registration_key="")
+        s = Settings(data_dir=tmp_path, fleet_agent_id="no-key-agent", fleet_registration_key="")
         with patch.object(FleetForwarder, "_connect"):
             fwd = FleetForwarder(s, queue)
 
         config = json.dumps({"response_mode": "enforcing"})
-        sig = _sign(config, "")
+        sig = _sign(config, "", "no-key-agent")
         fwd._apply_config_overrides(config, sig)
         assert s.response_mode == "learning"
 
@@ -98,7 +109,7 @@ class TestConfigPushVerification:
             fwd = FleetForwarder(settings, queue)
 
         original = json.dumps({"response_mode": "enforcing"})
-        sig = _sign(original, "test-reg-key-abc123")
+        sig = _sign(original, "test-reg-key-abc123", _TEST_AGENT_ID)
         # Tamper with the config after signing
         tampered = json.dumps({"response_mode": "enforcing", "auto_terminate": "true"})
         fwd._apply_config_overrides(tampered, sig)
@@ -125,7 +136,7 @@ class TestConfigOverrideApplication:
             "fleet_forward_events": "true",
             "ioc_feeds_enabled": "false",
         })
-        sig = _sign(config, "test-reg-key-abc123")
+        sig = _sign(config, "test-reg-key-abc123", _TEST_AGENT_ID)
         fwd._apply_config_overrides(config, sig)
 
         assert settings.response_mode == "enforcing"
@@ -150,7 +161,7 @@ class TestConfigOverrideApplication:
             "evil_setting": "injected",
             "data_dir": "/etc/shadow",
         })
-        sig = _sign(config, "test-reg-key-abc123")
+        sig = _sign(config, "test-reg-key-abc123", _TEST_AGENT_ID)
         fwd._apply_config_overrides(config, sig)
 
         assert settings.response_mode == "enforcing"
@@ -186,13 +197,13 @@ class TestConfigOverrideApplication:
 
         for truthy in ["true", "True", "1", "yes"]:
             config = json.dumps({"auto_respond": truthy})
-            sig = _sign(config, "test-reg-key-abc123")
+            sig = _sign(config, "test-reg-key-abc123", _TEST_AGENT_ID)
             fwd._apply_config_overrides(config, sig)
             assert settings.auto_respond is True
 
         for falsy in ["false", "False", "0", "no"]:
             config = json.dumps({"auto_respond": falsy})
-            sig = _sign(config, "test-reg-key-abc123")
+            sig = _sign(config, "test-reg-key-abc123", _TEST_AGENT_ID)
             fwd._apply_config_overrides(config, sig)
             assert settings.auto_respond is False
 
@@ -224,7 +235,7 @@ class TestRulesDistribution:
                 {"action": "allow", "stage": "pre_graph", "rule_type": "dst_ip", "pattern": "10.0.0.1"},
             ],
         })
-        sig = _sign(config, "test-reg-key-abc123")
+        sig = _sign(config, "test-reg-key-abc123", _TEST_AGENT_ID)
         fwd._apply_config_overrides(config, sig)
 
         assert settings.response_mode == "enforcing"
@@ -255,7 +266,7 @@ class TestRulesDistribution:
                 {"action": "block", "stage": "fast_path", "rule_type": "process_name", "pattern": "evil"},
             ],
         })
-        sig = _sign(config, "test-reg-key-abc123")
+        sig = _sign(config, "test-reg-key-abc123", _TEST_AGENT_ID)
         fwd._apply_config_overrides(config, sig)
         assert len(blocklist.get_network_rules()) == 1
 
@@ -272,7 +283,7 @@ class TestRulesDistribution:
         original = json.dumps({"rules": [
             {"action": "block", "stage": "fast_path", "rule_type": "process_name", "pattern": "safe"},
         ]})
-        sig = _sign(original, "test-reg-key-abc123")
+        sig = _sign(original, "test-reg-key-abc123", _TEST_AGENT_ID)
         tampered = json.dumps({"rules": [
             {"action": "block", "stage": "fast_path", "rule_type": "process_name", "pattern": "evil_injected"},
         ]})
@@ -293,7 +304,7 @@ class TestRulesDistribution:
                 {"action": "block", "stage": "fast_path", "rule_type": "process_name", "pattern": "x"},
             ],
         })
-        sig = _sign(config, "test-reg-key-abc123")
+        sig = _sign(config, "test-reg-key-abc123", _TEST_AGENT_ID)
         fwd._apply_config_overrides(config, sig)
         assert settings.response_mode == "enforcing"
 
@@ -320,15 +331,19 @@ class TestServerSideConfigSigning:
         assert response.config_json != ""
         assert response.config_signature != ""
 
-        # Verify the signature
+        # Verify per-agent derived HMAC signature
+        signing_key = hmac.new(
+            b"regkey-abc", b"agent-1", hashlib.sha256
+        ).digest()
         expected_sig = hmac.new(
-            b"regkey-abc", response.config_json.encode(), hashlib.sha256
+            signing_key, response.config_json.encode(), hashlib.sha256
         ).hexdigest()
         assert response.config_signature == expected_sig
 
         sdb.close()
 
-    def test_heartbeat_no_signature_without_agent_key(self, tmp_path):
+    def test_heartbeat_rejects_unregistered_agent(self, tmp_path):
+        """Unregistered agents should get acknowledged=False with no config."""
         from agent.fleet.proto import fleet_pb2
         from server.grpc_service import FleetServicer
         from server.settings_db import SettingsDB
@@ -344,10 +359,38 @@ class TestServerSideConfigSigning:
         context = MagicMock()
 
         response = servicer.Heartbeat(request, context)
-        assert response.acknowledged is True
-        assert response.config_json != ""
-        # No agent key mapping → no signature
+        assert response.acknowledged is False
+        assert response.message == "unregistered"
+        assert response.config_json == ""
         assert response.config_signature == ""
+        # Neo4j update_heartbeat should NOT have been called
+        neo4j.update_heartbeat.assert_not_called()
+
+        sdb.close()
+
+    def test_per_agent_hmac_different_agents_different_signatures(self, tmp_path):
+        """Two agents with the same reg key should get different signatures."""
+        from agent.fleet.proto import fleet_pb2
+        from server.grpc_service import FleetServicer
+        from server.settings_db import SettingsDB
+
+        sdb = SettingsDB(tmp_path / "settings.db")
+        sdb.set_agent_key("agent-a", "shared-key")
+        sdb.set_agent_key("agent-b", "shared-key")
+
+        neo4j = MagicMock()
+        servicer = FleetServicer(neo4j, settings_db=sdb)
+        context = MagicMock()
+
+        req_a = fleet_pb2.HeartbeatRequest(agent_id="agent-a", timestamp=1000, status="healthy")
+        req_b = fleet_pb2.HeartbeatRequest(agent_id="agent-b", timestamp=1000, status="healthy")
+
+        resp_a = servicer.Heartbeat(req_a, context)
+        resp_b = servicer.Heartbeat(req_b, context)
+
+        # Same config JSON (same defaults), but different signatures
+        assert resp_a.config_json == resp_b.config_json
+        assert resp_a.config_signature != resp_b.config_signature
 
         sdb.close()
 

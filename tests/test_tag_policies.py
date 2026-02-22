@@ -88,11 +88,11 @@ class TestTagsCRUD:
         assert tag["priority"] == 99
 
     def test_update_tag_partial(self, db):
-        db.create_tag("prod", description="old", color="#111", priority=5)
+        db.create_tag("prod", description="old", color="#111111", priority=5)
         db.update_tag("prod", priority=50)
         tag = db.get_tag("prod")
         assert tag["description"] == "old"
-        assert tag["color"] == "#111"
+        assert tag["color"] == "#111111"
         assert tag["priority"] == 50
 
     def test_update_tag_nonexistent(self, db):
@@ -224,6 +224,25 @@ class TestTagPolicies:
         db.set_tag_policy("prod", {"response_mode": "enforcing"})
         db.set_tag_policy("prod", {})
         assert db.get_tag_policy("prod") == {}
+
+    def test_set_policy_all_invalid_does_not_wipe(self, db):
+        """All-invalid overrides should clear policies (not silently leave stale data)."""
+        db.create_tag("prod")
+        db.set_tag_policy("prod", {"response_mode": "enforcing"})
+        # All keys are invalid — existing policy is replaced with nothing
+        db.set_tag_policy("prod", {"evil_key": "value", "another_bad": "x"})
+        assert db.get_tag_policy("prod") == {}
+
+    def test_set_policy_mixed_valid_invalid_keeps_valid(self, db):
+        """Mixed valid+invalid overrides should only persist the valid ones."""
+        db.create_tag("prod")
+        db.set_tag_policy("prod", {
+            "response_mode": "enforcing",
+            "evil_key": "should_be_dropped",
+        })
+        policy = db.get_tag_policy("prod")
+        assert policy == {"response_mode": "enforcing"}
+        assert "evil_key" not in policy
 
 
 class TestConfigResolution:
@@ -383,6 +402,19 @@ class TestTagRules:
         db.create_tag("prod")
         db.set_tag_rules("prod", [
             {"action": "block", "stage": "fast_path", "rule_type": "process_name", "pattern": ""},
+        ])
+        assert db.get_tag_rules("prod") == []
+
+    def test_set_rules_all_invalid_clears(self, db):
+        """All-invalid rules replace existing rules with nothing."""
+        db.create_tag("prod")
+        db.set_tag_rules("prod", [
+            {"action": "block", "stage": "fast_path", "rule_type": "process_name", "pattern": "mimikatz"},
+        ])
+        assert len(db.get_tag_rules("prod")) == 1
+        # Now set all-invalid rules
+        db.set_tag_rules("prod", [
+            {"action": "invalid", "stage": "fast_path", "rule_type": "process_name", "pattern": "foo"},
         ])
         assert db.get_tag_rules("prod") == []
 
