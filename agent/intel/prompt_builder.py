@@ -166,7 +166,23 @@ severity by at least one level compared to what you would assign for an \
 unknown IP with the same behavior.
 4. Only escalate a known provider IP if there are MULTIPLE corroborating \
 indicators (e.g., unsigned process + DGA domain + known_hosting IP + unusual \
-port)."""
+port).
+
+### Internal Networks & RFC 1918:
+5. NEVER flag RFC 1918 (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) or \
+localhost (127.0.0.0/8, ::1) destinations as external C2. These are \
+private addresses by definition and cannot be Internet-routable C2 servers.
+6. Docker & Kubernetes default subnets (172.17.0.0/16 docker0, \
+172.16-31.x.x overlay networks, 10.96.0.0/12 K8s Service CIDR, \
+10.244.0.0/16 pod CIDR) produce high-volume inter-container traffic. \
+Connections within these ranges are NORMAL containerized microservice \
+communication — do NOT flag unless combined with a suspicious process \
+binary or protocol anomaly (e.g., a reverse shell over a Docker bridge).
+7. High-frequency connections between RFC 1918 addresses on common \
+microservice ports (80, 443, 8080, 8443, 3000, 5000, 5432, 6379, \
+27017, 9090, 9200, 2379, 6443) are expected east-west service mesh \
+traffic. Suppress findings for these unless the source process is \
+anomalous (unsigned, unexpected parent, LOLBin)."""
 
 
 def _format_tool_instructions(tools: list[dict]) -> str:
