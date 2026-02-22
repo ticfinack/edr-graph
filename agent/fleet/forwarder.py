@@ -216,6 +216,110 @@ class FleetForwarder:
             self._queue.mark_forward_failed(ids, max_retries=self._settings.fleet_retry_max)
             logger.warning("Failed to forward events: %s", e)
 
+    def set_enforcement_stages(
+        self,
+        allowlist=None,
+        blocklist=None,
+        fast_blocklist=None,
+        allowlist_cache=None,
+    ):
+        """Wire enforcement stages so network rules can be hot-reloaded."""
+        self._allowlist = allowlist
+        self._blocklist = blocklist
+        self._fast_blocklist = fast_blocklist
+        self._allowlist_cache = allowlist_cache
+
+    def _apply_rules(self, rules: list[dict]) -> None:
+        """Split rules by action+stage and push to the appropriate enforcement stages."""
+        allow_pre_graph = []
+        allow_response = []
+        block_fast_path = []
+        block_response = []
+
+        for r in rules:
+            action = r.get("action", "")
+            stage = r.get("stage", "")
+            if action == "allow" and stage == "pre_graph":
+                allow_pre_graph.append(r)
+            elif action == "allow" and stage == "response":
+                allow_response.append(r)
+            elif action == "block" and stage == "fast_path":
+                block_fast_path.append(r)
+            elif action == "block" and stage == "response":
+                block_response.append(r)
+
+        if getattr(self, "_allowlist", None):
+            self._allowlist.set_network_rules(allow_pre_graph + allow_response)
+        if getattr(self, "_allowlist_cache", None):
+            self._allowlist_cache.invalidate()
+        if getattr(self, "_blocklist", None):
+            self._blocklist.set_network_rules(block_fast_path + block_response)
+        if getattr(self, "_fast_blocklist", None):
+            self._fast_blocklist.set_network_rules(block_fast_path)
+
+    # Whitelist of agent settings that can be overridden via heartbeat config push
+    _CONFIG_WHITELIST = {
+        "response_mode": str,
+        "analyzer_interval": float,
+        "collector_poll_interval": float,
+        "novel_edge_threshold": int,
+        "dga_score_threshold": float,
+        "graph_ttl_hours": int,
+        "auto_respond": bool,
+        "auto_terminate": bool,
+        "fleet_forward_events": bool,
+        "ioc_feeds_enabled": bool,
+    }
+
+    def _verify_config_signature(self, config_json: str, signature: str) -> bool:
+        """Verify HMAC-SHA256 signature of config_json using the registration key."""
+        import hashlib
+        import hmac as hmac_mod
+
+        reg_key = self._settings.fleet_registration_key
+        if not reg_key:
+            return False
+        expected = hmac_mod.new(
+            reg_key.encode(), config_json.encode(), hashlib.sha256
+        ).hexdigest()
+        return hmac_mod.compare_digest(expected, signature)
+
+    def _apply_config_overrides(self, config_json: str, signature: str = "") -> None:
+        """Parse JSON config from heartbeat response and apply whitelisted overrides.
+
+        Config is only applied if the HMAC-SHA256 signature is valid, preventing
+        attackers from injecting configuration via rogue servers or MITM.
+        """
+        if not config_json:
+            return
+        if not signature or not self._verify_config_signature(config_json, signature):
+            logger.warning("Rejected config push: invalid or missing HMAC signature")
+            return
+        try:
+            overrides = json.loads(config_json)
+        except (json.JSONDecodeError, TypeError):
+            logger.debug("Bad config_json from heartbeat: %s", config_json[:100])
+            return
+
+        # Extract and distribute rules before processing scalar overrides
+        rules = overrides.pop("rules", [])
+        if isinstance(rules, list):
+            self._apply_rules(rules)
+
+        for key, converter in self._CONFIG_WHITELIST.items():
+            if key not in overrides:
+                continue
+            raw = overrides[key]
+            try:
+                if converter is bool:
+                    value = str(raw).lower() in ("true", "1", "yes")
+                else:
+                    value = converter(raw)
+                if hasattr(self._settings, key):
+                    setattr(self._settings, key, value)
+            except (ValueError, TypeError):
+                logger.debug("Cannot convert config override %s=%r", key, raw)
+
     def send_heartbeat(self) -> None:
         """Send heartbeat to fleet server, including NTP clock offset and IPs."""
         clock_offset_ms = 0
@@ -234,7 +338,9 @@ class FleetForwarder:
             public_ip=self._public_ip_monitor.current_ip if self._public_ip_monitor else "",
         )
         try:
-            self._stub.Heartbeat(request, timeout=10)
+            response = self._stub.Heartbeat(request, timeout=10)
+            if response.config_json:
+                self._apply_config_overrides(response.config_json, response.config_signature)
             logger.debug("Heartbeat sent")
         except grpc.RpcError as e:
             metrics.fleet_forwarding_errors.labels(error_type="heartbeat").inc()

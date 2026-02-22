@@ -107,6 +107,7 @@ def processor_thread(
     baseline_gate: BaselineGateCache | None = None,
     response_engine: ResponseEngine | None = None,
     blocklist: ResponseBlocklist | None = None,
+    fast_blocklist=None,
 ) -> None:
     """Process queued events: normalize, extract entities, write to graph."""
     from agent.processor.allowlist_filter import filter_entities, has_entities
@@ -130,15 +131,7 @@ def processor_thread(
         except Exception:
             logger.debug("Port mapper not available", exc_info=True)
 
-    # Initialize synchronous fast-path blocklist enforcer
-    fast_blocklist = None
-    if blocklist is not None:
-        from agent.processor.synchronous_enforcer import FastBlocklist
-
-        fast_blocklist = FastBlocklist(blocklist)
-        logger.info("Fast-path blocklist enforcer initialized")
-
-    # Store in dashboard state for invalidation from API endpoints
+    # Store fast_blocklist in dashboard state for invalidation from API endpoints
     try:
         from agent.dashboard import server as dashboard_server
 
@@ -201,7 +194,7 @@ def processor_thread(
                                 queue.store_finding(finding)
                                 _push_finding_notification(finding)
                                 try:
-                                    _trigger_response(response_engine, finding, [(event_id, ocsf)])
+                                    _trigger_response(response_engine, finding, [(event_id, ocsf)], kuzu_db=kuzu_db)
                                 except Exception:
                                     logger.exception("Fast-path response failed for event %d", event_id)
                                 metrics.events_fast_blocked.inc()
@@ -336,7 +329,7 @@ def analyzer_thread(
                     # Trigger response engine for each finding
                     if response_engine:
                         try:
-                            _trigger_response(response_engine, finding, novel_events)
+                            _trigger_response(response_engine, finding, novel_events, kuzu_db=kuzu_db)
                         except Exception:
                             logger.exception("Response engine failed for finding %s", finding.id)
 
@@ -395,14 +388,48 @@ def reaper_thread(settings: Settings, kuzu_db: kuzu.Database) -> None:
             logger.exception("Graph reaper cycle failed")
 
 
+def _graph_chain_to_chainsteps(graph_chain: list[dict]) -> list:
+    """Convert get_process_chain() output dicts to ChainStep objects.
+
+    get_process_chain() returns dicts like:
+      - {"type": "user", "id": ..., "name": ...}
+      - {"id": ..., "name": ..., "pid": ..., "parent_pid": ..., ...}
+    """
+    from agent.schema.graph_types import ChainStep
+
+    steps = []
+    for entry in graph_chain:
+        if entry.get("type") == "user":
+            steps.append(
+                ChainStep(
+                    entity_type="user",
+                    entity_id=entry.get("id", ""),
+                    entity_name=entry.get("name", ""),
+                )
+            )
+        else:
+            steps.append(
+                ChainStep(
+                    entity_type="process",
+                    entity_id=entry.get("id", ""),
+                    entity_name=entry.get("name", ""),
+                    pid=entry.get("pid"),
+                )
+            )
+    return steps
+
+
 def _trigger_response(
     engine: ResponseEngine,
     finding,
     events: list,
+    kuzu_db=None,
 ) -> None:
     """Trigger the response engine for a finding.
 
     Extracts the target PID and process name from the finding's evidence events.
+    When kuzu_db is provided, reconstructs a deterministic chain from the graph
+    instead of relying on finding.chain (which may be LLM-derived and incomplete).
     """
     from agent.schema.ocsf_types import (
         DnsActivity,
@@ -442,6 +469,19 @@ def _trigger_response(
                     target_path = event.reg_path
                 break
 
+    # Build deterministic chain from graph (Gap 3 fix)
+    chain = finding.chain
+    if kuzu_db and target_pid and target_pid > 0:
+        try:
+            from agent.graph.queries import get_process_chain
+
+            conn = kuzu.Connection(kuzu_db)
+            graph_chain = get_process_chain(conn, target_pid)
+            if graph_chain:
+                chain = _graph_chain_to_chainsteps(graph_chain)
+        except Exception:
+            logger.debug("Graph chain lookup failed for PID %s, using finding.chain", target_pid, exc_info=True)
+
     records = engine.respond(
         severity=finding.severity,
         event_id=finding.evidence_event_ids[0] if finding.evidence_event_ids else None,
@@ -451,7 +491,7 @@ def _trigger_response(
         dst_ip=dst_ip,
         domain=domain,
         finding_title=finding.title,
-        chain=finding.chain,
+        chain=chain,
     )
 
     for rec in records:
@@ -952,13 +992,21 @@ def main() -> None:
             "Heartbeat thread started (dir=%s, interval=%.0fs)", settings.heartbeat_dir, settings.heartbeat_interval
         )
 
+    # Initialize synchronous fast-path blocklist enforcer (hoisted for forwarder wiring)
+    fast_blocklist = None
+    if blocklist is not None:
+        from agent.processor.synchronous_enforcer import FastBlocklist
+
+        fast_blocklist = FastBlocklist(blocklist)
+        logger.info("Fast-path blocklist enforcer initialized")
+
     t = threading.Thread(target=collector_thread, args=(settings, queue), daemon=True, name="collector")
     t.start()
     threads.append(t)
 
     t = threading.Thread(
         target=processor_thread,
-        args=(settings, queue, kuzu_db, ioc_db, allowlist_cache, baseline_gate, response_engine, blocklist),
+        args=(settings, queue, kuzu_db, ioc_db, allowlist_cache, baseline_gate, response_engine, blocklist, fast_blocklist),
         daemon=True,
         name="processor",
     )
@@ -995,6 +1043,12 @@ def main() -> None:
                 logger.debug("NTP monitor not available", exc_info=True)
 
             _fleet_forwarder = FleetForwarder(settings=settings, queue=queue, ntp_monitor=ntp_monitor)
+            _fleet_forwarder.set_enforcement_stages(
+                allowlist=allowlist,
+                blocklist=blocklist,
+                fast_blocklist=fast_blocklist,
+                allowlist_cache=allowlist_cache,
+            )
             _fleet_forwarder.register()
 
             t = threading.Thread(

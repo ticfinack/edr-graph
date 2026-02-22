@@ -41,3 +41,8 @@ class ServerSettings(BaseModel):
     # NTP clock synchronization
     ntp_server: str = Field(default_factory=lambda: os.environ.get("NTP_SERVER", "pool.ntp.org"))
     ntp_sync_interval: int = 300  # seconds
+
+    # Settings database
+    settings_db_path: str = Field(
+        default_factory=lambda: os.environ.get("SETTINGS_DB_PATH", "./settings.db")
+    )

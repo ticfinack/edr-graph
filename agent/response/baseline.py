@@ -320,6 +320,15 @@ class ResponseAllowlist:
     def __init__(self, db_path: Path) -> None:
         self._db_path = str(db_path)
         self._migrated = False
+        self._network_rules: list[dict] = []
+
+    def set_network_rules(self, rules: list[dict]) -> None:
+        """Atomically replace network-distributed rules (from fleet server)."""
+        self._network_rules = list(rules)
+
+    def get_network_rules(self) -> list[dict]:
+        """Return current network-distributed rules for introspection."""
+        return list(self._network_rules)
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -400,6 +409,20 @@ class ResponseAllowlist:
             ):
                 return True, desc
 
+        # Check network-distributed rules
+        for rule in self._network_rules:
+            desc = rule.get("description") or rule.get("pattern", "")
+            if _match_rule(
+                rule,
+                process_name=process_name,
+                dst_ip=dst_ip,
+                domain=domain,
+                file_path=file_path,
+                finding_title=finding_title,
+                chain=chain,
+            ):
+                return True, desc
+
         return False, ""
 
     def get_rules(self) -> list[dict]:
@@ -417,13 +440,21 @@ class ResponseAllowlist:
         Excludes rules with a chain_filter (chain context is unavailable
         pre-LLM) and rule types that only make sense in the response engine
         (finding_title, chain_pattern).
+
+        Includes matching network-distributed rules (defense in depth).
         """
         conn = self._conn()
         try:
             rows = conn.execute("SELECT * FROM response_allowlist ORDER BY id").fetchall()
-            return [dict(r) for r in rows if r["rule_type"] in self.GRAPH_FILTERABLE_TYPES and not r["chain_filter"]]
+            result = [dict(r) for r in rows if r["rule_type"] in self.GRAPH_FILTERABLE_TYPES and not r["chain_filter"]]
         finally:
             conn.close()
+        # Extend with network rules that qualify for pre-graph filtering
+        result.extend(
+            r for r in self._network_rules
+            if r.get("rule_type") in self.GRAPH_FILTERABLE_TYPES and not r.get("chain_filter")
+        )
+        return result
 
 
 class AllowlistRuleCache:
@@ -482,6 +513,15 @@ class ResponseBlocklist:
     def __init__(self, db_path: Path) -> None:
         self._db_path = str(db_path)
         self._migrated = False
+        self._network_rules: list[dict] = []
+
+    def set_network_rules(self, rules: list[dict]) -> None:
+        """Atomically replace network-distributed rules (from fleet server)."""
+        self._network_rules = list(rules)
+
+    def get_network_rules(self) -> list[dict]:
+        """Return current network-distributed rules for introspection."""
+        return list(self._network_rules)
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -542,6 +582,20 @@ class ResponseBlocklist:
             desc = rule["description"] or rule["pattern"]
             if _match_rule(
                 dict(rule),
+                process_name=process_name,
+                dst_ip=dst_ip,
+                domain=domain,
+                file_path=file_path,
+                finding_title=finding_title,
+                chain=chain,
+            ):
+                return True, desc
+
+        # Check network-distributed rules
+        for rule in self._network_rules:
+            desc = rule.get("description") or rule.get("pattern", "")
+            if _match_rule(
+                rule,
                 process_name=process_name,
                 dst_ip=dst_ip,
                 domain=domain,

@@ -140,6 +140,31 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
 .ip-badge.peer{background:rgba(107,114,128,0.1);color:var(--dim)}
 .ip-more{display:inline-block;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;background:rgba(59,130,246,0.12);color:var(--accent);margin-left:4px;cursor:default}
 
+/* Tag chips */
+.tag-chip{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500;margin:1px 2px;border:1px solid}
+.tag-chips{display:flex;flex-wrap:wrap;gap:2px}
+.tag-chip-remove{cursor:pointer;margin-left:4px;opacity:0.6;font-size:10px}
+.tag-chip-remove:hover{opacity:1}
+.tag-swatch{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:middle}
+
+/* Policies layout */
+.policies-layout{display:grid;grid-template-columns:340px 1fr;gap:20px;min-height:400px}
+.policies-left{border-right:1px solid var(--border);padding-right:20px}
+.policies-right{padding-left:0}
+.policy-field{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.policy-field input[type="checkbox"]{width:auto;margin:0}
+.policy-field .policy-input{flex:1}
+
+/* Settings sub-panels */
+.settings-sub{display:none}
+.settings-sub.active{display:block}
+.settings-form{max-width:600px}
+.settings-form .field{margin-bottom:16px}
+.settings-form label{display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px}
+.settings-form input,.settings-form select{width:100%;max-width:300px}
+.settings-form .field-hint{color:var(--dim);font-size:11px;margin-bottom:6px}
+.settings-readonly{color:var(--dim);font-size:13px}
+
 /* Loading */
 .loading{text-align:center;padding:40px;color:var(--dim)}
 .spinner{display:inline-block;width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;margin-right:8px;vertical-align:middle}
@@ -156,7 +181,7 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
     <div id="loginError" class="error"></div>
     <div class="field">
       <label>Username</label>
-      <input id="loginUser" type="text" placeholder="admin" autocomplete="username">
+      <input id="loginUser" type="text" placeholder="Username" autocomplete="username">
     </div>
     <div class="field">
       <label>Password</label>
@@ -183,7 +208,8 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
     <button class="tab-btn" data-tab="findings">Findings <span id="findingsCount" class="tab-count">0</span></button>
     <button class="tab-btn" data-tab="lateral">Lateral Movement <span id="lateralCount" class="tab-count warn">0</span></button>
     <button class="tab-btn" data-tab="vertical">Vertical Movement <span id="verticalCount" class="tab-count warn">0</span></button>
-    <button class="tab-btn" data-tab="regkeys">Registration Keys</button>
+    <button class="tab-btn" data-tab="threatintel">Threat Intel <span id="threatintelCount" class="tab-count">0</span></button>
+    <button class="tab-btn" data-tab="settings">Settings</button>
   </div>
 
   <div class="content">
@@ -200,6 +226,7 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
               <th>Platform</th>
               <th>Version</th>
               <th>IP</th>
+              <th>Tags</th>
               <th>Findings</th>
               <th>NTP Offset</th>
               <th>Last Seen</th>
@@ -277,70 +304,194 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
       </table>
     </div>
 
-    <!-- Registration Keys -->
-    <div class="tab-panel" id="panel-regkeys">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <h3 style="font-size:16px;font-weight:600">Registration Keys</h3>
-        <button class="btn" onclick="showGenerateKeyForm()" id="btnGenerateKey">Generate Key</button>
+    <!-- Threat Intel -->
+    <div class="tab-panel" id="panel-threatintel">
+      <div class="cards" id="threatintelCards"></div>
+      <div class="filter-bar">
+        <input id="threatintelSearch" placeholder="Search rules..." oninput="renderThreatIntel()">
+        <select id="threatintelType" onchange="renderThreatIntel()">
+          <option value="">All Types</option>
+          <option value="process_name">process_name</option>
+          <option value="file_path">file_path</option>
+        </select>
+        <select id="threatintelScope" onchange="renderThreatIntel()">
+          <option value="">All Scopes</option>
+          <option value="scoped">Scoped (chain_filter)</option>
+          <option value="unscoped">Unscoped</option>
+        </select>
       </div>
-
-      <!-- Generate key form (hidden by default) -->
-      <div id="generateKeyForm" class="hidden" style="margin-bottom:20px">
-        <div class="detail-panel">
-          <h4 style="margin-bottom:12px;font-size:14px;font-weight:600">Generate New Registration Key</h4>
-          <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
-            <div>
-              <label style="display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Label (required)</label>
-              <input id="keyLabel" type="text" placeholder="e.g. Production fleet" style="width:220px">
-            </div>
-            <div>
-              <label style="display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Max Uses</label>
-              <input id="keyMaxUses" type="number" placeholder="Unlimited" min="1" style="width:120px">
-            </div>
-            <div>
-              <label style="display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Expires</label>
-              <select id="keyExpiry" style="width:140px">
-                <option value="">Never</option>
-                <option value="3600">1 hour</option>
-                <option value="86400">24 hours</option>
-                <option value="604800">7 days</option>
-                <option value="2592000">30 days</option>
-              </select>
-            </div>
-            <button class="btn btn-primary" style="width:auto;padding:8px 20px" onclick="doGenerateKey()">Generate</button>
-            <button class="btn" onclick="hideGenerateKeyForm()">Cancel</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Created key display (hidden by default) -->
-      <div id="createdKeyPanel" class="hidden" style="margin-bottom:20px">
-        <div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:16px">
-          <div style="color:var(--low);font-weight:600;font-size:13px;margin-bottom:8px">Key Generated Successfully</div>
-          <div style="color:var(--dim);font-size:12px;margin-bottom:12px">Copy this command to register an agent. The full key is only shown once.</div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <input id="createdKeyCommand" type="text" readonly class="mono" style="flex:1;background:var(--bg);font-size:12px;padding:10px">
-            <button class="btn" onclick="copyKeyCommand()" id="btnCopyKey">Copy</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Keys table -->
       <table>
         <thead>
           <tr>
-            <th>Label</th>
-            <th>Key Preview</th>
-            <th>Created</th>
-            <th>Created By</th>
-            <th>Uses</th>
-            <th>Expires</th>
-            <th>Status</th>
-            <th style="width:140px">Actions</th>
+            <th style="width:120px">Rule Type</th>
+            <th>Pattern</th>
+            <th>Chain Filter</th>
+            <th>Description</th>
+            <th>MITRE Tags</th>
           </tr>
         </thead>
-        <tbody id="regkeysTableBody"></tbody>
+        <tbody id="threatintelTableBody"></tbody>
       </table>
+    </div>
+
+    <!-- Settings -->
+    <div class="tab-panel" id="panel-settings">
+      <!-- Settings sub-nav -->
+      <div style="display:flex;gap:0;margin-bottom:20px;border-bottom:1px solid var(--border)">
+        <button class="tab-btn active" data-settingstab="users" onclick="switchSettingsTab('users')">Users</button>
+        <button class="tab-btn" data-settingstab="regkeys" onclick="switchSettingsTab('regkeys')">Registration Keys</button>
+        <button class="tab-btn" data-settingstab="serverconfig" onclick="switchSettingsTab('serverconfig')">Server Config</button>
+        <button class="tab-btn" data-settingstab="agentdefaults" onclick="switchSettingsTab('agentdefaults')">Agent Defaults</button>
+        <button class="tab-btn" data-settingstab="policies" onclick="switchSettingsTab('policies')">Policies</button>
+      </div>
+
+      <!-- Users sub-panel -->
+      <div class="settings-sub active" id="settings-users">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <h3 style="font-size:16px;font-weight:600">Users</h3>
+          <button class="btn" onclick="showCreateUserForm()">Create User</button>
+        </div>
+        <div id="createUserForm" class="hidden" style="margin-bottom:20px">
+          <div class="detail-panel">
+            <h4 style="margin-bottom:12px;font-size:14px;font-weight:600">Create New User</h4>
+            <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+              <div>
+                <label style="display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Username</label>
+                <input id="newUsername" type="text" placeholder="username" style="width:180px">
+              </div>
+              <div>
+                <label style="display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Password</label>
+                <input id="newPassword" type="password" placeholder="password" style="width:180px">
+              </div>
+              <div>
+                <label style="display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Role</label>
+                <select id="newRole" style="width:120px">
+                  <option value="admin">Admin</option>
+                  <option value="analyst">Analyst</option>
+                  <option value="viewer">Viewer</option>
+                </select>
+              </div>
+              <button class="btn btn-primary" style="width:auto;padding:8px 20px" onclick="doCreateUser()">Create</button>
+              <button class="btn" onclick="document.getElementById('createUserForm').classList.add('hidden')">Cancel</button>
+            </div>
+          </div>
+        </div>
+        <table>
+          <thead><tr><th>Username</th><th>Role</th><th>Created</th><th style="width:180px">Actions</th></tr></thead>
+          <tbody id="usersTableBody"></tbody>
+        </table>
+      </div>
+
+      <!-- Registration Keys sub-panel -->
+      <div class="settings-sub hidden" id="settings-regkeys">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <h3 style="font-size:16px;font-weight:600">Registration Keys</h3>
+          <button class="btn" onclick="showGenerateKeyForm()" id="btnGenerateKey">Generate Key</button>
+        </div>
+        <div id="generateKeyForm" class="hidden" style="margin-bottom:20px">
+          <div class="detail-panel">
+            <h4 style="margin-bottom:12px;font-size:14px;font-weight:600">Generate New Registration Key</h4>
+            <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+              <div>
+                <label style="display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Label (required)</label>
+                <input id="keyLabel" type="text" placeholder="e.g. Production fleet" style="width:220px">
+              </div>
+              <div>
+                <label style="display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Max Uses</label>
+                <input id="keyMaxUses" type="number" placeholder="Unlimited" min="1" style="width:120px">
+              </div>
+              <div>
+                <label style="display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Expires</label>
+                <select id="keyExpiry" style="width:140px">
+                  <option value="">Never</option>
+                  <option value="3600">1 hour</option>
+                  <option value="86400">24 hours</option>
+                  <option value="604800">7 days</option>
+                  <option value="2592000">30 days</option>
+                </select>
+              </div>
+              <button class="btn btn-primary" style="width:auto;padding:8px 20px" onclick="doGenerateKey()">Generate</button>
+              <button class="btn" onclick="hideGenerateKeyForm()">Cancel</button>
+            </div>
+          </div>
+        </div>
+        <div id="createdKeyPanel" class="hidden" style="margin-bottom:20px">
+          <div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:16px">
+            <div style="color:var(--low);font-weight:600;font-size:13px;margin-bottom:8px">Key Generated Successfully</div>
+            <div style="color:var(--dim);font-size:12px;margin-bottom:12px">Copy this command to register an agent. The full key is only shown once.</div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input id="createdKeyCommand" type="text" readonly class="mono" style="flex:1;background:var(--bg);font-size:12px;padding:10px">
+              <button class="btn" onclick="copyKeyCommand()" id="btnCopyKey">Copy</button>
+            </div>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Label</th><th>Key Preview</th><th>Created</th><th>Created By</th><th>Uses</th><th>Expires</th><th>Status</th><th style="width:140px">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="regkeysTableBody"></tbody>
+        </table>
+      </div>
+
+      <!-- Server Config sub-panel -->
+      <div class="settings-sub hidden" id="settings-serverconfig">
+        <h3 style="font-size:16px;font-weight:600;margin-bottom:16px">Server Configuration</h3>
+        <div id="serverConfigContent"><div class="loading"><span class="spinner"></span> Loading...</div></div>
+      </div>
+
+      <!-- Agent Defaults sub-panel -->
+      <div class="settings-sub hidden" id="settings-agentdefaults">
+        <h3 style="font-size:16px;font-weight:600;margin-bottom:16px">Agent Default Configuration</h3>
+        <p style="color:var(--dim);font-size:13px;margin-bottom:16px">Changes are pushed to agents on their next heartbeat (typically within 30-60 seconds).</p>
+        <div id="agentDefaultsContent"><div class="loading"><span class="spinner"></span> Loading...</div></div>
+      </div>
+
+      <!-- Policies sub-panel -->
+      <div class="settings-sub hidden" id="settings-policies">
+        <h3 style="font-size:16px;font-weight:600;margin-bottom:4px">Tag-Based Policies</h3>
+        <p style="color:var(--dim);font-size:13px;margin-bottom:16px">Create tags to group agents, then define per-tag policy overrides. Higher priority wins when an agent has multiple tags.</p>
+        <div class="policies-layout">
+          <div class="policies-left">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+              <h4 style="font-size:14px;font-weight:600">Tags</h4>
+              <button class="btn" style="padding:4px 12px;font-size:12px" onclick="showCreateTagForm()">Create Tag</button>
+            </div>
+            <div id="createTagForm" class="hidden" style="margin-bottom:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px">
+              <div style="margin-bottom:8px">
+                <label style="display:block;color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px">Name</label>
+                <input id="newTagName" type="text" placeholder="e.g. production" style="width:100%;font-size:12px;padding:6px 8px">
+              </div>
+              <div style="margin-bottom:8px">
+                <label style="display:block;color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px">Description</label>
+                <input id="newTagDesc" type="text" placeholder="Optional description" style="width:100%;font-size:12px;padding:6px 8px">
+              </div>
+              <div style="display:flex;gap:8px;margin-bottom:8px">
+                <div style="flex:1">
+                  <label style="display:block;color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px">Color</label>
+                  <input id="newTagColor" type="color" value="#3b82f6" style="width:100%;padding:2px;height:32px">
+                </div>
+                <div style="flex:1">
+                  <label style="display:block;color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px">Priority</label>
+                  <input id="newTagPriority" type="number" value="0" min="0" style="width:100%;font-size:12px;padding:6px 8px">
+                </div>
+              </div>
+              <div style="display:flex;gap:8px">
+                <button class="btn btn-primary" style="width:auto;padding:4px 16px;font-size:12px" onclick="doCreateTag()">Create</button>
+                <button class="btn" style="padding:4px 12px;font-size:12px" onclick="document.getElementById('createTagForm').classList.add('hidden')">Cancel</button>
+              </div>
+            </div>
+            <table style="font-size:12px">
+              <thead><tr><th style="padding:6px 8px">Tag</th><th style="padding:6px 8px">Pri</th><th style="padding:6px 8px">Agents</th><th style="padding:6px 8px;width:60px"></th></tr></thead>
+              <tbody id="tagsTableBody"></tbody>
+            </table>
+          </div>
+          <div class="policies-right" id="tagDetailPanel">
+            <div style="color:var(--dim);text-align:center;padding:60px 20px">Select a tag to view its policy overrides</div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -413,20 +564,21 @@ async function showApp() {
 
 async function refreshAll() {
   try {
-    const [agents, findings, lateral, vertical, hostConns] = await Promise.all([
+    const [agents, findings, lateral, vertical, hostConns, threatIntel] = await Promise.all([
       api('/api/fleet/agents'),
       api('/api/fleet/findings?limit=200'),
       api('/api/fleet/lateral-movements?limit=100'),
       api('/api/fleet/vertical-movements?limit=100'),
       api('/api/fleet/host-connections?limit=100'),
+      api('/api/threat-intel/rules').catch(() => null),
     ]);
     fleetData = {agents, findings, lateral, vertical, hostConns};
+    if (threatIntel) { threatIntelData = threatIntel; threatIntelLoaded = true; }
     renderFleet();
     renderFindings();
     renderLateral();
     renderVertical();
     updateCounts();
-    loadRegKeys();
   } catch(e) {
     console.error('Refresh failed:', e);
   }
@@ -440,18 +592,20 @@ function updateCounts() {
   const vc = document.getElementById('verticalCount');
   vc.textContent = fleetData.vertical.length;
   vc.className = 'tab-count' + (fleetData.vertical.length > 0 ? ' warn' : '');
+  document.getElementById('threatintelCount').textContent = (threatIntelData.rules || []).length;
 }
 
 // ── Tabs ──
 document.getElementById('tabBar').addEventListener('click', e => {
   const btn = e.target.closest('.tab-btn');
-  if (!btn) return;
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  if (!btn || btn.dataset.settingstab) return;
+  document.querySelectorAll('#tabBar .tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   btn.classList.add('active');
   document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
-  // Reset detail views when switching tabs
   hideAllDetails();
+  if (btn.dataset.tab === 'settings') { switchSettingsTab('users'); }
+  if (btn.dataset.tab === 'threatintel') { threatIntelLoaded ? renderThreatIntel() : loadThreatIntel(); }
 });
 
 function hideAllDetails() {
@@ -508,7 +662,7 @@ function renderFleet() {
 
   const tbody = document.getElementById('agentTableBody');
   if (agents.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--dim);padding:40px">No agents registered</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--dim);padding:40px">No agents registered</td></tr>';
     return;
   }
   tbody.innerHTML = agents.map(a => {
@@ -518,12 +672,14 @@ function renderFleet() {
     const firstIp = ips.length > 0 ? esc(ips[0]) : '-';
     const moreCount = ips.length > 1 ? ips.length - 1 : 0;
     const ipCell = firstIp + (moreCount > 0 ? `<span class="ip-more" title="${esc(ips.join(', '))}">+${moreCount}</span>` : '');
+    const tagChips = (a.tags||[]).map(t => `<span class="tag-chip" style="color:${esc(t.color)};border-color:${esc(t.color)};background:${esc(t.color)}15">${esc(t.tag_name)}</span>`).join('');
     return `<tr class="clickable" onclick="showAgentDetail('${esc(a.agent_id)}')">
       <td><span class="status-dot ${a.status}"></span></td>
       <td>${esc(a.hostname)}</td>
       <td>${esc(a.platform)}</td>
       <td class="mono">${esc(a.agent_version)}</td>
       <td class="mono">${ipCell}</td>
+      <td>${tagChips || '<span style="color:var(--dim)">-</span>'}</td>
       <td>${a.finding_count}</td>
       <td>${driftWarn}</td>
       <td>${fmtAgo(a.last_seen)}</td>
@@ -538,10 +694,12 @@ async function showAgentDetail(agentId) {
   panel.innerHTML = '<div class="loading"><span class="spinner"></span> Loading agent detail...</div>';
 
   try {
-    const [detail, findings, chains] = await Promise.all([
+    const [detail, findings, chains, agentTags, allTags] = await Promise.all([
       api(`/api/fleet/agents/${agentId}`),
       api(`/api/fleet/agents/${agentId}/findings?limit=50`),
       api(`/api/fleet/agents/${agentId}/chains?limit=100`),
+      api(`/api/fleet/agents/${agentId}/tags`),
+      api('/api/settings/tags'),
     ]);
 
     const offsetMs = detail.clock_offset_ms || 0;
@@ -565,6 +723,7 @@ async function showAgentDetail(agentId) {
         <dt>Platform</dt><dd>${esc(detail.platform)} ${esc(detail.os_version)}</dd>
         <dt>Version</dt><dd class="mono">${esc(detail.agent_version)}</dd>
         <dt>IP Addresses</dt><dd>${ipBadges}</dd>
+        <dt>Tags</dt><dd id="agentDetailTags">${renderAgentDetailTags(agentId, agentTags, allTags)}</dd>
         <dt>NTP Offset</dt><dd>${driftWarn}</dd>
         <dt>Registered</dt><dd>${fmtTime(detail.registered_at)}</dd>
         <dt>Last Seen</dt><dd>${fmtTime(detail.last_seen)} (${fmtAgo(detail.last_seen)})</dd>
@@ -824,6 +983,172 @@ function renderVertical() {
   `).join('');
 }
 
+// ── Threat Intel ──
+let threatIntelData = {metadata: {}, rules: []};
+let threatIntelLoaded = false;
+
+async function loadThreatIntel() {
+  try {
+    if (!threatIntelLoaded) {
+      threatIntelData = await api('/api/threat-intel/rules');
+      threatIntelLoaded = true;
+    }
+    renderThreatIntel();
+  } catch(e) { console.error('Failed to load threat intel:', e); }
+}
+
+function renderThreatIntel() {
+  const rules = threatIntelData.rules || [];
+  const meta = threatIntelData.metadata || {};
+
+  // Summary stats
+  const typeCount = {};
+  const techniques = new Set();
+  let scoped = 0;
+  rules.forEach(r => {
+    typeCount[r.rule_type] = (typeCount[r.rule_type]||0) + 1;
+    if (r.chain_filter) scoped++;
+    (r.tags||[]).forEach(t => {
+      if (t.startsWith('attack.t')) techniques.add(t);
+    });
+  });
+
+  const compiledAt = meta.generated_at ? new Date(meta.generated_at).toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'}) : '-';
+  const sigmaRef = meta.sigma_commit ? meta.sigma_commit.substring(0,8) : '-';
+
+  document.getElementById('threatintelCards').innerHTML = `
+    <div class="card"><div class="card-label">Total Rules</div><div class="card-value">${rules.length}</div><div class="card-sub">Compiled from SigmaHQ</div></div>
+    <div class="card"><div class="card-label">Scoped Rules</div><div class="card-value">${scoped}</div><div class="card-sub">With chain_filter ancestry match</div></div>
+    <div class="card"><div class="card-label">MITRE Techniques</div><div class="card-value">${techniques.size}</div><div class="card-sub">${techniques.size > 0 ? Array.from(techniques).slice(0,3).map(t=>t.replace('attack.','')).join(', ') + (techniques.size>3?' ...':'') : '-'}</div></div>
+    <div class="card"><div class="card-label">Last Compiled</div><div class="card-value" style="font-size:16px">${compiledAt}</div><div class="card-sub">Sigma ${sigmaRef}</div></div>
+  `;
+
+  document.getElementById('threatintelCount').textContent = rules.length;
+
+  // Filter
+  const search = (document.getElementById('threatintelSearch').value||'').toLowerCase();
+  const typeFilter = document.getElementById('threatintelType').value;
+  const scopeFilter = document.getElementById('threatintelScope').value;
+
+  let filtered = rules;
+  if (search) filtered = filtered.filter(r =>
+    r.pattern.toLowerCase().includes(search) ||
+    (r.description||'').toLowerCase().includes(search) ||
+    (r.chain_filter||'').toLowerCase().includes(search) ||
+    (r.tags||[]).some(t => t.toLowerCase().includes(search))
+  );
+  if (typeFilter) filtered = filtered.filter(r => r.rule_type === typeFilter);
+  if (scopeFilter === 'scoped') filtered = filtered.filter(r => r.chain_filter);
+  if (scopeFilter === 'unscoped') filtered = filtered.filter(r => !r.chain_filter);
+
+  const tbody = document.getElementById('threatintelTableBody');
+  if (filtered.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--dim);padding:40px">No rules match filter</td></tr>';
+    return;
+  }
+  tbody.innerHTML = filtered.map(r => {
+    const tags = (r.tags||[]).map(t => {
+      const label = t.replace('attack.','').replace('detection.','');
+      const isTechnique = t.match(/attack\.t\d/);
+      const cls = isTechnique ? 'severity-high' : 'severity-info';
+      return `<span class="severity-badge ${cls}" style="margin:1px;font-size:10px">${esc(label)}</span>`;
+    }).join('');
+    return `<tr>
+      <td><span class="severity-badge severity-medium">${esc(r.rule_type)}</span></td>
+      <td class="mono">${esc(r.pattern)}</td>
+      <td class="mono" style="color:${r.chain_filter ? 'var(--lateral)' : 'var(--dim)'}">${r.chain_filter ? esc(r.chain_filter) : '-'}</td>
+      <td class="truncate">${esc(r.description)}</td>
+      <td>${tags}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Settings Tab ──
+let settingsTabLoaded = {};
+
+function switchSettingsTab(tab) {
+  document.querySelectorAll('[data-settingstab]').forEach(b => b.classList.remove('active'));
+  document.querySelector(`[data-settingstab="${tab}"]`).classList.add('active');
+  document.querySelectorAll('.settings-sub').forEach(p => { p.classList.remove('active'); p.classList.add('hidden'); });
+  const panel = document.getElementById('settings-' + tab);
+  panel.classList.remove('hidden');
+  panel.classList.add('active');
+  // Lazy-load data
+  if (tab === 'users' && !settingsTabLoaded.users) { loadUsers(); settingsTabLoaded.users = true; }
+  if (tab === 'regkeys' && !settingsTabLoaded.regkeys) { loadRegKeys(); settingsTabLoaded.regkeys = true; }
+  if (tab === 'serverconfig') loadServerConfig();
+  if (tab === 'agentdefaults') loadAgentDefaults();
+  if (tab === 'policies') loadPolicies();
+}
+
+// ── Users ──
+let usersData = [];
+
+async function loadUsers() {
+  try {
+    usersData = await api('/api/settings/users');
+    renderUsers();
+  } catch(e) { console.error('Failed to load users:', e); }
+}
+
+function renderUsers() {
+  const tbody = document.getElementById('usersTableBody');
+  if (usersData.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--dim);padding:40px">No users</td></tr>';
+    return;
+  }
+  tbody.innerHTML = usersData.map(u => `<tr>
+    <td>${esc(u.username)}</td>
+    <td><span class="key-status active">${esc(u.role)}</span></td>
+    <td>${fmtTime(u.created_at)}</td>
+    <td>
+      <button class="btn" style="padding:2px 10px;font-size:12px;margin-right:4px" onclick="promptEditUser('${esc(u.username)}','${esc(u.role)}')">Edit</button>
+      <button class="btn" style="padding:2px 10px;font-size:12px;color:var(--critical)" onclick="doDeleteUser('${esc(u.username)}')">Delete</button>
+    </td>
+  </tr>`).join('');
+}
+
+function showCreateUserForm() {
+  document.getElementById('createUserForm').classList.remove('hidden');
+  document.getElementById('newUsername').value = '';
+  document.getElementById('newPassword').value = '';
+  document.getElementById('newRole').value = 'admin';
+  document.getElementById('newUsername').focus();
+}
+
+async function doCreateUser() {
+  const username = document.getElementById('newUsername').value.trim();
+  const password = document.getElementById('newPassword').value;
+  const role = document.getElementById('newRole').value;
+  if (!username || !password) { alert('Username and password are required'); return; }
+  try {
+    await api('/api/settings/users', { method:'POST', body: JSON.stringify({username, password, role}) });
+    document.getElementById('createUserForm').classList.add('hidden');
+    await loadUsers();
+  } catch(e) { alert('Failed to create user: ' + e.message); }
+}
+
+function promptEditUser(username, currentRole) {
+  const newRole = prompt(`New role for ${username} (admin/analyst/viewer):`, currentRole);
+  if (newRole === null) return;
+  const newPass = prompt(`New password for ${username} (leave empty to keep current):`, '');
+  const body = {};
+  if (newRole && newRole !== currentRole) body.role = newRole;
+  if (newPass) body.password = newPass;
+  if (Object.keys(body).length === 0) return;
+  api(`/api/settings/users/${encodeURIComponent(username)}`, { method:'PUT', body: JSON.stringify(body) })
+    .then(() => loadUsers())
+    .catch(e => alert('Failed to update user: ' + e.message));
+}
+
+async function doDeleteUser(username) {
+  if (!confirm(`Delete user "${username}"?`)) return;
+  try {
+    await api(`/api/settings/users/${encodeURIComponent(username)}`, {method:'DELETE'});
+    await loadUsers();
+  } catch(e) { alert('Failed to delete user: ' + e.message); }
+}
+
 // ── Registration Keys ──
 let regkeysData = [];
 
@@ -831,9 +1156,7 @@ async function loadRegKeys() {
   try {
     regkeysData = await api('/api/fleet/registration-keys');
     renderRegKeys();
-  } catch(e) {
-    console.error('Failed to load registration keys:', e);
-  }
+  } catch(e) { console.error('Failed to load registration keys:', e); }
 }
 
 function renderRegKeys() {
@@ -882,25 +1205,19 @@ async function doGenerateKey() {
   const maxUses = document.getElementById('keyMaxUses').value ? parseInt(document.getElementById('keyMaxUses').value) : null;
   const expiryVal = document.getElementById('keyExpiry').value;
   const expiresIn = expiryVal ? parseInt(expiryVal) : null;
-
   try {
     const result = await api('/api/fleet/registration-keys', {
       method: 'POST',
       body: JSON.stringify({label, max_uses: maxUses, expires_in: expiresIn}),
     });
     hideGenerateKeyForm();
-
-    // Show the created key command
     const serverAddr = window.location.hostname + ':50051';
     const cmd = `python -m agent.main --fleet-enabled --fleet-url ${serverAddr} --registration-key ${result.key}`;
     document.getElementById('createdKeyCommand').value = cmd;
     document.getElementById('createdKeyPanel').classList.remove('hidden');
     document.getElementById('btnCopyKey').textContent = 'Copy';
-
     await loadRegKeys();
-  } catch(e) {
-    alert('Failed to generate key: ' + e.message);
-  }
+  } catch(e) { alert('Failed to generate key: ' + e.message); }
 }
 
 function copyKeyCommand() {
@@ -917,9 +1234,7 @@ async function doRevokeKey(key) {
   try {
     await api(`/api/fleet/registration-keys/${key}/revoke`, {method:'POST'});
     await loadRegKeys();
-  } catch(e) {
-    alert('Failed to revoke key: ' + e.message);
-  }
+  } catch(e) { alert('Failed to revoke key: ' + e.message); }
 }
 
 async function doDeleteKey(key) {
@@ -928,9 +1243,333 @@ async function doDeleteKey(key) {
     await api(`/api/fleet/registration-keys/${key}`, {method:'DELETE'});
     document.getElementById('createdKeyPanel').classList.add('hidden');
     await loadRegKeys();
-  } catch(e) {
-    alert('Failed to delete key: ' + e.message);
+  } catch(e) { alert('Failed to delete key: ' + e.message); }
+}
+
+// ── Server Config ──
+async function loadServerConfig() {
+  const el = document.getElementById('serverConfigContent');
+  try {
+    const data = await api('/api/settings/server');
+    const ed = data.editable || {};
+    const ro = data.read_only || {};
+    el.innerHTML = `
+      <div class="settings-form">
+        <div class="field">
+          <label>JWT TTL (hours)</label>
+          <div class="field-hint">How long dashboard login tokens remain valid before requiring re-authentication.</div>
+          <input id="sc_jwt_ttl_hours" type="number" value="${esc(ed.jwt_ttl_hours||'8')}" min="1">
+        </div>
+        <div class="field">
+          <label>Lateral Movement Time Window (seconds)</label>
+          <div class="field-hint">Time window for correlating cross-host events into lateral movement detections.</div>
+          <input id="sc_lateral_movement_time_window" type="number" value="${esc(ed.lateral_movement_time_window||'300')}" min="1">
+        </div>
+        <div class="field">
+          <label>NTP Server</label>
+          <div class="field-hint">NTP server used to measure clock drift between the fleet server and agents.</div>
+          <input id="sc_ntp_server" type="text" value="${esc(ed.ntp_server||'pool.ntp.org')}">
+        </div>
+        <div class="field">
+          <label>NTP Sync Interval (seconds)</label>
+          <div class="field-hint">How often the server queries NTP to refresh its clock offset measurement.</div>
+          <input id="sc_ntp_sync_interval" type="number" value="${esc(ed.ntp_sync_interval||'300')}" min="10">
+        </div>
+        <button class="btn btn-primary" style="width:auto;padding:8px 24px" onclick="saveServerConfig()">Save Server Config</button>
+      </div>
+      <div class="detail-section" style="margin-top:24px">
+        <h4>Read-Only Reference</h4>
+        <div class="detail-grid settings-readonly">
+          <dt>gRPC Port</dt><dd class="mono">${ro.grpc_port || '-'}</dd>
+          <dt>HTTP Port</dt><dd class="mono">${ro.http_port || '-'}</dd>
+          <dt>Neo4j URI</dt><dd class="mono">${esc(ro.neo4j_uri || '-')}</dd>
+        </div>
+      </div>`;
+  } catch(e) { el.innerHTML = `<div class="empty-state"><p>${esc(e.message)}</p></div>`; }
+}
+
+async function saveServerConfig() {
+  const body = {
+    jwt_ttl_hours: document.getElementById('sc_jwt_ttl_hours').value,
+    lateral_movement_time_window: document.getElementById('sc_lateral_movement_time_window').value,
+    ntp_server: document.getElementById('sc_ntp_server').value,
+    ntp_sync_interval: document.getElementById('sc_ntp_sync_interval').value,
+  };
+  try {
+    await api('/api/settings/server', { method:'PUT', body: JSON.stringify(body) });
+    alert('Server config saved');
+  } catch(e) { alert('Failed to save: ' + e.message); }
+}
+
+// ── Agent Defaults ──
+const agentDefaultFields = [
+  {key:'response_mode', label:'Response Mode', type:'select', options:['learning','enforcing','passive'],
+   desc:'Learning builds a behavioral baseline without acting. Enforcing blocks threats automatically. Passive only generates alerts.'},
+  {key:'analyzer_interval', label:'Analyzer Interval (seconds)', type:'number', step:'0.1',
+   desc:'How often the LLM analyzer runs to evaluate queued events and generate findings.'},
+  {key:'collector_poll_interval', label:'Collector Poll Interval (seconds)', type:'number', step:'0.1',
+   desc:'How often process/network collectors poll for new telemetry events.'},
+  {key:'novel_edge_threshold', label:'Novel Edge Threshold', type:'number',
+   desc:'Number of times a graph edge must be seen before it is considered baseline (not novel). Lower values flag more activity.'},
+  {key:'dga_score_threshold', label:'DGA Score Threshold', type:'number', step:'0.01',
+   desc:'Minimum score (0-1) for a domain to be flagged as a potential DGA (domain generation algorithm) domain. Lower values catch more but increase false positives.'},
+  {key:'graph_ttl_hours', label:'Graph TTL (hours)', type:'number',
+   desc:'How long process and network edges are retained in the local graph database before the reaper removes them.'},
+  {key:'auto_respond', label:'Auto Respond', type:'select', options:['false','true'],
+   desc:'When enabled, the agent automatically executes response actions (DNS sinkhole, firewall block) for critical-severity findings without human approval.'},
+  {key:'auto_terminate', label:'Auto Terminate', type:'select', options:['false','true'],
+   desc:'When enabled, allows the agent to kill malicious processes. Requires Auto Respond to also be enabled. Use with caution.'},
+  {key:'fleet_forward_events', label:'Fleet Forward Events', type:'select', options:['false','true'],
+   desc:'Forward raw OCSF telemetry events to the fleet server for cross-host correlation. High bandwidth — only enable if you need network-level lateral movement detection.'},
+  {key:'ioc_feeds_enabled', label:'IOC Feeds Enabled', type:'select', options:['false','true'],
+   desc:'Download and match against public threat intelligence feeds (Feodo Tracker, IPsum, URLhaus, etc.) for known-bad IPs, domains, and file hashes.'},
+];
+
+async function loadAgentDefaults() {
+  const el = document.getElementById('agentDefaultsContent');
+  try {
+    const data = await api('/api/settings/agent-defaults');
+    el.innerHTML = `<div class="settings-form">${agentDefaultFields.map(f => {
+      const val = data[f.key] || '';
+      const hint = f.desc ? `<div class="field-hint">${esc(f.desc)}</div>` : '';
+      if (f.type === 'select') {
+        const opts = f.options.map(o => `<option value="${o}" ${val===o?'selected':''}>${o}</option>`).join('');
+        return `<div class="field"><label>${esc(f.label)}</label>${hint}<select id="ad_${f.key}">${opts}</select></div>`;
+      }
+      const step = f.step ? ` step="${f.step}"` : '';
+      return `<div class="field"><label>${esc(f.label)}</label>${hint}<input id="ad_${f.key}" type="${f.type}" value="${esc(val)}"${step}></div>`;
+    }).join('')}
+    <button class="btn btn-primary" style="width:auto;padding:8px 24px" onclick="saveAgentDefaults()">Save Agent Defaults</button>
+    </div>`;
+  } catch(e) { el.innerHTML = `<div class="empty-state"><p>${esc(e.message)}</p></div>`; }
+}
+
+async function saveAgentDefaults() {
+  const body = {};
+  agentDefaultFields.forEach(f => { body[f.key] = document.getElementById('ad_' + f.key).value; });
+  try {
+    await api('/api/settings/agent-defaults', { method:'PUT', body: JSON.stringify(body) });
+    alert('Agent defaults saved. Changes will be pushed on next heartbeat.');
+  } catch(e) { alert('Failed to save: ' + e.message); }
+}
+
+// ── Agent Detail Tag Management ──
+function renderAgentDetailTags(agentId, agentTags, allTags) {
+  const chips = agentTags.map(t =>
+    `<span class="tag-chip" style="color:${esc(t.color)};border-color:${esc(t.color)};background:${esc(t.color)}15">${esc(t.tag_name)}<span class="tag-chip-remove" onclick="event.stopPropagation();removeAgentTag('${esc(agentId)}','${esc(t.tag_name)}')">&times;</span></span>`
+  ).join('');
+  const assignedNames = new Set(agentTags.map(t => t.tag_name));
+  const available = allTags.filter(t => !assignedNames.has(t.tag_name));
+  const addBtn = available.length > 0
+    ? `<select style="font-size:11px;padding:2px 6px;margin-left:4px" onchange="assignAgentTag('${esc(agentId)}',this.value);this.value=''"><option value="">+ Add tag</option>${available.map(t => `<option value="${esc(t.tag_name)}">${esc(t.tag_name)}</option>`).join('')}</select>`
+    : '';
+  return (chips || '<span style="color:var(--dim)">None</span>') + addBtn;
+}
+
+async function assignAgentTag(agentId, tagName) {
+  if (!tagName) return;
+  try {
+    await api(`/api/fleet/agents/${agentId}/tags`, {method:'POST', body: JSON.stringify({tag_name: tagName})});
+    showAgentDetail(agentId);
+  } catch(e) { alert('Failed to assign tag: ' + e.message); }
+}
+
+async function removeAgentTag(agentId, tagName) {
+  try {
+    await api(`/api/fleet/agents/${agentId}/tags/${tagName}`, {method:'DELETE'});
+    showAgentDetail(agentId);
+  } catch(e) { alert('Failed to remove tag: ' + e.message); }
+}
+
+// ── Policies Tab ──
+let policiesData = {tags: [], selectedTag: null};
+
+async function loadPolicies() {
+  try {
+    policiesData.tags = await api('/api/settings/tags');
+    renderTagsList();
+    if (policiesData.selectedTag) {
+      const still = policiesData.tags.find(t => t.tag_name === policiesData.selectedTag);
+      if (still) { showTagDetail(policiesData.selectedTag); return; }
+    }
+    policiesData.selectedTag = null;
+    document.getElementById('tagDetailPanel').innerHTML = '<div style="color:var(--dim);text-align:center;padding:60px 20px">Select a tag to view its policy overrides</div>';
+  } catch(e) { console.error('Failed to load policies:', e); }
+}
+
+function renderTagsList() {
+  const tbody = document.getElementById('tagsTableBody');
+  if (policiesData.tags.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--dim);padding:20px;font-size:12px">No tags created</td></tr>';
+    return;
   }
+  tbody.innerHTML = policiesData.tags.map(t => {
+    const sel = policiesData.selectedTag === t.tag_name ? 'background:rgba(59,130,246,0.08)' : '';
+    return `<tr class="clickable" style="${sel}" onclick="showTagDetail('${esc(t.tag_name)}')">
+      <td style="padding:6px 8px"><span class="tag-swatch" style="background:${esc(t.color)}"></span>${esc(t.tag_name)}</td>
+      <td style="padding:6px 8px">${t.priority}</td>
+      <td style="padding:6px 8px">${t.agent_count}</td>
+      <td style="padding:6px 8px"><button class="btn" style="padding:1px 8px;font-size:11px;color:var(--critical)" onclick="event.stopPropagation();doDeleteTag('${esc(t.tag_name)}')">&times;</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function showCreateTagForm() {
+  const form = document.getElementById('createTagForm');
+  form.classList.remove('hidden');
+  document.getElementById('newTagName').value = '';
+  document.getElementById('newTagDesc').value = '';
+  document.getElementById('newTagColor').value = '#3b82f6';
+  document.getElementById('newTagPriority').value = '0';
+  document.getElementById('newTagName').focus();
+}
+
+async function doCreateTag() {
+  const name = document.getElementById('newTagName').value.trim();
+  if (!name) { document.getElementById('newTagName').focus(); return; }
+  try {
+    await api('/api/settings/tags', {
+      method: 'POST',
+      body: JSON.stringify({
+        tag_name: name,
+        description: document.getElementById('newTagDesc').value.trim(),
+        color: document.getElementById('newTagColor').value,
+        priority: parseInt(document.getElementById('newTagPriority').value) || 0,
+      }),
+    });
+    document.getElementById('createTagForm').classList.add('hidden');
+    await loadPolicies();
+  } catch(e) { alert('Failed to create tag: ' + e.message); }
+}
+
+async function doDeleteTag(tagName) {
+  if (!confirm(`Delete tag "${tagName}"? This will remove it from all agents.`)) return;
+  try {
+    await api(`/api/settings/tags/${tagName}`, {method:'DELETE'});
+    if (policiesData.selectedTag === tagName) policiesData.selectedTag = null;
+    await loadPolicies();
+  } catch(e) { alert('Failed to delete tag: ' + e.message); }
+}
+
+async function showTagDetail(tagName) {
+  policiesData.selectedTag = tagName;
+  renderTagsList();
+  const panel = document.getElementById('tagDetailPanel');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span> Loading...</div>';
+
+  try {
+    const [tag, policy, agents] = await Promise.all([
+      api(`/api/settings/tags/${tagName}`),
+      api(`/api/settings/tags/${tagName}/policy`),
+      api(`/api/settings/tags/${tagName}/policy`).then(() => fetch(`/api/fleet/agents/${tagName}`, {headers:{'Authorization':'Bearer '+token}}).catch(() => null)),
+    ]);
+
+    // Get agents for this tag
+    let tagAgents = [];
+    try {
+      const taRes = await fetch(`/api/settings/tags/${tagName}`, {headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'}});
+      // We need a separate call — use the agents list from fleet data
+      tagAgents = fleetData.agents.filter(a => (a.tags||[]).some(t => t.tag_name === tagName));
+    } catch(e) {}
+
+    panel.innerHTML = `
+      <h4 style="font-size:14px;font-weight:600;margin-bottom:12px">
+        <span class="tag-swatch" style="background:${esc(tag.color)}"></span>${esc(tag.tag_name)}
+      </h4>
+      <div style="margin-bottom:16px">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div style="flex:1">
+            <label style="display:block;color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px">Description</label>
+            <input id="editTagDesc" type="text" value="${esc(tag.description)}" style="width:100%;font-size:12px;padding:6px 8px">
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div>
+            <label style="display:block;color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px">Color</label>
+            <input id="editTagColor" type="color" value="${esc(tag.color)}" style="width:60px;padding:2px;height:28px">
+          </div>
+          <div>
+            <label style="display:block;color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px">Priority</label>
+            <input id="editTagPriority" type="number" value="${tag.priority}" min="0" style="width:80px;font-size:12px;padding:6px 8px">
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button class="btn" style="padding:4px 12px;font-size:12px" onclick="doUpdateTag('${esc(tag.tag_name)}')">Save</button>
+          </div>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border);padding-top:12px;margin-bottom:16px">
+        <h4 style="color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Policy Overrides</h4>
+        <p style="color:var(--dim);font-size:11px;margin-bottom:12px">Check settings to override for agents with this tag. Unchecked settings inherit global defaults.</p>
+        <div id="policyEditor">${renderPolicyEditor(policy.overrides || policy)}</div>
+        <button class="btn btn-primary" style="width:auto;padding:6px 16px;font-size:12px;margin-top:8px" onclick="doSavePolicy('${esc(tag.tag_name)}')">Save Policy</button>
+      </div>
+
+      <div style="border-top:1px solid var(--border);padding-top:12px">
+        <h4 style="color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Assigned Agents (${tagAgents.length})</h4>
+        ${tagAgents.length === 0 ? '<div style="color:var(--dim);font-size:12px">No agents assigned to this tag</div>' :
+          tagAgents.map(a => `<div style="font-size:12px;padding:4px 0"><span class="status-dot ${a.status}" style="margin-right:6px"></span>${esc(a.hostname)} <span class="mono" style="color:var(--dim)">(${esc((a.agent_id||'').substring(0,12))}...)</span></div>`).join('')
+        }
+      </div>
+    `;
+  } catch(e) {
+    panel.innerHTML = `<div class="empty-state"><p>${esc(e.message)}</p></div>`;
+  }
+}
+
+function renderPolicyEditor(policy) {
+  return agentDefaultFields.map(f => {
+    const checked = f.key in policy;
+    const val = policy[f.key] || '';
+    const inputId = `pol_${f.key}`;
+    const checkId = `polchk_${f.key}`;
+    let input;
+    if (f.type === 'select') {
+      const opts = f.options.map(o => `<option value="${o}" ${val===o?'selected':''}>${o}</option>`).join('');
+      input = `<select id="${inputId}" style="width:100%;font-size:12px;padding:4px 8px" ${!checked?'disabled':''}>${opts}</select>`;
+    } else {
+      const step = f.step ? ` step="${f.step}"` : '';
+      input = `<input id="${inputId}" type="${f.type}" value="${esc(val)}"${step} style="width:100%;font-size:12px;padding:4px 8px" ${!checked?'disabled':''}>`;
+    }
+    return `<div class="policy-field">
+      <input type="checkbox" id="${checkId}" ${checked?'checked':''} onchange="document.getElementById('${inputId}').disabled=!this.checked">
+      <div class="policy-input">
+        <div style="font-size:12px;margin-bottom:2px">${esc(f.label)}</div>
+        ${input}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function doUpdateTag(tagName) {
+  try {
+    await api(`/api/settings/tags/${tagName}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        description: document.getElementById('editTagDesc').value.trim(),
+        color: document.getElementById('editTagColor').value,
+        priority: parseInt(document.getElementById('editTagPriority').value) || 0,
+      }),
+    });
+    await loadPolicies();
+  } catch(e) { alert('Failed to update tag: ' + e.message); }
+}
+
+async function doSavePolicy(tagName) {
+  const overrides = {};
+  agentDefaultFields.forEach(f => {
+    const chk = document.getElementById('polchk_' + f.key);
+    if (chk && chk.checked) {
+      overrides[f.key] = document.getElementById('pol_' + f.key).value;
+    }
+  });
+  try {
+    await api(`/api/settings/tags/${tagName}/policy`, {
+      method: 'PUT',
+      body: JSON.stringify({overrides}),
+    });
+    alert('Policy saved. Changes apply on next agent heartbeat.');
+  } catch(e) { alert('Failed to save policy: ' + e.message); }
 }
 
 // ── Startup ──

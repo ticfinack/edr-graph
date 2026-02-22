@@ -7,6 +7,8 @@ correlation.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 
@@ -38,8 +40,9 @@ def _extract_peer_ip(context) -> str:
 class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
     """gRPC service implementation for the central fleet server."""
 
-    def __init__(self, neo4j: Neo4jClient) -> None:
+    def __init__(self, neo4j: Neo4jClient, settings_db=None) -> None:
         self._neo4j = neo4j
+        self._settings_db = settings_db
 
     def RegisterAgent(self, request, context):
         """Register an agent, store Host node in Neo4j.
@@ -57,7 +60,12 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
                 message="registration_key is required",
             )
 
-        valid, reason = self._neo4j.validate_registration_key(reg_key)
+        # Validate key via settings_db (SQLite), fall back to Neo4j
+        if self._settings_db:
+            valid, reason = self._settings_db.validate_registration_key(reg_key)
+        else:
+            valid, reason = self._neo4j.validate_registration_key(reg_key)
+
         if not valid:
             context.set_code(grpc.StatusCode.PERMISSION_DENIED)
             context.set_details(reason)
@@ -90,6 +98,9 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
 
         try:
             self._neo4j.register_agent(agent_data, registration_key=reg_key)
+            # Store agent→key mapping for HMAC config signing
+            if self._settings_db:
+                self._settings_db.set_agent_key(info.agent_id, reg_key)
             logger.info("Agent registered: %s (%s)", info.agent_id, info.hostname)
             return fleet_pb2.RegisterAgentResponse(
                 accepted=True,
@@ -159,7 +170,27 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
                 ip_addresses=ip_addresses,
                 public_ip=public_ip,
             )
-            return fleet_pb2.HeartbeatResponse(acknowledged=True, message="ok")
+
+            # Send agent config defaults, signed with HMAC for authenticity
+            config_json = ""
+            config_signature = ""
+            if self._settings_db:
+                defaults = self._settings_db.resolve_agent_config(request.agent_id)
+                if defaults:
+                    config_json = json.dumps(defaults)
+                    # Sign with the agent's registration key via HMAC-SHA256
+                    agent_key = self._settings_db.get_agent_key(request.agent_id)
+                    if agent_key:
+                        config_signature = hmac.new(
+                            agent_key.encode(), config_json.encode(), hashlib.sha256
+                        ).hexdigest()
+
+            return fleet_pb2.HeartbeatResponse(
+                acknowledged=True,
+                message="ok",
+                config_json=config_json,
+                config_signature=config_signature,
+            )
         except Exception:
             logger.debug("Heartbeat update failed for %s", request.agent_id, exc_info=True)
             return fleet_pb2.HeartbeatResponse(acknowledged=False, message="failed")

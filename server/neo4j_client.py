@@ -839,6 +839,35 @@ class Neo4jClient:
             )
             return True, "ok"
 
+    # ── Migration helpers ──
+
+    def get_all_dashboard_users(self) -> list[dict]:
+        """Get all dashboard users for migration to SQLite."""
+        query = """
+        MATCH (u:DashboardUser)
+        RETURN u.username AS username,
+               u.password_hash AS password_hash,
+               u.role AS role,
+               u.created_at AS created_at
+        """
+        with self._driver.session() as session:
+            result = session.run(query)
+            return [dict(record) for record in result]
+
+    def get_all_registration_keys(self) -> list[dict]:
+        """Get all registration keys for migration to SQLite."""
+        query = """
+        MATCH (k:RegistrationKey)
+        RETURN k.key AS key, k.label AS label, k.created_at AS created_at,
+               k.created_by AS created_by, k.expires_at AS expires_at,
+               k.max_uses AS max_uses, k.use_count AS use_count,
+               k.revoked AS revoked, k.revoked_at AS revoked_at,
+               k.revoked_by AS revoked_by
+        """
+        with self._driver.session() as session:
+            result = session.run(query)
+            return [dict(record) for record in result]
+
     def close(self) -> None:
         """Close the Neo4j driver."""
         self._driver.close()

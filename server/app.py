@@ -14,6 +14,7 @@ Environment variables:
     ADMIN_USER      - Bootstrap admin username (default: admin)
     ADMIN_PASSWORD  - Bootstrap admin password (auto-generated if not set)
     NTP_SERVER      - NTP server for clock sync (default: pool.ntp.org)
+    SETTINGS_DB_PATH - Path to settings SQLite database (default: ./settings.db)
 """
 
 from __future__ import annotations
@@ -33,10 +34,11 @@ from agent.fleet.tls import load_mtls_server_credentials
 from server.auth import hash_password, set_jwt_secret
 from server.config import ServerSettings
 from server.dashboard import app as dashboard_app
-from server.dashboard import set_neo4j, set_settings
+from server.dashboard import set_neo4j, set_settings, set_settings_db
 from server.grpc_service import FleetServicer
 from server.neo4j_client import Neo4jClient
 from server.ntp_sync import NtpMonitor
+from server.settings_db import SettingsDB
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,6 +51,58 @@ def _generate_password(length: int = 24) -> str:
     """Generate a random password for bootstrap."""
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _migrate_neo4j_to_sqlite(neo4j_client: Neo4jClient, settings_db: SettingsDB) -> None:
+    """One-time migration: copy users and registration keys from Neo4j to SQLite."""
+    if not settings_db.is_empty():
+        return
+
+    try:
+        users = neo4j_client.get_all_dashboard_users()
+        keys = neo4j_client.get_all_registration_keys()
+    except Exception:
+        logger.debug("Neo4j migration query failed (may not have data)", exc_info=True)
+        return
+
+    if not users and not keys:
+        return
+
+    migrated_users = 0
+    for u in users:
+        try:
+            settings_db.create_user(u["username"], u["password_hash"], role=u.get("role", "admin"))
+            migrated_users += 1
+        except Exception:
+            logger.debug("Failed to migrate user %s", u.get("username"), exc_info=True)
+
+    migrated_keys = 0
+    for k in keys:
+        try:
+            conn = settings_db._conn()
+            conn.execute(
+                "INSERT OR IGNORE INTO registration_keys "
+                "(key, label, created_at, created_by, expires_at, max_uses, use_count, revoked, revoked_at, revoked_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    k["key"],
+                    k.get("label", ""),
+                    k.get("created_at", 0),
+                    k.get("created_by", ""),
+                    k.get("expires_at"),
+                    k.get("max_uses"),
+                    k.get("use_count", 0),
+                    1 if k.get("revoked") else 0,
+                    k.get("revoked_at"),
+                    k.get("revoked_by"),
+                ),
+            )
+            conn.commit()
+            migrated_keys += 1
+        except Exception:
+            logger.debug("Failed to migrate key %s", k.get("key", "")[:8], exc_info=True)
+
+    logger.info("Migrated %d users and %d registration keys from Neo4j to SQLite", migrated_users, migrated_keys)
 
 
 def main() -> None:
@@ -65,6 +119,10 @@ def main() -> None:
     ntp_monitor.start()
     logger.info("NTP monitor started (server=%s, interval=%ds)", settings.ntp_server, settings.ntp_sync_interval)
 
+    # ── Settings database (SQLite) ──
+    global_rules_path = Path(__file__).parent.parent / "rules" / "defaults" / "stage2_blocklist.yml"
+    settings_db = SettingsDB(settings.settings_db_path, global_rules_path=global_rules_path)
+
     # ── Connect to Neo4j ──
     neo4j_client = Neo4jClient(
         uri=settings.neo4j_uri,
@@ -73,19 +131,23 @@ def main() -> None:
     )
     neo4j_client.init_schema()
 
+    # ── Migrate Neo4j users/keys to SQLite (one-time) ──
+    _migrate_neo4j_to_sqlite(neo4j_client, settings_db)
+
     # ── Bootstrap admin user ──
-    if neo4j_client.count_dashboard_users() == 0:
+    if settings_db.count_users() == 0:
         admin_user = settings.bootstrap_admin_user
         admin_pass = settings.bootstrap_admin_password
         if not admin_pass:
             admin_pass = _generate_password()
             logger.warning("ADMIN_PASSWORD not set -- generated bootstrap password: %s", admin_pass)
-        neo4j_client.create_dashboard_user(admin_user, hash_password(admin_pass), role="admin")
+        settings_db.create_user(admin_user, hash_password(admin_pass), role="admin")
         logger.info("Bootstrap admin user created: %s", admin_user)
 
     # ── Share state with dashboard ──
     set_neo4j(neo4j_client)
     set_settings(settings)
+    set_settings_db(settings_db)
 
     # ── Mount static files for SPA ──
     static_dir = Path(__file__).parent / "static"
@@ -108,7 +170,9 @@ def main() -> None:
             ("grpc.max_send_message_length", settings.grpc_max_message_length),
         ],
     )
-    fleet_pb2_grpc.add_FleetServiceServicer_to_server(FleetServicer(neo4j_client), server)
+    fleet_pb2_grpc.add_FleetServiceServicer_to_server(
+        FleetServicer(neo4j_client, settings_db=settings_db), server
+    )
 
     # Configure TLS
     if settings.tls_ca_cert and settings.tls_server_cert and settings.tls_server_key:
