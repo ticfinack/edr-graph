@@ -19,6 +19,7 @@ certs/
 neo4j_data/
 
 # Local development artifacts
+config.local.yaml
 .claude/
 test-results/
 phase9-traffic-context-prompt.md

@@ -372,10 +372,21 @@ def _check_network_novelty(conn: kuzu.Connection, event: NetworkActivity, thresh
 
 
 def _check_auth_novelty(conn: kuzu.Connection, event: Authentication, threshold: int) -> bool:
-    """Has this user been seen before?"""
+    """Novel if the user OR the source IP is new/rare."""
     username = event.user.name
     if not username:
         return False  # No user, drop it
+
+    # A login from a never-before-seen IP is always novel
+    src_ip = getattr(event.src_endpoint, "ip", None) if event.src_endpoint else None
+    if src_ip:
+        ip_result = conn.execute(
+            "MATCH (ip:IP {id: $ip}) RETURN count(ip) AS cnt",
+            {"ip": src_ip},
+        )
+        if ip_result.has_next():
+            if ip_result.get_next()[0] <= threshold:
+                return True
 
     result = conn.execute(
         "MATCH (u:User {id: $user}) RETURN count(u) AS cnt",

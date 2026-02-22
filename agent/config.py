@@ -63,7 +63,7 @@ class Settings(BaseModel):
     ]
 
     # Response engine settings
-    response_mode: str = "passive"  # "learning" (baseline only), "active" (enforce), "passive" (alert only)
+    response_mode: str = "learning"  # "learning" (baseline only), "active" (enforce), "passive" (alert only)
     auto_respond: bool = False  # Auto-execute response actions for CRITICAL severity
     auto_terminate: bool = False  # Allow process termination without human approval
     quarantine_dir: Path = Field(
