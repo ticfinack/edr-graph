@@ -414,7 +414,7 @@ class LlmAnalyzer:
     def _fmt_proc(proc: ProcessInfo) -> str:
         """Format a process name with PID and optional PPID."""
         s = f"{proc.name} (PID {proc.pid}"
-        ppid = getattr(proc, "parent_pid", None)
+        ppid = proc.parent_pid
         if ppid is not None:
             s += f", PPID {ppid}"
         return s + ")"

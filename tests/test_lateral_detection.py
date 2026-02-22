@@ -81,6 +81,12 @@ class TestChainBuilderAuthentication:
 
 
 class TestAuthenticationEntityExtraction:
+    def setup_method(self):
+        """Clear sshd cache between tests to avoid cross-test pollution."""
+        from agent.processor.entity_extractor import _sshd_cache
+
+        _sshd_cache.clear()
+
     def test_auth_creates_inbound_edge_when_sshd_found(self):
         event = Authentication(
             activity_id=1,
@@ -92,7 +98,7 @@ class TestAuthenticationEntityExtraction:
         )
 
         mock_proc = MagicMock()
-        mock_proc.info = {"pid": 800, "name": "sshd", "create_time": 1700000000.0}
+        mock_proc.info = {"pid": 800, "name": "sshd", "create_time": 1700000000.0, "ppid": 1}
 
         with patch("psutil.process_iter", return_value=[mock_proc]):
             entities = extract_entities(event, event_id=10)
@@ -166,6 +172,8 @@ class TestNeo4jLateralMovement:
         # Should use Host.ip_addresses, not Process-CONNECTED_TO->IP
         assert "ip_addresses" in query
         assert "CONNECTED_TO" not in query
+        # UNION branches should be wrapped in CALL {} subquery
+        assert "CALL {" in query
 
     def test_detect_vertical_movements_query_runs(self):
         client = self._make_client()
@@ -196,6 +204,8 @@ class TestNeo4jLateralMovement:
         query = mock_session.run.call_args[0][0]
         assert "ip_addresses" in query
         assert "Process)-[:CONNECTED_TO]" not in query
+        # UNION branches should be wrapped in CALL {} subquery
+        assert "CALL {" in query
 
     def test_detect_lateral_movements_no_time_window_param(self):
         """The new query should not accept a time_window parameter."""

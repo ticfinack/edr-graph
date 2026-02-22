@@ -381,7 +381,7 @@ def _check_auth_novelty(conn: kuzu.Connection, event: Authentication, threshold:
     src_ip = getattr(event.src_endpoint, "ip", None) if event.src_endpoint else None
     if src_ip:
         ip_result = conn.execute(
-            "MATCH (ip:IP {id: $ip}) RETURN count(ip) AS cnt",
+            "MATCH ()-[c:CONNECTED_TO]->(ip:IP {id: $ip}) RETURN count(c) AS cnt",
             {"ip": src_ip},
         )
         if ip_result.has_next():

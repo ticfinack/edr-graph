@@ -303,34 +303,42 @@ class Neo4jClient:
         2. IOC-based: finding INVOLVES_IP an address belonging to another host
         """
         query = """
-        MATCH (victim:Host)-[:GENERATED]->(f:Finding)-[:HAS_CHAIN]->(step:ChainNode)
-        WHERE step.entity_type = 'ip'
-        MATCH (source:Host)
-        WHERE source.agent_id <> victim.agent_id
-          AND step.entity_id IN source.ip_addresses
-        RETURN source.agent_id AS src_agent_id,
-               source.hostname AS src_hostname,
-               victim.agent_id AS dst_agent_id,
-               victim.hostname AS dst_hostname,
-               f.finding_id AS dst_finding_id,
-               f.title AS dst_finding_title,
-               f.severity AS dst_severity,
-               f.timestamp AS dst_timestamp,
-               step.entity_id AS pivot_ip
-        UNION
-        MATCH (victim:Host)-[:GENERATED]->(f:Finding)-[:INVOLVES_IP]->(ip:IP)
-        MATCH (source:Host)
-        WHERE source.agent_id <> victim.agent_id
-          AND ip.address IN source.ip_addresses
-        RETURN source.agent_id AS src_agent_id,
-               source.hostname AS src_hostname,
-               victim.agent_id AS dst_agent_id,
-               victim.hostname AS dst_hostname,
-               f.finding_id AS dst_finding_id,
-               f.title AS dst_finding_title,
-               f.severity AS dst_severity,
-               f.timestamp AS dst_timestamp,
-               ip.address AS pivot_ip
+        CALL {
+            MATCH (victim:Host)-[:GENERATED]->(f:Finding)-[:HAS_CHAIN]->(step:ChainNode)
+            WHERE step.entity_type = 'ip'
+            MATCH (source:Host)
+            WHERE source.agent_id <> victim.agent_id
+              AND step.entity_id IN source.ip_addresses
+            RETURN source.agent_id AS src_agent_id,
+                   source.hostname AS src_hostname,
+                   victim.agent_id AS dst_agent_id,
+                   victim.hostname AS dst_hostname,
+                   f.finding_id AS dst_finding_id,
+                   f.title AS dst_finding_title,
+                   f.severity AS dst_severity,
+                   f.timestamp AS dst_timestamp,
+                   step.entity_id AS pivot_ip
+            ORDER BY dst_timestamp DESC
+            LIMIT $limit
+            UNION
+            MATCH (victim:Host)-[:GENERATED]->(f:Finding)-[:INVOLVES_IP]->(ip:IP)
+            MATCH (source:Host)
+            WHERE source.agent_id <> victim.agent_id
+              AND ip.address IN source.ip_addresses
+            RETURN source.agent_id AS src_agent_id,
+                   source.hostname AS src_hostname,
+                   victim.agent_id AS dst_agent_id,
+                   victim.hostname AS dst_hostname,
+                   f.finding_id AS dst_finding_id,
+                   f.title AS dst_finding_title,
+                   f.severity AS dst_severity,
+                   f.timestamp AS dst_timestamp,
+                   ip.address AS pivot_ip
+            ORDER BY dst_timestamp DESC
+            LIMIT $limit
+        }
+        RETURN src_agent_id, src_hostname, dst_agent_id, dst_hostname,
+               dst_finding_id, dst_finding_title, dst_severity, dst_timestamp, pivot_ip
         ORDER BY dst_timestamp DESC
         LIMIT $limit
         """
@@ -415,26 +423,31 @@ class Neo4jClient:
     def get_host_to_host_connections(self, limit: int = 100) -> list[dict]:
         """Get inter-host connections by matching chain/IOC IPs to other hosts' ip_addresses."""
         query = """
-        MATCH (hA:Host)-[:GENERATED]->(f:Finding)-[:HAS_CHAIN]->(step:ChainNode)
-        WHERE step.entity_type = 'ip'
-        MATCH (hB:Host)
-        WHERE hA.agent_id <> hB.agent_id
-          AND step.entity_id IN hB.ip_addresses
-        RETURN DISTINCT hA.agent_id AS src_agent_id,
-               hA.hostname AS src_hostname,
-               hB.agent_id AS dst_agent_id,
-               hB.hostname AS dst_hostname,
-               step.entity_id AS shared_ip
-        UNION
-        MATCH (hA:Host)-[:GENERATED]->(f:Finding)-[:INVOLVES_IP]->(ip:IP)
-        MATCH (hB:Host)
-        WHERE hA.agent_id <> hB.agent_id
-          AND ip.address IN hB.ip_addresses
-        RETURN DISTINCT hA.agent_id AS src_agent_id,
-               hA.hostname AS src_hostname,
-               hB.agent_id AS dst_agent_id,
-               hB.hostname AS dst_hostname,
-               ip.address AS shared_ip
+        CALL {
+            MATCH (hA:Host)-[:GENERATED]->(f:Finding)-[:HAS_CHAIN]->(step:ChainNode)
+            WHERE step.entity_type = 'ip'
+            MATCH (hB:Host)
+            WHERE hA.agent_id <> hB.agent_id
+              AND step.entity_id IN hB.ip_addresses
+            RETURN DISTINCT hA.agent_id AS src_agent_id,
+                   hA.hostname AS src_hostname,
+                   hB.agent_id AS dst_agent_id,
+                   hB.hostname AS dst_hostname,
+                   step.entity_id AS shared_ip
+            LIMIT $limit
+            UNION
+            MATCH (hA:Host)-[:GENERATED]->(f:Finding)-[:INVOLVES_IP]->(ip:IP)
+            MATCH (hB:Host)
+            WHERE hA.agent_id <> hB.agent_id
+              AND ip.address IN hB.ip_addresses
+            RETURN DISTINCT hA.agent_id AS src_agent_id,
+                   hA.hostname AS src_hostname,
+                   hB.agent_id AS dst_agent_id,
+                   hB.hostname AS dst_hostname,
+                   ip.address AS shared_ip
+            LIMIT $limit
+        }
+        RETURN src_agent_id, src_hostname, dst_agent_id, dst_hostname, shared_ip
         LIMIT $limit
         """
         with self._driver.session() as session:
