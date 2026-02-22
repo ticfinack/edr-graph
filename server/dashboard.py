@@ -135,20 +135,18 @@ async def lateral_movements(
     user: dict = Depends(get_current_user),
 ):
     """Detected cross-GUID chain pairs (lateral movement)."""
-    time_window = _settings.lateral_movement_time_window if _settings else 300
-    return _neo4j.detect_lateral_movements(time_window=time_window, limit=limit)
+    return _neo4j.detect_lateral_movements(limit=limit)
 
 
-@app.get("/api/fleet/lateral-movements/{src_finding}/{dst_finding}")
+@app.get("/api/fleet/lateral-movements/{finding_id}")
 async def lateral_movement_detail(
-    src_finding: str,
-    dst_finding: str,
+    finding_id: str,
     user: dict = Depends(get_current_user),
 ):
-    """Full stitched chain detail for a lateral movement pair."""
-    detail = _neo4j.get_lateral_movement_detail(src_finding, dst_finding)
+    """Chain detail for a lateral movement finding, with source host info."""
+    detail = _neo4j.get_lateral_movement_detail(finding_id)
     if not detail:
-        raise HTTPException(status_code=404, detail="Movement pair not found")
+        raise HTTPException(status_code=404, detail="Movement not found")
     return detail
 
 

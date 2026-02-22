@@ -451,6 +451,40 @@ def _extract_authentication(
             )
         )
 
+        # Create inbound CONNECTED_TO edge if we can find the auth daemon (sshd)
+        hostname = event.device.hostname
+        sshd_proc_id = _find_auth_daemon_proc_id(hostname, now)
+        if sshd_proc_id:
+            entities.connected_edges.append(
+                {
+                    "process_id": sshd_proc_id,
+                    "ip_id": ip_addr,
+                    "timestamp": now,
+                    "dst_port": 22,
+                    "protocol": "TCP",
+                    "direction": "inbound",
+                    "event_id": event_id,
+                }
+            )
+
+
+def _find_auth_daemon_proc_id(hostname: str, now: datetime) -> str | None:
+    """Try to find the sshd process ID for creating inbound CONNECTED_TO edges.
+
+    Returns the process node ID (hostname:pid:create_time) or None if sshd
+    cannot be found (e.g., non-SSH auth, psutil unavailable).
+    """
+    try:
+        import psutil
+
+        for proc in psutil.process_iter(["pid", "name", "create_time"]):
+            if proc.info["name"] == "sshd":
+                create_time = int(proc.info["create_time"])
+                return f"{hostname}:{proc.info['pid']}:{create_time}"
+    except Exception:
+        pass
+    return None
+
 
 def _extract_dns_activity(
     event: DnsActivity,
