@@ -169,7 +169,7 @@ class TestDomainMatch:
         result = fast_blocklist.evaluate(entities, None, 42)
         assert result is not None
         finding, _ = result
-        assert "evil.com" in finding.title.lower()
+        assert "evil.com" in finding.title.lower()  # lgtm[py/incomplete-url-substring-sanitization] test data
 
     def test_domain_no_match(self, blocklist, fast_blocklist):
         blocklist.add_rule("domain", "evil.com", "bad domain")

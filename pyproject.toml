@@ -48,6 +48,10 @@ edr-watchdog = "agent.watchdog:main"
 [tool.setuptools.packages.find]
 include = ["agent*", "server*"]
 
+[tool.setuptools.package-data]
+"agent.dashboard" = ["static/**"]
+"server" = ["static/**"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

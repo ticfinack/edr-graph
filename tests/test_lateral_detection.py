@@ -215,3 +215,191 @@ class TestNeo4jLateralMovement:
 
         sig = inspect.signature(Neo4jClient.detect_lateral_movements)
         assert "time_window" not in sig.parameters
+
+
+class TestLateralMovementDetail:
+    """Verify 3-phase XDR stitching in get_lateral_movement_detail()."""
+
+    def _make_client(self):
+        from server.neo4j_client import Neo4jClient
+
+        client = Neo4jClient.__new__(Neo4jClient)
+        client._driver = MagicMock()
+        return client
+
+    def _mock_session(self, client):
+        mock_session = MagicMock()
+        client._driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        client._driver.session.return_value.__exit__ = MagicMock(return_value=False)
+        return mock_session
+
+    def _phase1_record(self, **overrides):
+        """Build a mock Phase 1 record with sane defaults."""
+        defaults = {
+            "dst_agent_id": "agent-victim",
+            "dst_hostname": "victim-host",
+            "dst_ip_addresses": ["10.0.0.20"],
+            "finding_id": "f-001",
+            "title": "SSH lateral movement",
+            "severity": "high",
+            "timestamp": 1700000000,
+            "description": "Lateral movement via SSH detected",
+            "victim_chain": [
+                {"entity_type": "process", "entity_id": "sshd", "entity_name": "sshd",
+                 "pid": 500, "timestamp": 1700000000, "step_index": 0},
+                {"entity_type": "process", "entity_id": "zsh", "entity_name": "zsh",
+                 "pid": 501, "timestamp": 1700000001, "step_index": 1},
+            ],
+            "pivot_ip": "10.0.0.10",
+            "src_agent_id": "agent-source",
+            "src_hostname": "source-host",
+        }
+        defaults.update(overrides)
+        record = MagicMock()
+        record.single.return_value = MagicMock()
+        record.single.return_value.__getitem__ = lambda s, k: defaults[k]
+        record.single.return_value.__contains__ = lambda s, k: k in defaults
+        record.single.return_value.keys = lambda: list(defaults.keys())
+
+        # Make dict(record.single()) work
+        class DictableRecord:
+            def __init__(self, data):
+                self._data = data
+
+            def __getitem__(self, key):
+                return self._data[key]
+
+            def __contains__(self, key):
+                return key in self._data
+
+            def keys(self):
+                return self._data.keys()
+
+            def values(self):
+                return self._data.values()
+
+            def items(self):
+                return self._data.items()
+
+            def get(self, key, default=None):
+                return self._data.get(key, default)
+
+        dictable = DictableRecord(defaults)
+        record.single.return_value = dictable
+        return record
+
+    def test_returns_pivot_ip_in_response(self):
+        """Verify pivot_ip is a top-level key in the return dict."""
+        client = self._make_client()
+        mock_session = self._mock_session(client)
+
+        phase2a_result = MagicMock()
+        phase2a_rec = MagicMock()
+        phase2a_rec.__getitem__ = lambda s, k: [
+            {"entity_type": "process", "entity_id": "bash", "entity_name": "bash",
+             "pid": 100, "timestamp": 1700000000, "step_index": 0},
+        ]
+        phase2a_result.single.return_value = phase2a_rec
+
+        mock_session.run.side_effect = [
+            self._phase1_record(),
+            phase2a_result,
+        ]
+
+        result = client.get_lateral_movement_detail("f-001")
+
+        assert "pivot_ip" in result
+        assert result["pivot_ip"] == "10.0.0.10"
+
+    def test_returns_source_and_victim_chains(self):
+        """Verify separate source_chain and victim_chain lists with correct content."""
+        client = self._make_client()
+        mock_session = self._mock_session(client)
+
+        source_steps = [
+            {"entity_type": "process", "entity_id": "bash", "entity_name": "bash",
+             "pid": 100, "timestamp": 1700000000, "step_index": 0},
+            {"entity_type": "process", "entity_id": "ssh", "entity_name": "ssh",
+             "pid": 101, "timestamp": 1700000001, "step_index": 1},
+        ]
+        phase2a_result = MagicMock()
+        phase2a_rec = MagicMock()
+        phase2a_rec.__getitem__ = lambda s, k: source_steps
+        phase2a_result.single.return_value = phase2a_rec
+
+        mock_session.run.side_effect = [
+            self._phase1_record(),
+            phase2a_result,
+        ]
+
+        result = client.get_lateral_movement_detail("f-001")
+
+        assert "source_chain" in result
+        assert "victim_chain" in result
+        assert len(result["source_chain"]) == 2
+        assert result["source_chain"][0]["entity_name"] == "bash"
+        assert result["source_chain"][1]["entity_name"] == "ssh"
+        assert len(result["victim_chain"]) == 2
+        assert result["victim_chain"][0]["entity_name"] == "sshd"
+        # Old 'chain' key should not be present
+        assert "chain" not in result
+
+    def test_fallback_to_process_connected_to_ip(self):
+        """Phase 2A returns empty → Phase 2B synthetic chain has process steps."""
+        client = self._make_client()
+        mock_session = self._mock_session(client)
+
+        # Phase 2A returns empty
+        phase2a_result = MagicMock()
+        phase2a_rec = MagicMock()
+        phase2a_rec.__getitem__ = lambda s, k: []
+        phase2a_result.single.return_value = phase2a_rec
+
+        # Phase 2B returns process->IP rows
+        phase2b_row1 = MagicMock()
+        phase2b_row1.__getitem__ = lambda s, k: {"process_name": "ssh", "ip_address": "10.0.0.20"}[k]
+        phase2b_result = MagicMock()
+        phase2b_result.__iter__ = lambda s: iter([phase2b_row1])
+
+        mock_session.run.side_effect = [
+            self._phase1_record(),
+            phase2a_result,
+            phase2b_result,
+        ]
+
+        result = client.get_lateral_movement_detail("f-001")
+
+        assert len(result["source_chain"]) == 2
+        assert result["source_chain"][0]["entity_type"] == "process"
+        assert result["source_chain"][0]["entity_name"] == "ssh"
+        assert result["source_chain"][1]["entity_type"] == "ip"
+        assert result["source_chain"][1]["entity_id"] == "10.0.0.20"
+
+    def test_empty_result_when_finding_not_found(self):
+        """Returns {} for nonexistent finding_id."""
+        client = self._make_client()
+        mock_session = self._mock_session(client)
+
+        phase1_result = MagicMock()
+        phase1_result.single.return_value = None
+        mock_session.run.side_effect = [phase1_result]
+
+        result = client.get_lateral_movement_detail("nonexistent")
+
+        assert result == {}
+
+    def test_query_includes_involves_ip(self):
+        """Phase 1 Cypher includes both INVOLVES_IP and entity_type = 'ip'."""
+        client = self._make_client()
+        mock_session = self._mock_session(client)
+
+        phase1_result = MagicMock()
+        phase1_result.single.return_value = None
+        mock_session.run.side_effect = [phase1_result]
+
+        client.get_lateral_movement_detail("f-check")
+
+        # Phase 1 query should reference both detection paths
+        phase1_query = mock_session.run.call_args_list[0][0][0]
+        assert "INVOLVES_IP" in phase1_query
+        assert "entity_type = 'ip'" in phase1_query

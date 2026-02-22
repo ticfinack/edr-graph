@@ -284,7 +284,7 @@ class TestSerializeAttackChain:
         estimated_tokens = len(text) / 4
         assert estimated_tokens < 2000
         assert "malware" in text
-        assert "c2.evil.com" in text
+        assert "c2.evil.com" in text  # lgtm[py/incomplete-url-substring-sanitization] test data
         assert "[DGA?]" in text
         assert "Persistence" in text
 

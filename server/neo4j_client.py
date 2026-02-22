@@ -347,48 +347,148 @@ class Neo4jClient:
             return [dict(record) for record in result]
 
     def get_lateral_movement_detail(self, finding_id: str) -> dict:
-        """Get finding chain detail with source host identified by pivot IP."""
-        query = """
-        MATCH (victim:Host)-[:GENERATED]->(f:Finding {finding_id: $finding_id})
-        OPTIONAL MATCH (f)-[:HAS_CHAIN]->(c:ChainNode)
-        WITH victim, f, c ORDER BY c.step_index
-        WITH victim, f, collect({
-            entity_type: c.entity_type,
-            entity_id: c.entity_id,
-            entity_name: c.entity_name,
-            pid: c.pid,
-            timestamp: c.timestamp,
-            step_index: c.step_index
-        }) AS chain
-        // Find source host: chain IP or IOC IP that belongs to another host
-        OPTIONAL MATCH (f)-[:HAS_CHAIN]->(step:ChainNode)
-        WHERE step.entity_type = 'ip'
-        OPTIONAL MATCH (src1:Host)
-        WHERE src1.agent_id <> victim.agent_id
-          AND step.entity_id IN src1.ip_addresses
-        OPTIONAL MATCH (f)-[:INVOLVES_IP]->(ip:IP)
-        OPTIONAL MATCH (src2:Host)
-        WHERE src2.agent_id <> victim.agent_id
-          AND ip.address IN src2.ip_addresses
-        WITH victim, f, chain,
-             coalesce(src1, src2) AS source
-        RETURN victim.agent_id AS dst_agent_id,
-               victim.hostname AS dst_hostname,
-               f.finding_id AS finding_id,
-               f.title AS title,
-               f.severity AS severity,
-               f.timestamp AS timestamp,
-               chain,
-               source.agent_id AS src_agent_id,
-               source.hostname AS src_hostname
-        LIMIT 1
+        """Get XDR attack graph detail for a lateral movement finding.
+
+        3-phase approach:
+        Phase 1: Victim finding + pivot IP + source host identification
+        Phase 2A: Source chain from source host's findings (preferred)
+        Phase 2B: Fallback — synthetic chain from OCSF Process edges
         """
         with self._driver.session() as session:
-            result = session.run(query, {"finding_id": finding_id})
+            # ── Phase 1: Victim finding, chain, pivot IP, source host ──
+            phase1_query = """
+            MATCH (victim:Host)-[:GENERATED]->(f:Finding {finding_id: $finding_id})
+            OPTIONAL MATCH (f)-[:HAS_CHAIN]->(c:ChainNode)
+            WITH victim, f, c ORDER BY c.step_index
+            WITH victim, f, collect(CASE WHEN c IS NOT NULL THEN {
+                entity_type: c.entity_type,
+                entity_id: c.entity_id,
+                entity_name: c.entity_name,
+                pid: c.pid,
+                timestamp: c.timestamp,
+                step_index: c.step_index
+            } END) AS victim_chain_raw
+            // Collect candidate pivot IPs from chain steps
+            OPTIONAL MATCH (f)-[:HAS_CHAIN]->(step:ChainNode)
+            WHERE step.entity_type = 'ip'
+            WITH victim, f, victim_chain_raw,
+                 collect(DISTINCT step.entity_id) AS chain_ips
+            // Collect candidate pivot IPs from INVOLVES_IP
+            OPTIONAL MATCH (f)-[:INVOLVES_IP]->(ip:IP)
+            WITH victim, f, victim_chain_raw, chain_ips,
+                 collect(DISTINCT ip.address) AS ioc_ips
+            WITH victim, f, victim_chain_raw,
+                 [x IN chain_ips + ioc_ips WHERE x IS NOT NULL] AS candidate_ips
+            // Find source host whose ip_addresses contains a candidate
+            UNWIND CASE WHEN size(candidate_ips) > 0 THEN candidate_ips ELSE [null] END AS cip
+            OPTIONAL MATCH (src:Host)
+            WHERE cip IS NOT NULL
+              AND src.agent_id <> victim.agent_id
+              AND cip IN src.ip_addresses
+            WITH victim, f, victim_chain_raw, candidate_ips,
+                 collect(DISTINCT {ip: cip, agent_id: src.agent_id,
+                         hostname: src.hostname,
+                         ip_addresses: src.ip_addresses}) AS src_matches
+            WITH victim, f, victim_chain_raw, candidate_ips,
+                 [m IN src_matches WHERE m.agent_id IS NOT NULL] AS valid_matches
+            WITH victim, f, victim_chain_raw, candidate_ips,
+                 CASE WHEN size(valid_matches) > 0 THEN valid_matches[0] ELSE null END AS src_match
+            RETURN victim.agent_id AS dst_agent_id,
+                   victim.hostname AS dst_hostname,
+                   victim.ip_addresses AS dst_ip_addresses,
+                   f.finding_id AS finding_id,
+                   f.title AS title,
+                   f.severity AS severity,
+                   f.timestamp AS timestamp,
+                   f.description AS description,
+                   [s IN victim_chain_raw WHERE s IS NOT NULL] AS victim_chain,
+                   CASE WHEN src_match IS NOT NULL THEN src_match.ip ELSE null END AS pivot_ip,
+                   CASE WHEN src_match IS NOT NULL THEN src_match.agent_id ELSE null END AS src_agent_id,
+                   CASE WHEN src_match IS NOT NULL THEN src_match.hostname ELSE null END AS src_hostname
+            LIMIT 1
+            """
+            result = session.run(phase1_query, {"finding_id": finding_id})
             record = result.single()
-            if record:
-                return dict(record)
-            return {}
+            if not record:
+                return {}
+
+            data = dict(record)
+            src_agent_id = data.get("src_agent_id")
+            dst_ip_addresses = data.get("dst_ip_addresses") or []
+            source_chain: list[dict] = []
+
+            # ── Phase 2A: Source chain from findings ──
+            if src_agent_id and dst_ip_addresses:
+                phase2a_query = """
+                MATCH (src:Host {agent_id: $src_agent_id})-[:GENERATED]->(sf:Finding)
+                MATCH (sf)-[:HAS_CHAIN]->(sc:ChainNode)
+                WHERE sc.entity_type = 'ip' AND sc.entity_id IN $victim_ips
+                WITH sf ORDER BY sf.timestamp DESC LIMIT 1
+                MATCH (sf)-[:HAS_CHAIN]->(sc2:ChainNode)
+                WITH sc2 ORDER BY sc2.step_index
+                RETURN collect({
+                    entity_type: sc2.entity_type,
+                    entity_id: sc2.entity_id,
+                    entity_name: sc2.entity_name,
+                    pid: sc2.pid,
+                    timestamp: sc2.timestamp,
+                    step_index: sc2.step_index
+                }) AS source_chain
+                """
+                r2a = session.run(
+                    phase2a_query,
+                    {"src_agent_id": src_agent_id, "victim_ips": dst_ip_addresses},
+                )
+                rec2a = r2a.single()
+                if rec2a and rec2a["source_chain"]:
+                    source_chain = rec2a["source_chain"]
+
+            # ── Phase 2B: Fallback — synthetic chain from Process edges ──
+            if not source_chain and src_agent_id and dst_ip_addresses:
+                phase2b_query = """
+                MATCH (src:Host {agent_id: $src_agent_id})-[:RUNS]->(p:Process)
+                      -[:CONNECTED_TO]->(ip:IP)
+                WHERE ip.address IN $victim_ips
+                RETURN p.name AS process_name, ip.address AS ip_address
+                """
+                r2b = session.run(
+                    phase2b_query,
+                    {"src_agent_id": src_agent_id, "victim_ips": dst_ip_addresses},
+                )
+                seen = set()
+                idx = 0
+                for rec in r2b:
+                    pname = rec["process_name"]
+                    ip_addr = rec["ip_address"]
+                    pkey = ("process", pname)
+                    ikey = ("ip", ip_addr)
+                    if pkey not in seen:
+                        source_chain.append({
+                            "entity_type": "process",
+                            "entity_id": pname,
+                            "entity_name": pname,
+                            "pid": 0,
+                            "timestamp": 0,
+                            "step_index": idx,
+                        })
+                        seen.add(pkey)
+                        idx += 1
+                    if ikey not in seen:
+                        source_chain.append({
+                            "entity_type": "ip",
+                            "entity_id": ip_addr,
+                            "entity_name": ip_addr,
+                            "pid": 0,
+                            "timestamp": 0,
+                            "step_index": idx,
+                        })
+                        seen.add(ikey)
+                        idx += 1
+
+            # Remove internal fields and build final response
+            data.pop("dst_ip_addresses", None)
+            data["source_chain"] = source_chain
+            return data
 
     def detect_vertical_movements(self, limit: int = 50) -> list[dict]:
         """Detect privilege escalation within single-agent chains.
