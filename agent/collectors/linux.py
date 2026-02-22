@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import socket
 from datetime import datetime
@@ -23,6 +24,7 @@ class LinuxCollector(Collector):
             "/var/log/syslog",
             "/var/log/messages",
             "/var/log/auth.log",
+            "/var/log/secure",
         ]
 
     def name(self) -> str:
@@ -56,7 +58,7 @@ class LinuxCollector(Collector):
                     line = line.strip()
                     if not line:
                         continue
-                    source = "auth" if "auth" in path else "syslog"
+                    source = "auth" if os.path.basename(path) in ("auth.log", "secure") else "syslog"
                     events.append(
                         RawEvent(
                             timestamp=datetime.now(),

@@ -44,6 +44,7 @@ def build_intel_prompt(tools: list[dict] | None = None) -> str:
         sections.append(_format_hierarchy("macOS", MACOS_HIERARCHY))
 
     sections.append(_IP_INTELLIGENCE_SECTION)
+    sections.append(_CLOUD_NATIVE_SECTION)
 
     if tools:
         sections.append(_format_tool_instructions(tools))
@@ -183,6 +184,37 @@ microservice ports (80, 443, 8080, 8443, 3000, 5000, 5432, 6379, \
 27017, 9090, 9200, 2379, 6443) are expected east-west service mesh \
 traffic. Suppress findings for these unless the source process is \
 anomalous (unsigned, unexpected parent, LOLBin)."""
+
+
+_CLOUD_NATIVE_SECTION = """\
+## CLOUD-NATIVE & AUTOMATION EXCEPTIONS
+
+### Container Awareness
+If the process chain includes containerd-shim, runc, docker-init, cri-o, kubelet, \
+or tini as a parent, the child process runs inside an isolated container. In this \
+context:
+- Running executables from application directories (/var/www/html, /app, /workspace, \
+/opt) as root or PID 1 is standard container behavior.
+- Do NOT flag as command injection or webshell unless the child is an interactive \
+shell (bash, sh, zsh) or a network utility (nc, socat, curl piped to sh) connecting \
+to an unknown external IP.
+
+### CI/CD & Configuration Management
+Processes spawned by gitlab-runner, github-actions, jenkins, ansible, puppet, chef, \
+or salt-minion routinely drop scripts into /tmp, compile code, and execute binaries \
+as root. Weigh the parent process heavily — this is expected automation, not LOLBin \
+abuse.
+
+### Package Manager Hooks
+bash or sh spawned directly by dnf, yum, apt, apt-get, dpkg, rpm, or pacman are \
+executing standard pre/post-installation scriptlets. Do NOT flag as malicious \
+shell execution.
+
+### GTFOBins Parent Context
+Correlate GTFOBin usage with its parent process. A developer or CI runner executing \
+docker, kubectl, or python is normal. A web server service account (www-data, \
+apache, nginx) running docker to spawn a privileged container is a CRITICAL \
+privilege escalation (T1611 — Escape to Host)."""
 
 
 def _format_tool_instructions(tools: list[dict]) -> str:

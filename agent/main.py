@@ -191,6 +191,7 @@ def processor_thread(
                         if self_removed:
                             metrics.events_self_filtered.inc(self_removed)
                         if not has_entities(entities):
+                            event_ids.append(event_id)
                             continue
                         # ── Synchronous fast-path enforcement ──
                         if fast_blocklist and response_engine:
@@ -215,6 +216,7 @@ def processor_thread(
                             if al_removed:
                                 metrics.events_allowlist_filtered.inc(al_removed)
                             if not has_entities(entities):
+                                event_ids.append(event_id)
                                 continue
                         # Baseline graph gating (edge-level, non-learning modes only)
                         if baseline_gate and settings.baseline_graph_gating and settings.response_mode != "learning":
@@ -222,6 +224,7 @@ def processor_thread(
                             if gated:
                                 metrics.edges_baseline_gated.inc(gated)
                             if not has_entities(entities):
+                                event_ids.append(event_id)
                                 continue
                         entity_batch.append(entities)
                         metrics.events_processed_total.labels(
@@ -278,8 +281,10 @@ def analyzer_thread(
     """Periodically analyze novel events with the LLM."""
     analyzer = LlmAnalyzer(settings, kuzu_db, queue, ioc_db=ioc_db)
     conn = kuzu.Connection(kuzu_db)
-    last_analyzed_id = 0
-    logger.info("Started analyzer thread")
+    # Start near the current queue head so we don't re-analyze the entire
+    # history on every restart.  Only look back ~1000 events.
+    last_analyzed_id = max(0, queue.max_processed_id() - 1000)
+    logger.info("Started analyzer thread (resuming from event %d)", last_analyzed_id)
 
     while not _shutdown.is_set():
         _shutdown.wait(timeout=settings.analyzer_interval)
@@ -292,7 +297,7 @@ def analyzer_thread(
 
         try:
             # Get recently processed events
-            recent = queue.get_processed_since(last_analyzed_id, limit=100)
+            recent = queue.get_processed_since(last_analyzed_id, limit=1000)
             if not recent:
                 continue
 

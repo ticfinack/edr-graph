@@ -249,10 +249,9 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
             <tr>
               <th style="width:80px">Severity</th>
               <th>Source Host</th>
-              <th>Source Finding</th>
               <th style="width:120px">Pivot IP</th>
-              <th>Dest Host</th>
-              <th>Dest Finding</th>
+              <th>Victim Host</th>
+              <th>Finding</th>
               <th style="width:160px">Time</th>
             </tr>
           </thead>
@@ -729,46 +728,36 @@ function renderLateral() {
   const list = fleetData.lateral;
   const tbody = document.getElementById('lateralTableBody');
   if (list.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--dim);padding:40px">No lateral movement detected</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:40px">No lateral movement detected</td></tr>';
     return;
   }
   tbody.innerHTML = list.map(m => {
-    const maxSev = severityMax(m.src_severity, m.dst_severity);
-    return `<tr class="clickable" onclick="showLateralDetail('${esc(m.src_finding_id)}','${esc(m.dst_finding_id)}')">
-      <td>${sevBadge(maxSev)}</td>
+    return `<tr class="clickable" onclick="showLateralDetail('${esc(m.dst_finding_id)}')">
+      <td>${sevBadge(m.dst_severity)}</td>
       <td>${esc(m.src_hostname)}</td>
-      <td class="truncate">${esc(m.src_finding_title)}</td>
       <td class="mono">${esc(m.pivot_ip)}</td>
       <td>${esc(m.dst_hostname)}</td>
       <td class="truncate">${esc(m.dst_finding_title)}</td>
-      <td>${fmtTime(m.src_timestamp)}</td>
+      <td>${fmtTime(m.dst_timestamp)}</td>
     </tr>`;
   }).join('');
 }
 
-function severityMax(a, b) {
-  const order = {critical:0,high:1,medium:2,low:3,info:4};
-  const va = order[(a||'info').toLowerCase()] ?? 4;
-  const vb = order[(b||'info').toLowerCase()] ?? 4;
-  return va <= vb ? a : b;
-}
-
-async function showLateralDetail(srcId, dstId) {
+async function showLateralDetail(findingId) {
   document.getElementById('lateralList').classList.add('hidden');
   const panel = document.getElementById('lateralDetail');
   panel.classList.remove('hidden');
   panel.innerHTML = '<div class="loading"><span class="spinner"></span> Loading stitched chain...</div>';
 
   try {
-    const d = await api(`/api/fleet/lateral-movements/${srcId}/${dstId}`);
-    if (!d || !d.src_finding_id) throw new Error('Movement pair not found');
+    const d = await api(`/api/fleet/lateral-movements/${findingId}`);
+    if (!d || !d.finding_id) throw new Error('Movement detail not found');
 
-    const srcChain = (d.src_chain||[]).filter(s => s.entity_type);
-    const dstChain = (d.dst_chain||[]).filter(s => s.entity_type);
+    const chain = (d.chain||[]).filter(s => s.entity_type);
 
-    // Find the pivot IP (IP-type step in src chain)
+    // Find the pivot IP (IP-type step in chain)
     let pivotIp = '';
-    for (const s of srcChain) {
+    for (const s of chain) {
       if (s.entity_type === 'ip') { pivotIp = s.entity_id; break; }
     }
 
@@ -778,9 +767,8 @@ async function showLateralDetail(srcId, dstId) {
 
       <div class="stitch-container">
         <div class="stitch-host">
-          <h4>${esc(d.src_hostname)} <span style="color:var(--dim);font-weight:normal">(${esc((d.src_agent_id||'').substring(0,8))}...)</span></h4>
-          <div style="margin-bottom:8px">${sevBadge(d.src_severity)} <span style="margin-left:8px">${esc(d.src_title)}</span></div>
-          ${renderChainFlow(srcChain)}
+          <h4>${esc(d.src_hostname)} <span style="color:var(--dim);font-weight:normal">(source)</span></h4>
+          <div style="margin-bottom:8px;color:var(--dim)">Identified by IP: ${esc(pivotIp)}</div>
         </div>
 
         <div class="stitch-pivot-arrow">
@@ -790,19 +778,19 @@ async function showLateralDetail(srcId, dstId) {
 
         <div class="stitch-host">
           <h4>${esc(d.dst_hostname)} <span style="color:var(--dim);font-weight:normal">(${esc((d.dst_agent_id||'').substring(0,8))}...)</span></h4>
-          <div style="margin-bottom:8px">${sevBadge(d.dst_severity)} <span style="margin-left:8px">${esc(d.dst_title)}</span></div>
-          ${renderChainFlow(dstChain)}
+          <div style="margin-bottom:8px">${sevBadge(d.severity)} <span style="margin-left:8px">${esc(d.title)}</span></div>
+          ${renderChainFlow(chain)}
         </div>
       </div>
 
       <div class="detail-section" style="margin-top:24px">
         <h4>Details</h4>
         <div class="detail-grid">
-          <dt>Source Finding</dt><dd class="mono">${esc(d.src_finding_id)}</dd>
-          <dt>Source Time</dt><dd>${fmtTime(d.src_timestamp)}</dd>
-          <dt>Dest Finding</dt><dd class="mono">${esc(d.dst_finding_id)}</dd>
-          <dt>Dest Time</dt><dd>${fmtTime(d.dst_timestamp)}</dd>
+          <dt>Finding</dt><dd class="mono">${esc(d.finding_id)}</dd>
+          <dt>Time</dt><dd>${fmtTime(d.timestamp)}</dd>
           <dt>Pivot IP</dt><dd class="mono">${esc(pivotIp)}</dd>
+          <dt>Source Host</dt><dd>${esc(d.src_hostname)}</dd>
+          <dt>Victim Host</dt><dd>${esc(d.dst_hostname)}</dd>
         </div>
       </div>
     `;

@@ -27,6 +27,7 @@ from agent.schema.ocsf_types import (
     NetworkActivity,
     OcsfEvent,
     ProcessActivity,
+    ProcessInfo,
     RegistryActivity,
 )
 
@@ -409,6 +410,15 @@ class LlmAnalyzer:
         )
         return enrichment
 
+    @staticmethod
+    def _fmt_proc(proc: ProcessInfo) -> str:
+        """Format a process name with PID and optional PPID."""
+        s = f"{proc.name} (PID {proc.pid}"
+        ppid = proc.parent_pid
+        if ppid is not None:
+            s += f", PPID {ppid}"
+        return s + ")"
+
     def _build_batch_context(self, events: list[tuple[int, OcsfEvent]]) -> str:
         """Build the context string for the LLM, including attack chain context."""
         lines = ["## Events in this batch\n"]
@@ -419,14 +429,14 @@ class LlmAnalyzer:
             lines.append(f"Time: {event.time.isoformat()}")
 
             if isinstance(event, ProcessActivity):
-                lines.append(f"Process: {event.process.name} (PID {event.process.pid})")
+                lines.append(f"Process: {self._fmt_proc(event.process)}")
                 if event.process.cmd_line:
                     lines.append(f"Command: {event.process.cmd_line}")
                 if event.actor:
                     lines.append(f"User: {event.actor.user.name}")
             elif isinstance(event, NetworkActivity):
                 if event.process:
-                    lines.append(f"Process: {event.process.name}")
+                    lines.append(f"Process: {self._fmt_proc(event.process)}")
                 if event.dst_endpoint:
                     lines.append(f"Destination: {event.dst_endpoint.ip}:{event.dst_endpoint.port}")
                 # Add enrichment context for network events
@@ -438,18 +448,18 @@ class LlmAnalyzer:
                     lines.append(f"Source IP: {event.src_endpoint.ip}")
             elif isinstance(event, DnsActivity):
                 if event.process:
-                    lines.append(f"Process: {event.process.name}")
+                    lines.append(f"Process: {self._fmt_proc(event.process)}")
                 lines.append(f"DNS query: {event.query_domain}")
                 if event.resolved_ips:
                     lines.append(f"Resolved to: {', '.join(event.resolved_ips)}")
             elif isinstance(event, FileActivity):
                 if event.process:
-                    lines.append(f"Process: {event.process.name}")
+                    lines.append(f"Process: {self._fmt_proc(event.process)}")
                 op_names = {1: "Create", 2: "Read", 3: "Modify", 4: "Delete"}
                 lines.append(f"File {op_names.get(event.activity_id, 'Op')}: {event.file_path}")
             elif isinstance(event, RegistryActivity):
                 if event.process:
-                    lines.append(f"Process: {event.process.name}")
+                    lines.append(f"Process: {self._fmt_proc(event.process)}")
                 op_names = {1: "Create", 3: "Modify", 4: "Delete"}
                 lines.append(f"Registry {op_names.get(event.activity_id, 'Op')}: {event.reg_path}")
                 if event.reg_value_name:
@@ -816,6 +826,24 @@ class LlmAnalyzer:
                             entity_type="ip",
                             entity_id=event.dst_endpoint.ip,
                             entity_name=event.dst_endpoint.ip,
+                            timestamp=event.time,
+                        )
+                    )
+            elif isinstance(event, Authentication):
+                chain.append(
+                    ChainStep(
+                        entity_type="user",
+                        entity_id=event.user.name,
+                        entity_name=event.user.name,
+                        timestamp=event.time,
+                    )
+                )
+                if event.src_endpoint and event.src_endpoint.ip:
+                    chain.append(
+                        ChainStep(
+                            entity_type="ip",
+                            entity_id=event.src_endpoint.ip,
+                            entity_name=event.src_endpoint.ip,
                             timestamp=event.time,
                         )
                     )

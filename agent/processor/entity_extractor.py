@@ -47,6 +47,7 @@ _ppid_cache: dict[int, int] = {}  # pid -> parent_pid, populated once per PID
 _create_time_cache: dict[int, float] = {}  # pid -> create_time epoch, populated once per PID
 _username_cache: dict[int, str] = {}  # pid -> username (empty string = unresolvable)
 _name_cache: dict[int, str] = {}  # pid -> process_name, for fast-path enforcer chain building
+_sshd_cache: dict[str, tuple[str | None, float]] = {}  # hostname -> (proc_id, cache_time)
 
 
 def _resolve_start_time(pid: int, fallback: datetime) -> datetime:
@@ -450,6 +451,53 @@ def _extract_authentication(
                 last_seen=now,
             )
         )
+
+        # Create inbound CONNECTED_TO edge if we can find the auth daemon (sshd)
+        hostname = event.device.hostname
+        sshd_proc_id = _find_auth_daemon_proc_id(hostname, now)
+        if sshd_proc_id:
+            entities.connected_edges.append(
+                {
+                    "process_id": sshd_proc_id,
+                    "ip_id": ip_addr,
+                    "timestamp": now,
+                    "dst_port": 22,
+                    "protocol": "TCP",
+                    "direction": "inbound",
+                    "event_id": event_id,
+                }
+            )
+
+
+def _find_auth_daemon_proc_id(hostname: str, now: datetime) -> str | None:
+    """Try to find the master sshd process ID for creating inbound CONNECTED_TO edges.
+
+    Returns the process node ID (hostname:pid:create_time) or None if sshd
+    cannot be found (e.g., non-SSH auth, psutil unavailable).
+    Results are cached for 60 seconds per hostname (including negative results).
+    """
+    import time as _time
+
+    cached = _sshd_cache.get(hostname)
+    if cached is not None:
+        proc_id, cache_time = cached
+        if _time.monotonic() - cache_time < 60:
+            return proc_id
+
+    proc_id = None
+    try:
+        import psutil
+
+        for proc in psutil.process_iter(["pid", "name", "create_time", "ppid"]):
+            if proc.info["name"] == "sshd" and proc.info["ppid"] in (0, 1):
+                create_time = int(proc.info["create_time"])
+                proc_id = f"{hostname}:{proc.info['pid']}:{create_time}"
+                break
+    except Exception:
+        pass
+
+    _sshd_cache[hostname] = (proc_id, _time.monotonic())
+    return proc_id
 
 
 def _extract_dns_activity(

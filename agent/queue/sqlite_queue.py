@@ -88,6 +88,14 @@ class SqliteQueue:
             results.append(data)
         return results
 
+    def max_processed_id(self) -> int:
+        """Return the highest event ID that has been processed, or 0."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM event_queue WHERE processed = 1"
+        ).fetchone()
+        return row[0]
+
     def get_processed_since(self, since_id: int, limit: int = 100) -> list[tuple[int, dict]]:
         """Get processed events since a given ID (for analyzer)."""
         conn = self._get_conn()
