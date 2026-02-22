@@ -140,7 +140,14 @@ def main() -> None:
         admin_pass = settings.bootstrap_admin_password
         if not admin_pass:
             admin_pass = _generate_password()
-            logger.warning("ADMIN_PASSWORD not set -- generated bootstrap password: %s", admin_pass)
+            print(  # noqa: T201 -- intentional console-only output for first-run setup
+                f"\n{'='*60}\n"
+                f"  ADMIN_PASSWORD not set -- generated bootstrap password:\n"
+                f"  {admin_pass}\n"
+                f"  Set BOOTSTRAP_ADMIN_PASSWORD env var to suppress this.\n"
+                f"{'='*60}\n"
+            )
+            logger.warning("ADMIN_PASSWORD not set -- generated bootstrap password (see console output)")
         settings_db.create_user(admin_user, hash_password(admin_pass), role="admin")
         logger.info("Bootstrap admin user created: %s", admin_user)
 

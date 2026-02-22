@@ -211,7 +211,7 @@ class TestFastBlocklistNetworkRules:
         fb._refresh_if_stale()
 
         assert "1.2.3.4" in fb._ips
-        assert "evil.com" in fb._domains
+        assert "evil.com" in fb._domains  # lgtm[py/incomplete-url-substring-sanitization] test data
         assert len(fb._process_names) == 1
         assert fb._has_rules is True
 
