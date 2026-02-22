@@ -6,6 +6,7 @@ import hashlib
 import logging
 import os
 import socket
+import stat
 
 from agent.collectors.base import RawEvent
 from agent.schema.ocsf_types import (
@@ -87,8 +88,12 @@ def normalize_file(raw: RawEvent) -> FileActivity:
 def _compute_file_info(path: str) -> tuple[str | None, int | None]:
     """Compute SHA256 hash and size of a file. Non-blocking: returns (None, None) on failure."""
     try:
-        stat = os.stat(path)
-        file_size = stat.st_size
+        st = os.stat(path)
+        file_size = st.st_size
+        if not stat.S_ISREG(st.st_mode):
+            # Skip FIFOs, sockets, device files, etc. — open() on a FIFO
+            # blocks forever if no writer is attached.
+            return None, file_size
         if file_size > _MAX_HASH_SIZE:
             logger.warning("Skipping hash for large file (%d bytes): %s", file_size, path)
             return None, file_size

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from unittest.mock import patch
 
 from agent.collectors.base import RawEvent
 from agent.enrichment.file_attribution import FileAttributionCache, FileOwner
-from agent.normalizer.file_activity import normalize_file
+from agent.normalizer.file_activity import _compute_file_info, normalize_file
 
 
 class TestFileAttributionLookup:
@@ -167,3 +168,34 @@ class TestNormalizerIntegration:
         assert result.process is not None
         assert result.process.pid == 1234
         assert result.process.name == "git"
+
+
+class TestComputeFileInfo:
+    """Tests for _compute_file_info non-regular file handling."""
+
+    def test_regular_file_hashed(self, tmp_path):
+        f = tmp_path / "test.txt"
+        f.write_text("hello")
+        file_hash, file_size = _compute_file_info(str(f))
+        assert file_hash is not None
+        assert file_size == 5
+
+    def test_fifo_skipped(self, tmp_path):
+        fifo = tmp_path / "test_fifo"
+        os.mkfifo(str(fifo))
+        file_hash, file_size = _compute_file_info(str(fifo))
+        assert file_hash is None
+        assert file_size == 0
+
+    def test_nonexistent_file(self):
+        file_hash, file_size = _compute_file_info("/nonexistent/path/xyz")
+        assert file_hash is None
+        assert file_size is None
+
+    def test_symlink_to_fifo_skipped(self, tmp_path):
+        fifo = tmp_path / "real_fifo"
+        os.mkfifo(str(fifo))
+        link = tmp_path / "link_to_fifo"
+        link.symlink_to(fifo)
+        file_hash, file_size = _compute_file_info(str(link))
+        assert file_hash is None
