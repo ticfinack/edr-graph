@@ -1020,13 +1020,15 @@ def main() -> None:
     if not args.no_dashboard:
         try:
             from agent.dashboard.server import (
+                _state as _ds,
+            )
+            from agent.dashboard.server import (
                 init_dashboard,
                 start_dashboard_server,
             )
 
             # Collector thread may have already populated _state["collector_names"]
             # before init_dashboard runs, so read the current value to avoid clobbering.
-            from agent.dashboard.server import _state as _ds
 
             collector_names = _ds.get("collector_names", [])
 
