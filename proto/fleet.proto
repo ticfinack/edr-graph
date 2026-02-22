@@ -110,4 +110,6 @@ message HeartbeatRequest {
 message HeartbeatResponse {
   bool acknowledged = 1;
   string message = 2;
+  string config_json = 3;      // JSON agent config overrides (empty = no changes)
+  string config_signature = 4; // HMAC-SHA256 of config_json, keyed by registration key
 }

@@ -9,12 +9,17 @@ from agent.graph.pid_index import PidIndex
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def _build_index(*entries: tuple[str, int, int]) -> PidIndex:
-    """Build a PidIndex from (node_id, pid, parent_pid) tuples."""
+def _build_index(*entries) -> PidIndex:
+    """Build a PidIndex from (node_id, pid, parent_pid[, name]) tuples."""
     idx = PidIndex()
     idx._built = True
-    for node_id, pid, ppid in entries:
-        idx.on_upsert(node_id, pid, ppid)
+    for entry in entries:
+        if len(entry) == 4:
+            node_id, pid, ppid, name = entry
+            idx.on_upsert(node_id, pid, ppid, name)
+        else:
+            node_id, pid, ppid = entry
+            idx.on_upsert(node_id, pid, ppid)
     return idx
 
 
@@ -271,3 +276,31 @@ class TestReaperSync:
         mock_idx.remove_nodes.assert_called_once()
         call_args = mock_idx.remove_nodes.call_args[0][0]
         assert "host:100:1000" in call_args
+
+
+# ── TestParentAndNameLookup ─────────────────────────────────────────────
+
+
+class TestParentAndNameLookup:
+    def test_on_upsert_stores_ppid_and_name(self):
+        idx = _build_index(("host:100:1000", 100, 50, "bash"))
+        assert idx.get_parent_pid(100) == 50
+        assert idx.get_name(100) == "bash"
+
+    def test_on_upsert_default_name(self):
+        idx = _build_index(("host:100:1000", 100, 50))
+        assert idx.get_parent_pid(100) == 50
+        assert idx.get_name(100) == ""
+
+    def test_remove_nodes_cleans_ppid_and_name(self):
+        idx = _build_index(("host:100:1000", 100, 50, "bash"))
+        assert idx.get_parent_pid(100) == 50
+        assert idx.get_name(100) == "bash"
+        idx.remove_nodes(["host:100:1000"])
+        assert idx.get_parent_pid(100) is None
+        assert idx.get_name(100) == ""
+
+    def test_get_parent_pid_returns_none_for_root(self):
+        """ppid=0 means root/unknown — get_parent_pid should return None."""
+        idx = _build_index(("host:1:1000", 1, 0, "launchd"))
+        assert idx.get_parent_pid(1) is None

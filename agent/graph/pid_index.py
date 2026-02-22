@@ -30,28 +30,39 @@ class PidIndex:
         self._pid_to_ids: dict[int, list[str]] = {}
         # parent_pid -> set of child PIDs
         self._ppid_to_children: dict[int, set[int]] = {}
+        # pid -> parent_pid (for chain walking)
+        self._pid_to_ppid: dict[int, int] = {}
+        # pid -> process name
+        self._pid_to_name: dict[int, str] = {}
         self._built = False
 
     def build(self, conn: kuzu.Connection) -> None:
         """One-time scan of all Process nodes to populate the index."""
         pid_to_ids: dict[int, list[str]] = {}
         ppid_to_children: dict[int, set[int]] = {}
+        pid_to_ppid: dict[int, int] = {}
+        pid_to_name: dict[int, str] = {}
         try:
-            result = conn.execute("MATCH (p:Process) RETURN p.id, p.pid, p.parent_pid")
+            result = conn.execute("MATCH (p:Process) RETURN p.id, p.pid, p.parent_pid, p.name")
             count = 0
             while result.has_next():
                 row = result.get_next()
-                node_id, pid, ppid = row[0], row[1], row[2]
+                node_id, pid, ppid, name = row[0], row[1], row[2], row[3]
                 if pid is None:
                     continue
                 pid_to_ids.setdefault(pid, []).append(node_id)
                 if ppid and ppid > 0:
                     ppid_to_children.setdefault(ppid, set()).add(pid)
+                    pid_to_ppid[pid] = ppid
+                if name:
+                    pid_to_name[pid] = name
                 count += 1
 
             with self._lock:
                 self._pid_to_ids = pid_to_ids
                 self._ppid_to_children = ppid_to_children
+                self._pid_to_ppid = pid_to_ppid
+                self._pid_to_name = pid_to_name
                 self._built = True
 
             logger.info(
@@ -62,7 +73,7 @@ class PidIndex:
         except Exception:
             logger.warning("Failed to build PID index", exc_info=True)
 
-    def on_upsert(self, node_id: str, pid: int, parent_pid: int) -> None:
+    def on_upsert(self, node_id: str, pid: int, parent_pid: int, name: str = "") -> None:
         """Called by GraphBuilder after upserting a Process node."""
         with self._lock:
             ids = self._pid_to_ids.setdefault(pid, [])
@@ -70,6 +81,9 @@ class PidIndex:
                 ids.append(node_id)
             if parent_pid and parent_pid > 0:
                 self._ppid_to_children.setdefault(parent_pid, set()).add(pid)
+                self._pid_to_ppid[pid] = parent_pid
+            if name:
+                self._pid_to_name[pid] = name
 
     def remove_nodes(self, node_ids: list[str]) -> int:
         """Remove deleted node IDs from the index. Returns count evicted."""
@@ -91,6 +105,9 @@ class PidIndex:
                 # Also clean ppid_to_children entries pointing to this pid
                 for children in self._ppid_to_children.values():
                     children.discard(pid)
+                # Clean up ppid and name mappings
+                self._pid_to_ppid.pop(pid, None)
+                self._pid_to_name.pop(pid, None)
 
             # Clean empty parent groups
             empty_ppids = [pp for pp, ch in self._ppid_to_children.items() if not ch]
@@ -131,6 +148,19 @@ class PidIndex:
         """Get all child PIDs for a parent PID."""
         with self._lock:
             return list(self._ppid_to_children.get(parent_pid, set()))
+
+    def get_parent_pid(self, pid: int) -> int | None:
+        """Get the parent PID for a process, or None if unknown/root."""
+        with self._lock:
+            ppid = self._pid_to_ppid.get(pid)
+            if ppid and ppid > 0:
+                return ppid
+            return None
+
+    def get_name(self, pid: int) -> str:
+        """Get the process name for a PID, or empty string if unknown."""
+        with self._lock:
+            return self._pid_to_name.get(pid, "")
 
     @property
     def is_built(self) -> bool:

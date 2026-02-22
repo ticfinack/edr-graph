@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
+from unittest.mock import patch
 
 import pytest
 
@@ -454,3 +455,162 @@ class TestResponseIntegration:
         assert finding.chain  # Non-empty chain
         assert finding.id  # Has UUID
         assert finding.timestamp  # Has timestamp
+
+
+# ── Chain building from PidIndex ──
+
+
+class TestBuildChainFromPidIndex:
+    def test_chain_from_pid_index(self):
+        """PidIndex has full ancestry — no entity_extractor caches needed."""
+        from agent.graph.pid_index import PidIndex
+
+        mock_idx = PidIndex()
+        mock_idx._built = True
+        # containerd-shim(1) → runc(50) → perl(100)
+        mock_idx.on_upsert("host:1:1000", 1, 0, "containerd-shim")
+        mock_idx.on_upsert("host:50:2000", 50, 1, "runc")
+        mock_idx.on_upsert("host:100:3000", 100, 50, "perl")
+
+        with patch("agent.processor.synchronous_enforcer.get_pid_index", return_value=mock_idx):
+            chain = _build_chain_from_caches(100, "perl")
+
+        assert chain == ["containerd-shim", "runc", "perl"]
+
+    def test_fallback_to_extractor_caches(self):
+        """When PidIndex is not built, fall back to entity_extractor caches."""
+        from agent.graph.pid_index import PidIndex
+        from agent.processor import entity_extractor
+
+        mock_idx = PidIndex()
+        # _built is False by default
+
+        entity_extractor._ppid_cache[100] = 50
+        entity_extractor._ppid_cache[50] = 0
+        entity_extractor._name_cache[50] = "bash"
+
+        try:
+            with patch("agent.processor.synchronous_enforcer.get_pid_index", return_value=mock_idx):
+                chain = _build_chain_from_caches(100, "perl")
+            assert chain == ["bash", "perl"]
+        finally:
+            entity_extractor._ppid_cache.pop(100, None)
+            entity_extractor._ppid_cache.pop(50, None)
+            entity_extractor._name_cache.pop(50, None)
+
+    def test_index_and_cache_merge(self):
+        """Index has ppid for 100→50 but no name for 50; name_cache fills the gap."""
+        from agent.graph.pid_index import PidIndex
+        from agent.processor import entity_extractor
+
+        mock_idx = PidIndex()
+        mock_idx._built = True
+        # Index knows 100's parent is 50, but doesn't know 50's name
+        mock_idx.on_upsert("host:100:3000", 100, 50, "perl")
+        mock_idx.on_upsert("host:50:2000", 50, 0)  # no name stored in index
+
+        # entity_extractor cache has the name for pid 50
+        entity_extractor._name_cache[50] = "bash"
+
+        try:
+            with patch("agent.processor.synchronous_enforcer.get_pid_index", return_value=mock_idx):
+                chain = _build_chain_from_caches(100, "perl")
+            assert chain == ["bash", "perl"]
+        finally:
+            entity_extractor._name_cache.pop(50, None)
+
+
+# ── Scoped rules (Gap 2 fix) ──
+
+
+class TestScopedRules:
+    def test_scoped_rule_not_in_fast_bucket(self, blocklist, fast_blocklist):
+        """A rule with chain_filter should go to _scoped_rules, not _process_names."""
+        blocklist.add_rule("process_name", "ncat*", "netcat", chain_filter="** > bash > ncat*")
+        fast_blocklist.invalidate()
+        fast_blocklist._refresh_if_stale()
+        assert len(fast_blocklist._process_names) == 0
+        assert len(fast_blocklist._scoped_rules) == 1
+
+    def test_scoped_rule_blocks_matching_chain(self, blocklist, fast_blocklist):
+        """Scoped process_name rule with matching chain ancestry → hit."""
+        blocklist.add_rule("process_name", "ncat*", "scoped ncat", chain_filter="** > containerd-shim > ** > ncat*")
+        fast_blocklist.invalidate()
+
+        from agent.graph.pid_index import PidIndex
+
+        mock_idx = PidIndex()
+        mock_idx._built = True
+        mock_idx.on_upsert("host:1:1000", 1, 0, "containerd-shim")
+        mock_idx.on_upsert("host:50:2000", 50, 1, "runc")
+        mock_idx.on_upsert("host:100:3000", 100, 50, "ncat")
+
+        with patch("agent.processor.synchronous_enforcer.get_pid_index", return_value=mock_idx):
+            entities = _make_entities(processes=[("ncat", 100)])
+            result = fast_blocklist.evaluate(entities, None, 42)
+
+        assert result is not None
+        finding, _ = result
+        assert finding.severity == "critical"
+
+    def test_scoped_rule_passes_non_matching_chain(self, blocklist, fast_blocklist):
+        """Scoped rule with non-matching chain → no hit."""
+        blocklist.add_rule("process_name", "ncat*", "scoped ncat", chain_filter="** > containerd-shim > ** > ncat*")
+        fast_blocklist.invalidate()
+
+        from agent.graph.pid_index import PidIndex
+
+        mock_idx = PidIndex()
+        mock_idx._built = True
+        mock_idx.on_upsert("host:50:2000", 50, 0, "bash")
+        mock_idx.on_upsert("host:100:3000", 100, 50, "perl")
+
+        with patch("agent.processor.synchronous_enforcer.get_pid_index", return_value=mock_idx):
+            entities = _make_entities(processes=[("perl", 100)])
+            result = fast_blocklist.evaluate(entities, None, 42)
+
+        assert result is None
+
+    def test_unscoped_rule_stays_in_fast_bucket(self, blocklist, fast_blocklist):
+        """A rule without chain_filter should stay in the fast bucket."""
+        blocklist.add_rule("process_name", "ncat*", "netcat")
+        fast_blocklist.invalidate()
+        fast_blocklist._refresh_if_stale()
+        assert len(fast_blocklist._process_names) == 1
+        assert len(fast_blocklist._scoped_rules) == 0
+
+    def test_scoped_ip_rule_matching(self, blocklist, fast_blocklist):
+        """Scoped dst_ip rule with matching chain → hit."""
+        blocklist.add_rule("dst_ip", "6.6.6.6", "evil ip", chain_filter="** > curl")
+        fast_blocklist.invalidate()
+
+        from agent.graph.pid_index import PidIndex
+
+        mock_idx = PidIndex()
+        mock_idx._built = True
+        mock_idx.on_upsert("host:100:3000", 100, 0, "curl")
+
+        with patch("agent.processor.synchronous_enforcer.get_pid_index", return_value=mock_idx):
+            entities = _make_entities(processes=[("curl", 100)], connected_edges=["6.6.6.6"])
+            result = fast_blocklist.evaluate(entities, None, 42)
+
+        assert result is not None
+        finding, _ = result
+        assert "6.6.6.6" in finding.title
+
+    def test_scoped_ip_rule_non_matching(self, blocklist, fast_blocklist):
+        """Scoped dst_ip rule with non-matching chain → no hit."""
+        blocklist.add_rule("dst_ip", "6.6.6.6", "evil ip", chain_filter="** > curl")
+        fast_blocklist.invalidate()
+
+        from agent.graph.pid_index import PidIndex
+
+        mock_idx = PidIndex()
+        mock_idx._built = True
+        mock_idx.on_upsert("host:100:3000", 100, 0, "wget")
+
+        with patch("agent.processor.synchronous_enforcer.get_pid_index", return_value=mock_idx):
+            entities = _make_entities(processes=[("wget", 100)], connected_edges=["6.6.6.6"])
+            result = fast_blocklist.evaluate(entities, None, 42)
+
+        assert result is None

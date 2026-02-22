@@ -31,8 +31,9 @@ RUN python -m grpc_tools.protoc \
     && sed -i 's/^import fleet_pb2/from agent.fleet.proto import fleet_pb2/' \
        agent/fleet/proto/fleet_pb2_grpc.py
 
-# Copy server code
+# Copy server code and global rules
 COPY server/ /app/server/
+COPY rules/ /app/rules/
 
 EXPOSE 50051 8080
 

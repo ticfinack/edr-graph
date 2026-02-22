@@ -9,10 +9,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.config import Settings, load_config_file
 import agent.fleet.ip_discovery as ip_disc
+from agent.config import Settings, load_config_file
 from agent.fleet.ip_discovery import PublicIpMonitor, get_local_ips
-
 
 # ── get_local_ips() ──
 
@@ -366,15 +365,18 @@ class TestGrpcServiceIpExtraction:
         # Falls back to gRPC peer IP
         assert agent_data["ip_address"] == "172.17.0.1"
 
-    def test_heartbeat_passes_ip_fields(self):
+    def test_heartbeat_passes_ip_fields(self, tmp_path):
         """Heartbeat should pass ip_addresses and public_ip to update_heartbeat."""
         from agent.fleet.proto import fleet_pb2
+        from server.settings_db import SettingsDB
 
         mock_neo4j = MagicMock()
+        sdb = SettingsDB(tmp_path / "settings.db")
+        sdb.set_agent_key("agent-1", "regkey-1")
 
         from server.grpc_service import FleetServicer
 
-        servicer = FleetServicer(mock_neo4j)
+        servicer = FleetServicer(mock_neo4j, settings_db=sdb)
 
         request = fleet_pb2.HeartbeatRequest(
             agent_id="agent-1",
@@ -394,16 +396,20 @@ class TestGrpcServiceIpExtraction:
             ip_addresses=["10.0.0.5"],
             public_ip="203.0.113.1",
         )
+        sdb.close()
 
-    def test_heartbeat_old_agent_no_ips(self):
+    def test_heartbeat_old_agent_no_ips(self, tmp_path):
         """Old agent heartbeat without IPs should pass None (skip update)."""
         from agent.fleet.proto import fleet_pb2
+        from server.settings_db import SettingsDB
 
         mock_neo4j = MagicMock()
+        sdb = SettingsDB(tmp_path / "settings.db")
+        sdb.set_agent_key("old-agent", "regkey-old")
 
         from server.grpc_service import FleetServicer
 
-        servicer = FleetServicer(mock_neo4j)
+        servicer = FleetServicer(mock_neo4j, settings_db=sdb)
 
         request = fleet_pb2.HeartbeatRequest(
             agent_id="old-agent",
@@ -421,3 +427,4 @@ class TestGrpcServiceIpExtraction:
             ip_addresses=None,
             public_ip=None,
         )
+        sdb.close()

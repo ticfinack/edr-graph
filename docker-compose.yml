@@ -31,6 +31,7 @@ services:
       - ADMIN_USER=${ADMIN_USER:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - JWT_SECRET=${JWT_SECRET}
+      - SETTINGS_DB_PATH=/app/data/settings.db
       # Uncomment for mTLS:
       # - TLS_CA_CERT=/app/certs/ca.pem
       # - TLS_SERVER_CERT=/app/certs/server.pem
@@ -40,7 +41,9 @@ services:
         condition: service_healthy
     volumes:
       - ./certs:/app/certs:ro
+      - fleet_settings:/app/data
 
 volumes:
   neo4j_data:
   neo4j_logs:
+  fleet_settings:

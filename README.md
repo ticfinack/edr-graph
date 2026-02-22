@@ -15,6 +15,8 @@
 
 ## Architecture
 
+> **[Filtering Pipeline & Rules of Engagement](docs/ARCHITECTURE/filtering_pipeline.md)** — How the three evaluation stages work, what chain context is available at each stage, and how to write rules without causing friendly fire.
+
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                           EDR Graph Agent                                    │

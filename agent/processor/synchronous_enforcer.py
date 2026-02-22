@@ -18,28 +18,42 @@ import time
 import uuid
 from datetime import datetime
 
+from agent.graph.pid_index import get_pid_index
 from agent.processor.entity_extractor import (
     ExtractedEntities,
     _name_cache,
     _ppid_cache,
     _username_cache,
 )
-from agent.response.baseline import ResponseBlocklist, _match_chain_pattern
+from agent.response.baseline import ResponseBlocklist, _match_chain_pattern, _match_rule
 from agent.schema.graph_types import ChainStep, SecurityFinding
 
 logger = logging.getLogger(__name__)
 
 
 def _build_chain_from_caches(pid: int, process_name: str) -> list[str]:
-    """Walk ppid_cache to reconstruct chain names, prepend USER: if known."""
+    """Walk PidIndex (preferred) or entity_extractor caches to reconstruct chain names."""
+    idx = get_pid_index()
+    use_index = idx.is_built
+
     seen: set[int] = set()
     current = pid
     ancestors: list[str] = []
     while current and current > 0 and current not in seen:
         seen.add(current)
-        parent = _ppid_cache.get(current)
+        # Try PidIndex first, fall back to entity_extractor cache
+        parent = None
+        if use_index:
+            parent = idx.get_parent_pid(current)
+        if parent is None:
+            parent = _ppid_cache.get(current)
         if parent and parent > 0:
-            name = _name_cache.get(parent, "")
+            # Try PidIndex for name first, fall back to entity_extractor cache
+            name = ""
+            if use_index:
+                name = idx.get_name(parent)
+            if not name:
+                name = _name_cache.get(parent, "")
             if name:
                 ancestors.append(name)
         current = parent
@@ -62,6 +76,7 @@ class FastBlocklist:
         self._lock = threading.Lock()
         self._last_refresh: float = 0.0
         self._invalidated = True  # force initial load
+        self._network_rules: list[dict] = []
 
         # Compiled structures
         self._ips: set[str] = set()
@@ -70,7 +85,13 @@ class FastBlocklist:
         self._process_names: list[tuple[str, str]] = []  # (pattern, description)
         self._file_paths: list[tuple[str, str]] = []  # (pattern, description)
         self._chain_patterns: list[tuple[list[str], str]] = []  # (split_parts, description)
+        self._scoped_rules: list[dict] = []  # rules with chain_filter (evaluated with full chain)
         self._has_rules: bool = False
+
+    def set_network_rules(self, rules: list[dict]) -> None:
+        """Atomically replace network-distributed rules and force recompilation."""
+        self._network_rules = list(rules)
+        self.invalidate()
 
     def _refresh_if_stale(self) -> None:
         now = time.monotonic()
@@ -83,12 +104,15 @@ class FastBlocklist:
                     self._invalidated = False
 
     def _compile_rules(self) -> None:
-        """Load rules from SQLite and compile into fast lookup structures."""
+        """Load rules from SQLite + network rules and compile into fast lookup structures."""
         try:
             rules = self._blocklist.get_rules()
         except Exception:
             logger.debug("Failed to load blocklist rules for fast-path", exc_info=True)
-            return
+            rules = []
+
+        # Extend with network-distributed rules
+        rules.extend(self._network_rules)
 
         ips: set[str] = set()
         domains: set[str] = set()
@@ -96,11 +120,18 @@ class FastBlocklist:
         process_names: list[tuple[str, str]] = []
         file_paths: list[tuple[str, str]] = []
         chain_patterns: list[tuple[list[str], str]] = []
+        scoped_rules: list[dict] = []
 
         for rule in rules:
             rt = rule["rule_type"]
             pat = rule["pattern"]
             desc = rule.get("description") or pat
+
+            # Rules with chain_filter are scoped — they need full chain context
+            # and must not go into the unscoped fast buckets (Gap 2 fix).
+            if rule.get("chain_filter"):
+                scoped_rules.append(rule)
+                continue
 
             if rt == "dst_ip":
                 ips.add(pat)
@@ -125,7 +156,10 @@ class FastBlocklist:
         self._process_names = process_names
         self._file_paths = file_paths
         self._chain_patterns = chain_patterns
-        self._has_rules = bool(ips or domains or cidrs or process_names or file_paths or chain_patterns)
+        self._scoped_rules = scoped_rules
+        self._has_rules = bool(
+            ips or domains or cidrs or process_names or file_paths or chain_patterns or scoped_rules
+        )
 
     def evaluate(
         self,
@@ -207,6 +241,54 @@ class FastBlocklist:
                             f"Blocked chain: {chain_str} (rule: {desc})",
                             "chain_pattern",
                             chain_str,
+                        )
+
+        # Scoped rules: rules with chain_filter that need full chain context
+        if self._scoped_rules:
+            # Collect IPs and domains from entities for scoped matching
+            entity_ips = [edge.get("ip_id", "") for edge in entities.connected_edges if edge.get("ip_id")]
+            entity_domains = [d.name.lower() for d in entities.domains if d.name]
+            entity_files = [edge.get("file_id", "") for edge in entities.file_edges if edge.get("file_id")]
+
+            for proc in entities.processes:
+                chain_names = _build_chain_from_caches(proc.pid, proc.name)
+                # Build ChainStep-compatible dicts for _match_rule's chain parameter
+                chain_for_match = [{"entity_type": "process", "entity_name": n} for n in chain_names]
+
+                for rule in self._scoped_rules:
+                    rt = rule["rule_type"]
+                    matched_value = ""
+
+                    if rt == "process_name":
+                        if _match_rule(rule, process_name=proc.name, chain=chain_for_match):
+                            matched_value = proc.name
+                    elif rt in ("dst_ip", "dst_cidr"):
+                        for ip in entity_ips:
+                            if _match_rule(rule, dst_ip=ip, chain=chain_for_match):
+                                matched_value = ip
+                                break
+                    elif rt == "domain":
+                        for d in entity_domains:
+                            if _match_rule(rule, domain=d, chain=chain_for_match):
+                                matched_value = d
+                                break
+                    elif rt == "file_path":
+                        for fp in entity_files:
+                            if _match_rule(rule, file_path=fp, chain=chain_for_match):
+                                matched_value = fp
+                                break
+                    elif rt == "chain_pattern" and _match_rule(rule, chain=chain_for_match):
+                        matched_value = " > ".join(chain_names)
+
+                    if matched_value:
+                        desc = rule.get("description") or rule["pattern"]
+                        return self._synthesize(
+                            entities,
+                            ocsf,
+                            event_id,
+                            f"Scoped blocklist ({rt}): {matched_value} (rule: {desc})",
+                            rt,
+                            matched_value,
                         )
 
         return None

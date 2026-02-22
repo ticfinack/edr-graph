@@ -143,6 +143,7 @@ svg .edge-arrow{fill:var(--dim)}
   <button class="tab-btn" data-tab="graph">Graph</button>
   <button class="tab-btn" data-tab="events">Events</button>
   <button class="tab-btn" data-tab="ioc">IOC/IOA</button>
+  <button class="tab-btn" data-tab="threatintel">Threat Intel</button>
   <button class="tab-btn" data-tab="audit">Audit</button>
   <button class="tab-btn" data-tab="settings">Settings</button>
 </div>
@@ -227,6 +228,39 @@ svg .edge-arrow{fill:var(--dim)}
   </div>
 </div>
 
+<!-- ── Threat Intel ──────────────────────────────────────────────── -->
+<div class="tab-panel" id="panel-threatintel">
+  <div class="cards" id="ti-cards"></div>
+  <div class="filter-bar">
+    <input type="text" id="ti-search" placeholder="Search rules..." style="width:250px" oninput="renderThreatIntel()">
+    <select id="ti-type" onchange="renderThreatIntel()">
+      <option value="">All Types</option>
+      <option value="process_name">process_name</option>
+      <option value="file_path">file_path</option>
+      <option value="dst_ip">dst_ip</option>
+      <option value="dst_cidr">dst_cidr</option>
+      <option value="domain">domain</option>
+      <option value="chain_pattern">chain_pattern</option>
+    </select>
+    <select id="ti-scope" onchange="renderThreatIntel()">
+      <option value="">All Scopes</option>
+      <option value="scoped">Scoped (chain_filter)</option>
+      <option value="unscoped">Unscoped</option>
+    </select>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:120px">Rule Type</th>
+        <th style="width:180px">Pattern</th>
+        <th style="width:220px">Chain Filter</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody id="ti-tbody"></tbody>
+  </table>
+</div>
+
 <!-- ── Audit ─────────────────────────────────────────────────────── -->
 <div class="tab-panel" id="panel-audit">
   <table><thead><tr><th>Time</th><th>Action</th><th>Target</th><th>Severity</th><th>Approved</th><th>Result</th><th></th></tr></thead><tbody id="audit-tbody"></tbody></table>
@@ -270,8 +304,8 @@ window.addEventListener('hashchange', () => { if (location.hash) switchTab(locat
 // Keyboard shortcuts
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-  const tabs = ['overview','findings','graph','events','ioc','audit','settings'];
-  if (e.key >= '1' && e.key <= '7') switchTab(tabs[parseInt(e.key)-1]);
+  const tabs = ['overview','findings','graph','events','ioc','threatintel','audit','settings'];
+  if (e.key >= '1' && e.key <= '8') switchTab(tabs[parseInt(e.key)-1]);
   if (e.key === 'r') refreshTab(currentTab);
   if (e.key === 'p') toggleEventPause();
 });
@@ -290,6 +324,7 @@ function refreshTab(tab) {
   else if (tab === 'findings') refreshFindings();
   else if (tab === 'events') refreshEvents();
   else if (tab === 'ioc') refreshIOC();
+  else if (tab === 'threatintel') refreshThreatIntel();
   else if (tab === 'audit') refreshAudit();
   else if (tab === 'settings') refreshSettings();
 }
@@ -861,6 +896,75 @@ async function refreshIOC() {
       return '<tr><td><span style="color:' + c + '">' + esc(f.operation) + '</span></td><td class="mono" title="' + esc(f.path) + '">' + esc(f.path) + '</td><td>' + esc(procs) + '</td><td>' + findings + '</td></tr>';
     }).join('');
   }
+}
+
+// ── Threat Intel ────────────────────────────────────────────────
+let threatIntelRules = [];
+
+async function refreshThreatIntel() {
+  const data = await api('/api/response/blocklist');
+  threatIntelRules = (data && data.rules) || [];
+  renderThreatIntel();
+}
+
+function renderThreatIntel() {
+  const rules = threatIntelRules;
+
+  // Summary stats
+  const typeCount = {};
+  let scoped = 0;
+  let sigmaCount = 0;
+  rules.forEach(r => {
+    typeCount[r.rule_type] = (typeCount[r.rule_type] || 0) + 1;
+    if (r.chain_filter) scoped++;
+    if (r.description && r.description.includes('Sigma:')) sigmaCount++;
+  });
+
+  const typeBreakdown = Object.entries(typeCount).map(([k, v]) => k + ': ' + v).join(', ') || 'None';
+
+  document.getElementById('ti-cards').innerHTML =
+    '<div class="card"><div class="card-label">Total Rules</div><div class="card-value">' + rules.length + '</div><div class="card-sub">Active blocklist rules</div></div>' +
+    '<div class="card"><div class="card-label">Sigma Rules</div><div class="card-value">' + sigmaCount + '</div><div class="card-sub">Compiled from SigmaHQ</div></div>' +
+    '<div class="card"><div class="card-label">Scoped Rules</div><div class="card-value">' + scoped + '</div><div class="card-sub">With chain_filter ancestry</div></div>' +
+    '<div class="card"><div class="card-label">Rule Types</div><div class="card-value" style="font-size:14px">' + typeBreakdown + '</div></div>';
+
+  // Filter
+  const search = (document.getElementById('ti-search').value || '').toLowerCase();
+  const typeFilter = document.getElementById('ti-type').value;
+  const scopeFilter = document.getElementById('ti-scope').value;
+
+  let filtered = rules;
+  if (search) filtered = filtered.filter(r =>
+    r.pattern.toLowerCase().includes(search) ||
+    (r.description || '').toLowerCase().includes(search) ||
+    (r.chain_filter || '').toLowerCase().includes(search) ||
+    r.rule_type.toLowerCase().includes(search)
+  );
+  if (typeFilter) filtered = filtered.filter(r => r.rule_type === typeFilter);
+  if (scopeFilter === 'scoped') filtered = filtered.filter(r => r.chain_filter);
+  if (scopeFilter === 'unscoped') filtered = filtered.filter(r => !r.chain_filter);
+
+  const tbody = document.getElementById('ti-tbody');
+  if (filtered.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No rules match filter</td></tr>';
+    return;
+  }
+  tbody.innerHTML = filtered.map(function(r) {
+    // Parse severity from description e.g. "(high)" or "(critical)"
+    const sevMatch = (r.description || '').match(/\((critical|high|medium|low)\)\s*$/);
+    const sevClass = sevMatch ? 'severity-' + sevMatch[1] : 'severity-info';
+    const isSigma = r.description && r.description.includes('Sigma:');
+    const sigmaBadge = isSigma ? '<span class="feed-match-badge" style="background:rgba(59,130,246,0.2);color:var(--accent)">Sigma</span>' : '';
+    const chainHtml = r.chain_filter
+      ? '<span class="mono" style="color:var(--accent)">' + esc(r.chain_filter) + '</span>'
+      : '<span style="color:var(--dim)">—</span>';
+    return '<tr>' +
+      '<td><span class="rule-type-badge" style="background:rgba(239,68,68,0.15);color:var(--critical)">' + esc(r.rule_type) + '</span></td>' +
+      '<td class="mono">' + esc(r.pattern) + '</td>' +
+      '<td>' + chainHtml + '</td>' +
+      '<td>' + sigmaBadge + ' <span class="severity-badge ' + sevClass + '" style="font-size:10px;margin-right:4px">' + (sevMatch ? sevMatch[1] : 'rule') + '</span>' + esc(r.description || '') + '</td>' +
+      '</tr>';
+  }).join('');
 }
 
 // ── Audit ──────────────────────────────────────────────────────

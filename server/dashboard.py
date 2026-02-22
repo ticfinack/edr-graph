@@ -1,25 +1,37 @@
 """Fleet management dashboard REST API.
 
 Provides endpoints for viewing connected agents, recent findings,
-cross-host correlation, lateral/vertical movement detection, and
-SOC dashboard authentication.
+cross-host correlation, lateral/vertical movement detection,
+SOC dashboard authentication, user management, and settings.
 """
 
 from __future__ import annotations
 
 import secrets
+import time
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
 from server.auth import get_current_user
 from server.neo4j_client import Neo4jClient
+from server.settings_db import _VALID_AGENT_SETTINGS, SettingsDB
+
+_VALID_ROLES = {"admin", "viewer"}
+
+
+def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    """Require admin role for write/mutate endpoints."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
 
 app = FastAPI(title="EDR Fleet Dashboard", version="1.0.0")
 
 # Set by app.py at startup
 _neo4j: Neo4jClient | None = None
 _settings = None
+_settings_db: SettingsDB | None = None
 
 
 def set_neo4j(client: Neo4jClient) -> None:
@@ -30,6 +42,11 @@ def set_neo4j(client: Neo4jClient) -> None:
 def set_settings(settings) -> None:
     global _settings
     _settings = settings
+
+
+def set_settings_db(db: SettingsDB) -> None:
+    global _settings_db
+    _settings_db = db
 
 
 # ── Auth models ──
@@ -44,11 +61,11 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/api/auth/login")
-async def login(body: LoginRequest):
+def login(body: LoginRequest):
     """Authenticate and return a JWT."""
     from server.auth import create_token, verify_password
 
-    user = _neo4j.verify_dashboard_user(body.username)
+    user = _settings_db.get_user(body.username)
     if not user or not verify_password(body.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -71,9 +88,15 @@ async def auth_me(user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/fleet/agents")
-async def list_agents(user: dict = Depends(get_current_user)):
-    """List all registered agents with status and finding counts."""
-    return _neo4j.get_fleet_status()
+def list_agents(user: dict = Depends(get_current_user)):
+    """List all registered agents with status, finding counts, and tags."""
+    agents = _neo4j.get_fleet_status()
+    agent_ids = [a["agent_id"] for a in agents if "agent_id" in a]
+    if agent_ids and _settings_db:
+        bulk_tags = _settings_db.get_bulk_agent_tags(agent_ids)
+        for a in agents:
+            a["tags"] = bulk_tags.get(a.get("agent_id", ""), [])
+    return agents
 
 
 @app.get("/api/fleet/agents/{agent_id}")
@@ -177,7 +200,7 @@ async def cross_host_connections(ip: str, user: dict = Depends(get_current_user)
     return _neo4j.get_cross_host_connections(ip)
 
 
-# ── Registration key endpoints (JWT required) ──
+# ── Registration key endpoints (JWT required, backed by SQLite) ──
 
 
 class CreateKeyRequest(BaseModel):
@@ -187,22 +210,20 @@ class CreateKeyRequest(BaseModel):
 
 
 @app.get("/api/fleet/registration-keys")
-async def list_registration_keys(user: dict = Depends(get_current_user)):
+def list_registration_keys(user: dict = Depends(get_current_user)):
     """List all registration keys."""
-    return _neo4j.list_registration_keys()
+    return _settings_db.list_registration_keys()
 
 
 @app.post("/api/fleet/registration-keys")
-async def create_registration_key(body: CreateKeyRequest, user: dict = Depends(get_current_user)):
+def create_registration_key(body: CreateKeyRequest, user: dict = Depends(require_admin)):
     """Generate a new registration key."""
-    import time
-
-    key = secrets.token_hex(32)  # 64-char hex string
+    key = secrets.token_hex(32)
     expires_at = None
     if body.expires_in is not None and body.expires_in > 0:
         expires_at = int(time.time()) + body.expires_in
 
-    result = _neo4j.create_registration_key(
+    result = _settings_db.create_registration_key(
         key=key,
         label=body.label,
         created_by=user["sub"],
@@ -213,21 +234,276 @@ async def create_registration_key(body: CreateKeyRequest, user: dict = Depends(g
 
 
 @app.post("/api/fleet/registration-keys/{key}/revoke")
-async def revoke_registration_key(key: str, user: dict = Depends(get_current_user)):
+def revoke_registration_key(key: str, user: dict = Depends(require_admin)):
     """Revoke a registration key."""
-    ok = _neo4j.revoke_registration_key(key, revoked_by=user["sub"])
+    ok = _settings_db.revoke_registration_key(key, revoked_by=user["sub"])
     if not ok:
         raise HTTPException(status_code=404, detail="Key not found")
     return {"status": "revoked"}
 
 
 @app.delete("/api/fleet/registration-keys/{key}")
-async def delete_registration_key(key: str, user: dict = Depends(get_current_user)):
+def delete_registration_key(key: str, user: dict = Depends(require_admin)):
     """Permanently delete a registration key."""
-    ok = _neo4j.delete_registration_key(key)
+    ok = _settings_db.delete_registration_key(key)
     if not ok:
         raise HTTPException(status_code=404, detail="Key not found")
     return {"status": "deleted"}
+
+
+# ── User management endpoints (JWT required) ──
+
+
+class CreateUserRequest(BaseModel):
+    username: str
+    password: str
+    role: str = "viewer"
+
+
+class UpdateUserRequest(BaseModel):
+    password: str | None = None
+    role: str | None = None
+
+
+@app.get("/api/settings/users")
+def list_users(user: dict = Depends(get_current_user)):
+    """List all users (no password_hash)."""
+    return _settings_db.list_users()
+
+
+@app.post("/api/settings/users")
+def create_user(body: CreateUserRequest, user: dict = Depends(require_admin)):
+    """Create a new user."""
+    from server.auth import hash_password
+
+    if body.role not in _VALID_ROLES:
+        raise HTTPException(status_code=400, detail=f"Invalid role: {body.role!r}. Must be one of {sorted(_VALID_ROLES)}")
+    if _settings_db.get_user(body.username):
+        raise HTTPException(status_code=409, detail="User already exists")
+    return _settings_db.create_user(body.username, hash_password(body.password), role=body.role)
+
+
+@app.put("/api/settings/users/{username}")
+def update_user(username: str, body: UpdateUserRequest, user: dict = Depends(require_admin)):
+    """Update a user's password and/or role."""
+    from server.auth import hash_password
+
+    pw_hash = hash_password(body.password) if body.password else None
+    ok = _settings_db.update_user(username, password_hash=pw_hash, role=body.role)
+    if not ok:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"status": "updated"}
+
+
+@app.delete("/api/settings/users/{username}")
+def delete_user(username: str, user: dict = Depends(require_admin)):
+    """Delete a user. Prevent self-deletion."""
+    if user["sub"] == username:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    ok = _settings_db.delete_user(username)
+    if not ok:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"status": "deleted"}
+
+
+# ── Server settings endpoints (JWT required) ──
+
+_EDITABLE_SERVER_SETTINGS = {"jwt_ttl_hours", "lateral_movement_time_window", "ntp_server", "ntp_sync_interval"}
+
+
+@app.get("/api/settings/server")
+def get_server_settings(user: dict = Depends(get_current_user)):
+    """Get server config: editable settings + read-only reference values."""
+    all_s = _settings_db.get_all_settings()
+    editable = {k: all_s[k] for k in _EDITABLE_SERVER_SETTINGS if k in all_s}
+    read_only = {
+        "grpc_port": _settings.grpc_port,
+        "http_port": _settings.http_port,
+        "neo4j_uri": _settings.neo4j_uri,
+    }
+    return {"editable": editable, "read_only": read_only}
+
+
+@app.put("/api/settings/server")
+def update_server_settings(body: dict, user: dict = Depends(require_admin)):
+    """Update editable server settings."""
+    updated = []
+    for key, value in body.items():
+        if key in _EDITABLE_SERVER_SETTINGS:
+            _settings_db.set_setting(key, str(value))
+            updated.append(key)
+    return {"updated": updated}
+
+
+# ── Agent default settings endpoints (JWT required) ──
+
+
+@app.get("/api/settings/agent-defaults")
+def get_agent_defaults(user: dict = Depends(get_current_user)):
+    """Get agent default configuration."""
+    return _settings_db.get_agent_defaults()
+
+
+@app.put("/api/settings/agent-defaults")
+def update_agent_defaults(body: dict, user: dict = Depends(require_admin)):
+    """Update agent default configuration."""
+    updated = []
+    skipped = []
+    for key, value in body.items():
+        if key not in _VALID_AGENT_SETTINGS:
+            skipped.append(key)
+            continue
+        _settings_db.set_agent_default(key, str(value))
+        updated.append(key)
+    return {"updated": updated, "skipped": skipped}
+
+
+# ── Tag-based policy endpoints (JWT required) ──
+
+
+class CreateTagRequest(BaseModel):
+    tag_name: str
+    description: str = ""
+    color: str = "#3b82f6"
+    priority: int = 0
+
+
+class UpdateTagRequest(BaseModel):
+    description: str | None = None
+    color: str | None = None
+    priority: int | None = None
+
+
+class TagPolicyRequest(BaseModel):
+    overrides: dict[str, str] = {}
+    rules: list[dict] = []
+
+
+class AssignTagRequest(BaseModel):
+    tag_name: str
+
+
+@app.get("/api/settings/tags")
+def list_tags(user: dict = Depends(get_current_user)):
+    """List all tags with agent counts."""
+    return _settings_db.list_tags()
+
+
+@app.post("/api/settings/tags")
+def create_tag(body: CreateTagRequest, user: dict = Depends(require_admin)):
+    """Create a new tag."""
+    try:
+        return _settings_db.create_tag(
+            body.tag_name, description=body.description, color=body.color, priority=body.priority,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=409, detail="Tag already exists") from e
+
+
+@app.get("/api/settings/tags/{tag_name}")
+def get_tag(tag_name: str, user: dict = Depends(get_current_user)):
+    """Get tag detail."""
+    tag = _settings_db.get_tag(tag_name)
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    return tag
+
+
+@app.put("/api/settings/tags/{tag_name}")
+def update_tag(tag_name: str, body: UpdateTagRequest, user: dict = Depends(require_admin)):
+    """Update tag metadata."""
+    ok = _settings_db.update_tag(tag_name, description=body.description, color=body.color, priority=body.priority)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    return {"status": "updated"}
+
+
+@app.delete("/api/settings/tags/{tag_name}")
+def delete_tag(tag_name: str, user: dict = Depends(require_admin)):
+    """Delete tag (cascades to assignments and policies)."""
+    ok = _settings_db.delete_tag(tag_name)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    return {"status": "deleted"}
+
+
+@app.get("/api/settings/tags/{tag_name}/policy")
+def get_tag_policy(tag_name: str, user: dict = Depends(get_current_user)):
+    """Get policy overrides and rules for a tag."""
+    tag = _settings_db.get_tag(tag_name)
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    return {
+        "overrides": _settings_db.get_tag_policy(tag_name),
+        "rules": _settings_db.get_tag_rules(tag_name),
+    }
+
+
+@app.put("/api/settings/tags/{tag_name}/policy")
+def set_tag_policy(tag_name: str, body: TagPolicyRequest, user: dict = Depends(require_admin)):
+    """Set policy overrides and rules for a tag."""
+    try:
+        _settings_db.set_tag_policy(tag_name, body.overrides)
+        _settings_db.set_tag_rules(tag_name, body.rules)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return {"status": "updated"}
+
+
+@app.get("/api/fleet/agents/{agent_id}/tags")
+def get_agent_tags(agent_id: str, user: dict = Depends(get_current_user)):
+    """Get tags assigned to an agent."""
+    return _settings_db.get_agent_tags(agent_id)
+
+
+@app.post("/api/fleet/agents/{agent_id}/tags")
+def assign_agent_tag(agent_id: str, body: AssignTagRequest, user: dict = Depends(require_admin)):
+    """Assign a tag to an agent."""
+    try:
+        _settings_db.assign_tag(agent_id, body.tag_name, assigned_by=user["sub"])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"status": "assigned"}
+
+
+@app.delete("/api/fleet/agents/{agent_id}/tags/{tag_name}")
+def remove_agent_tag(agent_id: str, tag_name: str, user: dict = Depends(require_admin)):
+    """Remove a tag from an agent."""
+    ok = _settings_db.remove_tag(agent_id, tag_name)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Tag assignment not found")
+    return {"status": "removed"}
+
+
+@app.get("/api/fleet/agents/{agent_id}/resolved-config")
+def get_resolved_config(agent_id: str, user: dict = Depends(get_current_user)):
+    """Preview the resolved config for an agent (global defaults + tag overrides)."""
+    return _settings_db.resolve_agent_config(agent_id)
+
+
+# ── Threat Intel endpoints (JWT required) ──
+
+
+@app.get("/api/threat-intel/rules")
+def get_threat_intel_rules(user: dict = Depends(get_current_user)):
+    """Get compiled Sigma rules from the threat intel blocklist."""
+    from pathlib import Path
+
+    import yaml
+
+    yaml_path = Path(__file__).parent.parent / "rules" / "defaults" / "stage2_blocklist.yml"
+    if not yaml_path.exists():
+        return {"metadata": {}, "rules": []}
+
+    with open(yaml_path) as fh:
+        doc = yaml.safe_load(fh)
+
+    return {
+        "metadata": doc.get("metadata", {}),
+        "rules": doc.get("rules", []),
+    }
 
 
 # ── Health check (no auth) ──

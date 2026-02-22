@@ -183,7 +183,7 @@ class GraphBuilder:
             # Update in-memory PID index for fast dashboard queries
             from agent.graph.pid_index import get_pid_index
 
-            get_pid_index().on_upsert(proc.id, proc.pid, proc.parent_pid or 0)
+            get_pid_index().on_upsert(proc.id, proc.pid, proc.parent_pid or 0, proc.name)
         except Exception:
             logger.debug("Failed to upsert process %s", proc.id, exc_info=True)
 
