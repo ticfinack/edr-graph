@@ -1,0 +1,53 @@
+site_name: eDR-Graph Documentation
+site_description: Advanced EDR with Graph-Based Attack Chain Correlation & AI Analysis
+site_url: https://ticfinack.github.io/edr-graph/
+repo_url: https://github.com/ticfinack/edr-graph
+repo_name: ticfinack/edr-graph
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.instant
+    - navigation.sections
+    - content.code.copy
+    - search.suggest
+
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Quickstart Guide: getting-started/quickstart.md
+    - Configuration: getting-started/configuration.md
+  - Architecture & Internals:
+    - The Telemetry Pipeline: ARCHITECTURE/pipeline.md
+    - Filtering & ROE: ARCHITECTURE/filtering_pipeline.md
+    - Threat Landscape & Response: ARCHITECTURE/threat_landscape_matrix.md
+  - Performance & Limitations:
+    - OS Capabilities & Response Times: performance/os-capabilities.md
+    - System Limitations: performance/limitations.md
+  - Strategic Context:
+    - Industry Comparisons: strategic/comparisons.md

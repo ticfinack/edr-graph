@@ -23,3 +23,5 @@ config.local.yaml
 .claude/
 test-results/
 phase9-traffic-context-prompt.md
+scripts/test_lateral_movement.sh
+site/
