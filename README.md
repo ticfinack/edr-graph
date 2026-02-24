@@ -6,6 +6,8 @@
 
 > **Disclaimer:** This software is provided for **educational and research purposes only**. It is not a certified or commercially supported security product. Use at your own risk. The authors assume no liability for any damage, data loss, or legal consequences resulting from the use or misuse of this software. By using this software, you agree that you are solely responsible for ensuring compliance with applicable laws and regulations in your jurisdiction. Always obtain proper authorization before deploying monitoring or response tools on any system.
 
+> **Notice:** The Chain-Aware Ancestry Enforcement Engine architecture is Patent Pending.
+
 **edr-graph** is an advanced, cross-platform Endpoint Detection and Response (EDR) agent. It bridges the gap between deterministic local enforcement and asynchronous, AI-driven threat hunting. Built around an embedded Kuzu graph database, it maps OS-level telemetry into temporal attack chains and uses a dual-pipeline architecture to contain threats in milliseconds while leveraging Gemma-3 to analyze novel tradecraft.
 
 <!-- Screenshot: Dashboard overview showing status cards, recent findings, and event stream -->
