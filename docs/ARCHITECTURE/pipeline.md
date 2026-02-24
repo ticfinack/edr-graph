@@ -113,6 +113,10 @@ Normalized OCSF events are decomposed into graph entities (nodes) and relationsh
 - **DGA detection** on DNS domains (entropy analysis, consonant-vowel ratios, bigram frequency)
 - **Persistence detection** on file/registry events (LaunchAgent/Daemon, Run keys, cron/systemd)
 
+![Attack Chain — user identity, process ancestry, code signing, Allow/Block per finding](../screenshots/attack-chain.png)
+
+![Attack Chain — network connections, IOC enrichment, response actions](../screenshots/attack-chain-jsdelivr.png)
+
 ---
 
 ## Stage 4: Filtering
@@ -226,6 +230,10 @@ The response engine maps findings to automated or supervised actions based on th
 4. **Policy** — Map severity to actions, check protected process list, request approval
 
 **Protected process list** prevents the agent from terminating system-critical processes (`launchd`, `csrss.exe`, `systemd`, `sshd`, etc.) regardless of severity.
+
+![Findings — severity, MITRE ATT&CK mappings, evidence events](../screenshots/attack-chain-findings.png)
+
+![Audit trail — response actions with timestamps and outcomes](../screenshots/audit.png)
 
 ---
 

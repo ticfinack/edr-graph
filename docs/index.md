@@ -23,6 +23,10 @@ eDR-Graph is a cross-platform EDR agent that bridges deterministic local enforce
 - **Real-Time Threat Intelligence** — 8 open-source IOC feeds (~50K indicators) matched against live telemetry, plus DGA detection, persistence monitoring, and code signing verification. [Learn more](ARCHITECTURE/threat_landscape_matrix.md)
 - **Self-Protection** — SHA-256 tamper detection, protected process list, and watchdog heartbeat monitoring. [Learn more](performance/limitations.md)
 
+![Attack Chain — process ancestry, user identity, findings with Allow/Block](screenshots/attack-chain.png)
+
+![Findings — severity-filtered list with MITRE ATT&CK technique IDs](screenshots/findings.png)
+
 ## Architecture Overview
 
 ```

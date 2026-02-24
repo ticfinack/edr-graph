@@ -44,6 +44,12 @@ eDR-Graph uses a layered configuration system with the following priority chain 
 
 ## Config File Reference
 
+!!! tip "Authoritative source"
+    The config sample below may drift from the actual Pydantic models over time. To generate the current default config with all documented fields, run:
+    ```bash
+    python3 -m agent.main --generate-config > config.yaml
+    ```
+
 The config file uses nested YAML with the following structure. All values shown are defaults.
 
 ```yaml
@@ -60,6 +66,10 @@ collector:
   poll_interval: 1.0          # Seconds between collection cycles
   buffer_size: 500            # Max events per processing batch
   event_retention_hours: 24   # Auto-prune processed events older than this
+
+# Note: analyzer_interval (default 60s) controls how often the LLM
+# analyzer runs. Not currently exposed in config.yaml — set via
+# Pydantic default only. See performance/os-capabilities for latency impact.
 
 analysis:
   llm:
@@ -165,3 +175,11 @@ When `--config` is not specified, the agent searches for config files at:
 | Windows | `C:\ProgramData\edr-graph\config.yaml` |
 
 If no config file is found, all Pydantic defaults are used.
+
+## Dashboard Settings
+
+Many settings can also be changed at runtime via the dashboard Settings tab:
+
+![Settings — response mode, baseline stats, allowlist/blocklist CRUD, network controls](../screenshots/settings.png)
+
+![Allowlist rules with chain_filter scoping](../screenshots/settings-allowlist.png)

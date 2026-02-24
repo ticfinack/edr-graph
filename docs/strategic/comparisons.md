@@ -40,7 +40,7 @@ Enterprise XDR platforms combine kernel-level sensors, cloud-scale data lakes, a
 | **Tamper protection** | Kernel-level (survives root compromise) | User-space only (root attacker can kill agent) |
 | **Scale** | 100K+ endpoints with central management | Single endpoint (fleet mode for finding aggregation) |
 | **Compliance certifications** | SOC 2, FedRAMP, HIPAA, PCI-DSS | None |
-| **Cost** | $15-50+/endpoint/month | Free (open-source) + ~$5-20/month LLM API |
+| **Cost** | $15-50+/endpoint/month | Free (open-source) + ~$5-20/endpoint/month LLM API |
 
 **Where Enterprise XDR wins:**
 

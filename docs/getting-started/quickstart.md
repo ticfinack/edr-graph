@@ -102,6 +102,8 @@ Additional startup tasks (if configured):
 3. **Health endpoint** — `curl http://localhost:9100/healthz` should return `ok`.
 4. **Metrics** — `curl http://localhost:9100/metrics` returns Prometheus metrics.
 
+![Live event stream with type-colored badges and source filtering](../screenshots/events.png)
+
 ## Recommended Progression
 
 | Phase | Mode | Duration | Purpose |

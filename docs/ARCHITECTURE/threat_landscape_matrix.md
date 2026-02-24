@@ -84,6 +84,8 @@ Understanding which shells exist on which platforms is critical for threat model
 
 All shell binaries are monitored by eDR-Graph's process activity collection. Chain-aware rules can target specific shell invocations in context (e.g., `** > apache2 > bash` triggers differently than `sshd > bash`).
 
+![IOC/IOA — DNS queries with DGA scoring, external IPs with geolocation, finding correlation](../screenshots/ioc-ioa.png)
+
 ---
 
 ## Detection Layer Mapping
