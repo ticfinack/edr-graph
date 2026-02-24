@@ -38,6 +38,7 @@ dev = [
 server = [
     "neo4j>=5.15.0",
 ]
+docs = ["mkdocs-material>=9.5.0"]
 windows = []
 linux = []
 
