@@ -7,6 +7,7 @@ namedtuples with both raw columns and deserialized OCSF/entities.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sqlite3
@@ -153,10 +154,8 @@ class LedgerReader:
                 "SELECT COUNT(*), MIN(ts), MAX(ts) FROM forensic_ledger"
             ).fetchone()
             db_size = 0
-            try:
+            with contextlib.suppress(OSError):
                 db_size = os.path.getsize(str(self._db_path))
-            except OSError:
-                pass
 
             return {
                 "row_count": row[0] or 0,

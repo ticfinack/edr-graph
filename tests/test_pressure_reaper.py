@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 
 class TestMeasureDbDirSizeMb:
@@ -61,7 +59,7 @@ class TestPruneEdgesOnly:
         mock_result.get_next.return_value = [0]
         mock_conn.execute.return_value = mock_result
 
-        result = prune_edges_only(mock_conn, ttl_hours=24)
+        prune_edges_only(mock_conn, ttl_hours=24)
 
         # Should have called execute for COUNT queries only (one per edge type)
         # No orphan cleanup queries should appear
@@ -70,7 +68,7 @@ class TestPruneEdgesOnly:
             assert "DETACH DELETE" not in query
 
     def test_prune_edges_only_returns_count(self):
-        from agent.graph.reaper import ALL_EDGE_TYPES, prune_edges_only
+        from agent.graph.reaper import prune_edges_only
 
         mock_conn = MagicMock()
 
@@ -265,7 +263,7 @@ class TestPruneOldEdgesIntegration:
 
         mock_conn.execute.side_effect = mock_execute
 
-        result = prune_old_edges(mock_conn, ttl_hours=24)
+        prune_old_edges(mock_conn, ttl_hours=24)
 
         # Should have called queries including node scan (orphan cleanup)
         all_queries = [c[0][0] for c in mock_conn.execute.call_args_list]

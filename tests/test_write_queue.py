@@ -1,9 +1,9 @@
 """Tests for the MPSC graph write queue."""
 from __future__ import annotations
 
+import contextlib
 import queue
 import threading
-import time
 from unittest.mock import patch
 
 import pytest
@@ -105,10 +105,8 @@ class TestSubmitSync:
                 timeout=0.1,
             )
         # Drain the job we just put in
-        try:
+        with contextlib.suppress(queue.Empty):
             q.get_nowait()
-        except queue.Empty:
-            pass
 
 
 class TestBackpressure:
@@ -124,7 +122,6 @@ class TestBackpressure:
                 break
 
         # Fill the queue to capacity using a small mock maxsize
-        original_maxsize = q.maxsize
         try:
             # We can't easily resize the real queue, so fill it to the brim
             # and test that submit doesn't raise. Use a separate small queue.

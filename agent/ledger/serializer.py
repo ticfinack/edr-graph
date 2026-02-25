@@ -6,6 +6,7 @@ for OCSF events, and structured serialization for graph entities.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from datetime import datetime
@@ -83,10 +84,8 @@ def _rehydrate_edge_timestamps(edges: list[dict]) -> list[dict]:
     for edge in edges:
         ts = edge.get("timestamp")
         if isinstance(ts, str):
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 edge["timestamp"] = datetime.fromisoformat(ts)
-            except (ValueError, TypeError):
-                pass
     return edges
 
 

@@ -5,10 +5,7 @@ from __future__ import annotations
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from agent.flight_recorder import FlightRecorder
-
 
 # ── FlightRecorder unit tests ──
 
@@ -132,7 +129,7 @@ class TestFlightRecorder:
         recorder = FlightRecorder(tmp_path)
         try:
             # Fill the queue (maxsize=10000) — this should not block
-            for i in range(10_001):
+            for _i in range(10_001):
                 recorder.record({"timestamp": time.time(), "event_type": "flood", "remote_ip": "10.0.0.1"})
             # If we get here, it didn't block — pass
         finally:

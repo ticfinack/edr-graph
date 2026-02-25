@@ -74,15 +74,15 @@ def _get_conn():
     if warm is not None:
         try:
             return warm.get_connection()
-        except RuntimeError:
-            raise HTTPException(503, "Warm graph not ready")
+        except RuntimeError as exc:
+            raise HTTPException(503, "Warm graph not ready") from exc
 
     from agent.graph.connection import get_connection
 
     try:
         return get_connection()
-    except RuntimeError:
-        raise HTTPException(503, "Graph database not initialized")
+    except RuntimeError as exc:
+        raise HTTPException(503, "Graph database not initialized") from exc
 
 
 def _get_settings():

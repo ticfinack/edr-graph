@@ -15,8 +15,8 @@ from openai import OpenAI
 
 from agent import metrics
 from agent.config import Settings
-from agent.graph.connection import get_connection
 from agent.enrichment.ip_reputation import classify_ip
+from agent.graph.connection import get_connection
 from agent.graph.queries import build_attack_chain, get_process_chain, graph_chain_to_chainsteps, serialize_attack_chain
 from agent.intel.prompt_builder import build_intel_prompt
 from agent.schema.graph_types import ChainStep, IpNode, SecurityFinding

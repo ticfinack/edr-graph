@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 def _make_cgroup_fs(tmp_path, proc_self_cgroup=None, service_memory_max=None,
                     root_memory_max=None, v1_limit=None):

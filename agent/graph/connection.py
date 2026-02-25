@@ -41,10 +41,7 @@ class LockedConnection:
 
     def execute(self, query: str, parameters: dict | None = None) -> kuzu.QueryResult:
         with self._lock:
-            if parameters is not None:
-                result = self._conn.execute(query, parameters)
-            else:
-                result = self._conn.execute(query)
+            result = self._conn.execute(query, parameters) if parameters is not None else self._conn.execute(query)
             # Materialize all rows under the lock to prevent interleaving
             return _MaterializedResult(result)
 

@@ -143,7 +143,7 @@ class FlightRecorder:
             params.append(since)
 
         # Squelch OS background noise from ALL surveillance queries
-        like_parts = [f"process_name NOT LIKE ?" for _ in _SQUELCH_PROCESS_NAMES]
+        like_parts = ["process_name NOT LIKE ?" for _ in _SQUELCH_PROCESS_NAMES]
         exact_placeholders = ", ".join("?" for _ in _SQUELCH_EXACT_NAMES)
         squelch = (
             "(process_name IS NULL OR ("

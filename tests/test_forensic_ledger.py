@@ -37,7 +37,6 @@ from agent.schema.ocsf_types import (
     UserInfo,
 )
 
-
 # ── OCSF Event Factories ──
 
 

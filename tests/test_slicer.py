@@ -16,7 +16,6 @@ from agent.ledger.writer import LedgerWriter
 from agent.processor.entity_extractor import ExtractedEntities
 from agent.schema.graph_types import (
     DomainNode,
-    FileNode,
     IpNode,
     ProcessNode,
     UserNode,
@@ -28,9 +27,7 @@ from agent.schema.ocsf_types import (
     NetworkEndpoint,
     ProcessActivity,
     ProcessInfo,
-    UserInfo,
 )
-
 
 # ── Helpers ──
 
@@ -190,7 +187,7 @@ class TestTransientGraph:
         reader = _populate_ledger(tmp_path, events)
 
         now = time.time()
-        with TransientGraph(reader, now - 60, now + 60) as conn:
+        with TransientGraph(reader, now - 60, now + 60):
             # Find the tmpdir from the graph's internal state
             pass
 

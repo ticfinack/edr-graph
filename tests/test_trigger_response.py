@@ -93,9 +93,9 @@ class TestTriggerResponseGraphChain:
         mock_kuzu_db = MagicMock()
         event = _make_process_event(pid=100, name="bash")
 
-        with patch("agent.main.get_connection", return_value=MagicMock()):
-            with patch("agent.graph.queries.get_process_chain", return_value=graph_chain_result):
-                _trigger_response(mock_engine, finding, [(42, event)], kuzu_db=mock_kuzu_db)
+        with patch("agent.main.get_connection", return_value=MagicMock()), \
+             patch("agent.graph.queries.get_process_chain", return_value=graph_chain_result):
+            _trigger_response(mock_engine, finding, [(42, event)], kuzu_db=mock_kuzu_db)
 
         # Verify engine.respond was called with graph-derived chain
         call_kwargs = mock_engine.respond.call_args

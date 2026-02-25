@@ -11,6 +11,7 @@ then atomically swapped in.  The old graph is cleaned up after swap.
 
 from __future__ import annotations
 
+import contextlib
 import glob
 import logging
 import os
@@ -136,10 +137,8 @@ class WarmGraph:
                 del self._current_db
                 self._current_db = None
             if self._current_tmpdir is not None:
-                try:
+                with contextlib.suppress(Exception):
                     shutil.rmtree(self._current_tmpdir, ignore_errors=True)
-                except Exception:
-                    pass
                 self._current_tmpdir = None
 
     @staticmethod

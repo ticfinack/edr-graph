@@ -22,6 +22,8 @@ from agent.analyzer.preflight import is_novel
 from agent.collectors import collect_all, get_collectors
 from agent.collectors.base import RawEvent
 from agent.config import Settings, compute_graph_memory_mb, load_config_file, load_settings
+from agent.graph import connection as kuzu_conn
+from agent.graph.connection import get_connection
 from agent.health import start_health_server
 from agent.logging_setup import setup_logging
 from agent.normalizer import normalize
@@ -38,8 +40,6 @@ from agent.response.baseline import (
     ResponseBlocklist,
 )
 from agent.response.engine import ResponseAuditLog, ResponseEngine
-from agent.graph import connection as kuzu_conn
-from agent.graph.connection import get_connection
 from agent.schema.kuzu_schema import init_graph_schema
 from agent.watchdog import write_heartbeat
 
@@ -168,12 +168,11 @@ def processor_thread(
     fast_blocklist=None,
 ) -> None:
     """Process queued events: normalize, extract entities, write to graph."""
+    from agent.graph.write_queue import WriteJob, WriteJobType
+    from agent.graph.write_queue import submit as submit_write
     from agent.processor.allowlist_filter import filter_entities, has_entities
     from agent.processor.baseline_gate import gate_baselined_edges
     from agent.processor.self_filter import filter_agent_noise
-
-    from agent.graph.write_queue import WriteJob, WriteJobType
-    from agent.graph.write_queue import submit as submit_write
 
     _agent_pid = os.getpid()
 
@@ -341,10 +340,7 @@ def analyzer_thread(
 ) -> None:
     """Periodically analyze novel events with the LLM."""
     analyzer = LlmAnalyzer(settings, kuzu_db, queue, ioc_db=ioc_db, ledger_reader=ledger_reader)
-    if settings.kuzu_persistent_enabled:
-        conn = get_connection()
-    else:
-        conn = None
+    conn = get_connection() if settings.kuzu_persistent_enabled else None
     # Start near the current queue head so we don't re-analyze the entire
     # history on every restart.  Only look back ~1000 events.
     last_analyzed_id = max(0, queue.max_processed_id() - 1000)
@@ -500,10 +496,7 @@ def reaper_thread(settings: Settings, kuzu_db: kuzu.Database) -> None:
             metrics.graph_rss_mb.set(rss_mb)
 
             # --- Compute pressure tier from RSS ---
-            if memory_limit_mb > 0:
-                ratio = rss_mb / memory_limit_mb
-            else:
-                ratio = 0.0
+            ratio = rss_mb / memory_limit_mb if memory_limit_mb > 0 else 0.0
 
             if ratio > 0.90:
                 pressure = "critical"
@@ -521,10 +514,10 @@ def reaper_thread(settings: Settings, kuzu_db: kuzu.Database) -> None:
             # Log pressure transitions
             if pressure != last_pressure:
                 logger.warning(
-                    "Memory pressure: %s -> %s (RSS=%.0fMB / %.0fMB = %.0f%%, TTL=%.2fh, drop=%d%%)",
+                    "Memory pressure: %s -> %s (RSS=%.0fMB / %.0fMB = %.0f%%, TTL=%.2fh)",
                     last_pressure, pressure,
                     rss_mb, memory_limit_mb, ratio * 100,
-                    effective_ttl, drop_pct,
+                    effective_ttl,
                 )
                 last_pressure = pressure
 
@@ -589,11 +582,10 @@ def graph_writer_thread(settings: Settings, kuzu_db: kuzu.Database) -> None:
     """
     import queue as _queue_mod
 
-    from agent.graph.reaper import prune_edges_only, prune_high_degree_nodes, prune_old_edges
-    from agent.graph.write_queue import WriteJobType, get_queue
-
     # Create the ONE write connection + GraphBuilder for this thread
     from agent.graph.connection import get_writer_connection
+    from agent.graph.reaper import prune_edges_only, prune_high_degree_nodes, prune_old_edges
+    from agent.graph.write_queue import WriteJobType, get_queue
 
     conn = get_writer_connection()
     builder = GraphBuilder(kuzu_db, conn=conn)

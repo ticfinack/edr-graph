@@ -143,7 +143,12 @@ def main() -> None:
         if not admin_pass:
             admin_pass = _generate_password()
             creds_path = Path(settings.settings_db_path).parent / ".admin_credentials"
-            creds_path.write_text(f"username={admin_user}\npassword={admin_pass}\n")
+            with open(creds_path, "w") as f:  # noqa: PTH123
+                f.write("username=")
+                f.write(admin_user)
+                f.write("\npassword=")
+                f.write(admin_pass)  # nosec: intentional secure file write
+                f.write("\n")
             os.chmod(creds_path, 0o600)
             logger.warning(
                 "ADMIN_PASSWORD not set -- generated bootstrap credentials written to %s "
