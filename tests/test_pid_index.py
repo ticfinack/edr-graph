@@ -237,24 +237,27 @@ class TestSelfHealing:
 
 class TestReaperSync:
     def test_cleanup_orphaned_nodes_syncs_pid_index(self):
-        """_cleanup_orphaned_nodes calls remove_nodes on the PID index
+        """_cleanup_orphaned_nodes_batched calls remove_nodes on the PID index
         when Process nodes are deleted."""
         mock_conn = MagicMock()
 
-        # Simulate: one Process node "host:100:1000" with zero edges
         def mock_execute(query, params=None):
             result = MagicMock()
-            if "RETURN n.id" in query and "Process" in query:
-                result.has_next.side_effect = [True, False]
-                result.get_next.return_value = ["host:100:1000"]
+            if "RETURN n.id SKIP" in query and "Process" in query:
+                if params and params.get("skip", 0) == 0:
+                    # First batch: one Process node
+                    result.has_next.side_effect = [True, False]
+                    result.get_next.return_value = ["host:100:1000"]
+                else:
+                    result.has_next.return_value = False
+            elif "RETURN n.id SKIP" in query:
+                # Other node types: no nodes
+                result.has_next.return_value = False
             elif "RETURN COUNT(e)" in query:
-                # No edges
+                # No edges (orphan)
                 result.has_next.return_value = True
                 result.get_next.return_value = [0]
             elif "DETACH DELETE" in query:
-                result.has_next.return_value = False
-            elif "RETURN n.id" in query:
-                # Other node types: no nodes
                 result.has_next.return_value = False
             else:
                 result.has_next.return_value = False
@@ -266,9 +269,9 @@ class TestReaperSync:
         mock_idx.remove_nodes.return_value = 1
 
         with patch("agent.graph.reaper.get_pid_index", return_value=mock_idx):
-            from agent.graph.reaper import _cleanup_orphaned_nodes
+            from agent.graph.reaper import _cleanup_orphaned_nodes_batched
 
-            deleted = _cleanup_orphaned_nodes(mock_conn)
+            deleted = _cleanup_orphaned_nodes_batched(mock_conn)
 
         # At least 1 Process node deleted
         assert deleted >= 1

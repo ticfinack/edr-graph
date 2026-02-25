@@ -162,6 +162,56 @@ class PidIndex:
         with self._lock:
             return self._pid_to_name.get(pid, "")
 
+    def update_from_entities(self, entities) -> None:
+        """Update index directly from extracted entities (decoupled from Kuzu)."""
+        for proc in entities.processes:
+            self.on_upsert(proc.id, proc.pid, proc.parent_pid or 0, proc.name)
+
+    def build_from_ledger(self, ledger_reader) -> None:
+        """Build index from ledger ProcessActivity entities instead of Kuzu scan."""
+        import time as _time
+
+        pid_to_ids: dict[int, list[str]] = {}
+        ppid_to_children: dict[int, set[int]] = {}
+        pid_to_ppid: dict[int, int] = {}
+        pid_to_name: dict[int, str] = {}
+        count = 0
+
+        try:
+            now = _time.time()
+            start = now - (24 * 3600)  # Last 24h
+            for entities in ledger_reader.iter_entities(start, now):
+                for proc in entities.processes:
+                    if proc.pid is None:
+                        continue
+                    pid_to_ids.setdefault(proc.pid, []).append(proc.id)
+                    ppid = proc.parent_pid or 0
+                    if ppid > 0:
+                        ppid_to_children.setdefault(ppid, set()).add(proc.pid)
+                        pid_to_ppid[proc.pid] = ppid
+                    if proc.name:
+                        pid_to_name[proc.pid] = proc.name
+                    count += 1
+
+            # Deduplicate node IDs per PID
+            for pid in pid_to_ids:
+                pid_to_ids[pid] = list(dict.fromkeys(pid_to_ids[pid]))
+
+            with self._lock:
+                self._pid_to_ids = pid_to_ids
+                self._ppid_to_children = ppid_to_children
+                self._pid_to_ppid = pid_to_ppid
+                self._pid_to_name = pid_to_name
+                self._built = True
+
+            logger.info(
+                "PID index built from ledger: %d process entries, %d parent groups",
+                count,
+                len(ppid_to_children),
+            )
+        except Exception:
+            logger.warning("Failed to build PID index from ledger", exc_info=True)
+
     @property
     def is_built(self) -> bool:
         return self._built

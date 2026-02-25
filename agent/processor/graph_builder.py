@@ -7,6 +7,7 @@ from datetime import datetime
 
 import kuzu
 
+from agent.graph.connection import get_connection
 from agent.processor.entity_extractor import ExtractedEntities
 from agent.schema.graph_types import (
     DomainNode,
@@ -28,15 +29,25 @@ def _naive(dt: datetime) -> datetime:
 class GraphBuilder:
     """Writes extracted entities into the Kuzu graph.
 
-    Each instance holds its own kuzu.Connection (thread-local usage).
+    Uses a thread-local connection from agent.graph.connection.
     """
 
-    def __init__(self, db: kuzu.Database) -> None:
+    def __init__(self, db: kuzu.Database, conn: kuzu.Connection | None = None) -> None:
         self._db = db
-        self._conn = kuzu.Connection(db)
+        if conn is not None:
+            self._conn = conn
+        else:
+            try:
+                self._conn = get_connection()
+            except RuntimeError:
+                # Test environment — shared connection not initialized
+                self._conn = kuzu.Connection(db)
 
     def write_entities(self, entities: ExtractedEntities) -> None:
         """Upsert all nodes and create all edges from extracted entities."""
+        self._write_entities_unlocked(entities)
+
+    def _write_entities_unlocked(self, entities: ExtractedEntities) -> None:
         for user in entities.users:
             self._upsert_user(user)
         for proc in entities.processes:
@@ -69,6 +80,9 @@ class GraphBuilder:
         Nodes are deduplicated by ID (keeping the latest timestamps).
         Edges are written as-is since each represents a distinct event.
         """
+        self._write_batch_unlocked(batch)
+
+    def _write_batch_unlocked(self, batch: list[ExtractedEntities]) -> None:
         users: dict[str, UserNode] = {}
         processes: dict[str, ProcessNode] = {}
         ips: dict[str, IpNode] = {}
@@ -503,7 +517,7 @@ def backfill_parent_pids(db: kuzu.Database) -> int:
 
     import psutil
 
-    conn = kuzu.Connection(db)
+    conn = get_connection()
     hostname = socket.gethostname()
     updated = 0
 

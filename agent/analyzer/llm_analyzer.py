@@ -15,10 +15,10 @@ from openai import OpenAI
 
 from agent import metrics
 from agent.config import Settings
+from agent.graph.connection import get_connection
 from agent.enrichment.ip_reputation import classify_ip
-from agent.graph.queries import build_attack_chain, serialize_attack_chain
+from agent.graph.queries import build_attack_chain, get_process_chain, graph_chain_to_chainsteps, serialize_attack_chain
 from agent.intel.prompt_builder import build_intel_prompt
-from agent.processor.graph_builder import GraphBuilder
 from agent.schema.graph_types import ChainStep, IpNode, SecurityFinding
 from agent.schema.ocsf_types import (
     Authentication,
@@ -40,11 +40,13 @@ logger = logging.getLogger(__name__)
 class LlmAnalyzer:
     """Performs batch security analysis using Gemma3-27B via DeepInfra."""
 
-    def __init__(self, settings: Settings, kuzu_db: kuzu.Database, queue=None, ioc_db=None) -> None:
+    def __init__(self, settings: Settings, kuzu_db: kuzu.Database, queue=None, ioc_db=None, ledger_reader=None) -> None:
         self._settings = settings
         self._kuzu_db = kuzu_db
         self._queue = queue
         self._ioc_db = ioc_db
+        self._ledger_reader = ledger_reader
+        self._graph_conn: kuzu.Connection | None = None
 
         # Build active tools list
         if settings.tool_use_enabled:
@@ -64,6 +66,16 @@ class LlmAnalyzer:
                 api_key=settings.deepinfra_api_key,
                 base_url=settings.deepinfra_base_url,
             )
+
+    def _get_graph_conn(self) -> kuzu.Connection:
+        """Return a thread-local Kuzu connection, falling back to a local one."""
+        try:
+            return get_connection()
+        except RuntimeError:
+            # Test environment — shared connection not initialized
+            if self._graph_conn is None:
+                self._graph_conn = kuzu.Connection(self._kuzu_db)
+            return self._graph_conn
 
     def analyze_batch(self, events: list[tuple[int, OcsfEvent]]) -> list[SecurityFinding]:
         """Analyze a batch of novel OCSF events. Returns security findings."""
@@ -237,10 +249,9 @@ class LlmAnalyzer:
                         pass
 
         if public_ips:
-            try:
-                graph_builder = GraphBuilder(self._kuzu_db)
-            except Exception:
-                graph_builder = None
+            from agent.graph.write_queue import WriteJob, WriteJobType
+            from agent.graph.write_queue import submit as submit_write
+
             lines = ["## Pre-enrichment: IP intelligence\n"]
             for ip in sorted(public_ips):
                 lines.append(f"### {ip}")
@@ -264,7 +275,7 @@ class LlmAnalyzer:
                         f"(provider: {reputation.provider_name or 'unknown'})"
                     )
 
-                    # Persist enrichment to graph
+                    # Persist enrichment to graph via write queue
                     ip_node = IpNode(
                         id=ip,
                         address=ip,
@@ -282,15 +293,9 @@ class LlmAnalyzer:
                         provider_name=reputation.provider_name,
                         reverse_dns=reputation.reverse_dns or "",
                     )
-                    if graph_builder:
-                        try:
-                            graph_builder.upsert_ip_enrichment(ip_node)
-                        except Exception:
-                            logger.debug("Failed to persist IP enrichment for %s", ip, exc_info=True)
+                    submit_write(WriteJob(job_type=WriteJobType.IP_ENRICHMENT, payload=ip_node))
 
                 lines.append("")
-            if graph_builder:
-                graph_builder.close()
             sections.append("\n".join(lines))
 
         # --- 2. Process intelligence ---
@@ -590,7 +595,11 @@ class LlmAnalyzer:
 
     def _build_attack_chain_context(self, events: list[tuple[int, OcsfEvent]]) -> str:
         """Build attack chain context for processes in this batch."""
-        conn = kuzu.Connection(self._kuzu_db)
+        # When persistent Kuzu is disabled, use a transient graph from the ledger
+        if not self._settings.kuzu_persistent_enabled and self._ledger_reader is not None:
+            return self._build_attack_chain_context_transient(events)
+
+        conn = self._get_graph_conn()
         seen_pids: set[int] = set()
         sections: list[str] = []
 
@@ -610,9 +619,45 @@ class LlmAnalyzer:
 
         return "\n\n".join(sections)
 
+    def _build_attack_chain_context_transient(self, events: list[tuple[int, OcsfEvent]]) -> str:
+        """Build attack chain context using a transient graph from the ledger."""
+        from agent.ledger.slicer import TransientGraph
+
+        # Use a ±5 min window around the events
+        event_times = [e.time.timestamp() for _, e in events if hasattr(e, 'time') and e.time]
+        if not event_times:
+            return ""
+        center = sum(event_times) / len(event_times)
+        start = center - 300
+        end = center + 300
+
+        try:
+            with TransientGraph(self._ledger_reader, start, end) as conn:
+                seen_pids: set[int] = set()
+                sections: list[str] = []
+                for _, event in events:
+                    pid = None
+                    if isinstance(event, ProcessActivity) or (
+                        isinstance(event, (NetworkActivity, DnsActivity, FileActivity, RegistryActivity)) and event.process
+                    ):
+                        pid = event.process.pid
+                    if pid and pid not in seen_pids:
+                        seen_pids.add(pid)
+                        chain = build_attack_chain(conn, pid)
+                        serialized = serialize_attack_chain(chain)
+                        if serialized.strip():
+                            sections.append(f"### PID {pid}\n{serialized}")
+                return "\n\n".join(sections)
+        except Exception:
+            logger.debug("Transient graph attack chain build failed", exc_info=True)
+            return ""
+
     def _get_graph_context(self, events: list[tuple[int, OcsfEvent]]) -> str:
         """Query Kuzu for bounded graph context. LIMIT 20 per entity."""
-        conn = kuzu.Connection(self._kuzu_db)
+        # When persistent Kuzu is disabled, use transient graph
+        if not self._settings.kuzu_persistent_enabled and self._ledger_reader is not None:
+            return self._get_graph_context_transient(events)
+        conn = self._get_graph_conn()
         lines = []
         seen_users = set()
         seen_procs = set()
@@ -662,6 +707,72 @@ class LlmAnalyzer:
                         pass
 
         return "\n".join(lines)
+
+    def _get_graph_context_transient(self, events: list[tuple[int, OcsfEvent]]) -> str:
+        """Query transient graph for bounded context when persistent Kuzu is disabled."""
+        from agent.ledger.slicer import TransientGraph
+
+        event_times = [e.time.timestamp() for _, e in events if hasattr(e, 'time') and e.time]
+        if not event_times:
+            return ""
+        center = sum(event_times) / len(event_times)
+        start = center - 300
+        end = center + 300
+
+        try:
+            with TransientGraph(self._ledger_reader, start, end) as conn:
+                lines = []
+                seen_users = set()
+                seen_procs = set()
+                limit = self._settings.graph_context_limit
+
+                for _, event in events:
+                    if isinstance(event, ProcessActivity) and event.actor:
+                        user = event.actor.user.name
+                        if user and user not in seen_users:
+                            seen_users.add(user)
+                            try:
+                                result = conn.execute(
+                                    "MATCH (u:User {id: $user})-[r:SPAWNED]->(p:Process) "
+                                    "RETURN p.name, r.timestamp "
+                                    "ORDER BY r.timestamp DESC LIMIT $limit",
+                                    {"user": user, "limit": limit},
+                                )
+                                entries = []
+                                while result.has_next():
+                                    row = result.get_next()
+                                    entries.append(f"  {row[0]} at {row[1]}")
+                                if entries:
+                                    lines.append(f"User '{user}' recent processes:")
+                                    lines.extend(entries)
+                            except Exception:
+                                pass
+
+                    if isinstance(event, NetworkActivity) and event.process:
+                        proc_name = event.process.name
+                        if proc_name and proc_name not in seen_procs:
+                            seen_procs.add(proc_name)
+                            try:
+                                result = conn.execute(
+                                    "MATCH (p:Process {name: $proc})-[c:CONNECTED_TO]->(ip:IP) "
+                                    "RETURN ip.address, c.dst_port, c.timestamp "
+                                    "ORDER BY c.timestamp DESC LIMIT $limit",
+                                    {"proc": proc_name, "limit": limit},
+                                )
+                                entries = []
+                                while result.has_next():
+                                    row = result.get_next()
+                                    entries.append(f"  {row[0]}:{row[1]} at {row[2]}")
+                                if entries:
+                                    lines.append(f"Process '{proc_name}' recent connections:")
+                                    lines.extend(entries)
+                            except Exception:
+                                pass
+
+                return "\n".join(lines)
+        except Exception:
+            logger.debug("Transient graph context query failed", exc_info=True)
+            return ""
 
     def _parse_findings(self, content: str, events: list[tuple[int, OcsfEvent]]) -> list[SecurityFinding]:
         """Parse LLM response into SecurityFinding objects."""
@@ -740,6 +851,9 @@ class LlmAnalyzer:
                         if step.pid is not None:
                             finding_pids.add(step.pid)
 
+                # Enrich chain with deep Kuzu ancestry
+                chain = self._enrich_chain_with_ancestry(chain)
+
                 # Build affected_pids: prefer LLM-provided, then chain-extracted.
                 # Filter to real ints >= 0 (PID 0 is valid on macOS).
                 affected_pids = [
@@ -751,10 +865,22 @@ class LlmAnalyzer:
                 # Extract IOCs from LLM output
                 raw_iocs = raw.get("iocs") or {}
                 iocs = {}
-                for key in ("domains", "ips", "files", "urls"):
+                for key in ("domains", "ips", "files", "urls", "ports"):
                     vals = raw_iocs.get(key)
                     if vals and isinstance(vals, list):
-                        iocs[key] = [str(v) for v in vals if v]
+                        if key == "ports":
+                            iocs[key] = [int(v) for v in vals if v]
+                        else:
+                            iocs[key] = [str(v) for v in vals if v]
+
+                # Fallback: extract ports from events if LLM didn't include them
+                if "ports" not in iocs:
+                    event_ports: set[int] = set()
+                    for _, evt in events:
+                        if hasattr(evt, "dst_endpoint") and evt.dst_endpoint and evt.dst_endpoint.port:
+                            event_ports.add(evt.dst_endpoint.port)
+                    if event_ports:
+                        iocs["ports"] = sorted(event_ports)
 
                 finding = SecurityFinding(
                     id=str(uuid.uuid4()),
@@ -838,6 +964,16 @@ class LlmAnalyzer:
                         timestamp=event.time,
                     )
                 )
+                # Anchor the victim chain at the listener daemon.
+                # Authentication events carry no PID — append name-only.
+                chain.append(
+                    ChainStep(
+                        entity_type="process",
+                        entity_id="sshd",
+                        entity_name="sshd",
+                        timestamp=event.time,
+                    )
+                )
                 if event.src_endpoint and event.src_endpoint.ip:
                     chain.append(
                         ChainStep(
@@ -859,6 +995,35 @@ class LlmAnalyzer:
                         )
                     )
         return chain
+
+    def _enrich_chain_with_ancestry(self, chain: list[ChainStep]) -> list[ChainStep]:
+        """Replace shallow process steps with full Kuzu parent ancestry + User."""
+        # Find the last process step with a valid PID (deepest process)
+        target_pid = None
+        for step in reversed(chain):
+            if step.entity_type == "process" and step.pid and step.pid > 0:
+                target_pid = step.pid
+                break
+
+        if not target_pid:
+            return chain
+
+        try:
+            conn = self._get_graph_conn()
+            graph_chain = get_process_chain(conn, target_pid)
+            if not graph_chain:
+                return chain
+        except Exception:
+            return chain
+
+        enriched = graph_chain_to_chainsteps(graph_chain)
+
+        # Append non-process, non-user steps (IPs, domains, files) from original chain
+        for step in chain:
+            if step.entity_type not in ("process", "user"):
+                enriched.append(step)
+
+        return enriched
 
     @staticmethod
     def _collect_batch_pids(events: list[tuple[int, OcsfEvent]]) -> list[int]:

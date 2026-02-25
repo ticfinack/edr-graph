@@ -121,8 +121,55 @@ graph_reaper_pruned = Counter(
     "Graph edges and nodes pruned by TTL reaper",
 )
 
+graph_db_size_mb = Gauge(
+    "edr_graph_db_size_mb",
+    "Graph database directory size in MB",
+)
+
+graph_reaper_emergency_prunes = Counter(
+    "edr_graph_reaper_emergency_prunes_total",
+    "Number of emergency pressure-driven edge-only prunes",
+)
+
+graph_rss_mb = Gauge(
+    "edr_graph_rss_mb",
+    "Process RSS in MB",
+)
+
+graph_pressure_level = Gauge(
+    "edr_graph_pressure_level",
+    "Memory pressure level (0=normal, 1=warning, 2=high, 3=critical)",
+)
+
+events_pressure_dropped = Counter(
+    "edr_events_pressure_dropped_total",
+    "Write batches dropped due to memory pressure throttling",
+)
+
 fleet_forwarding_latency = Histogram(
     "edr_fleet_forwarding_latency_seconds",
     "Time to forward a batch to fleet server",
     buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+)
+
+# Forensic ledger metrics
+ledger_events_written = Counter(
+    "edr_ledger_events_written_total",
+    "Total events written to the forensic ledger",
+)
+
+ledger_db_size_mb = Gauge(
+    "edr_ledger_db_size_mb",
+    "Forensic ledger SQLite database size in MB",
+)
+
+transient_graph_build_latency = Histogram(
+    "edr_transient_graph_build_latency_seconds",
+    "Time to build a transient Kuzu graph from ledger",
+    buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+)
+
+warm_graph_rebuild_count = Counter(
+    "edr_warm_graph_rebuild_total",
+    "Number of warm graph rebuilds completed",
 )

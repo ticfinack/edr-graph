@@ -9,6 +9,7 @@ Priority chain (highest to lowest):
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,87 @@ from pydantic import BaseModel, Field
 
 # Load .env from project root (won't override existing env vars)
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+_logger = logging.getLogger(__name__)
+
+
+def _read_cgroup_memory_limit() -> int | None:
+    """Read the cgroup memory limit (bytes) if running inside a cgroup.
+
+    Tries cgroup v2 first (process-specific path from /proc/self/cgroup,
+    then root), falls back to v1. Returns None on macOS, when no cgroup
+    limit is found, or on any read error.
+    """
+    # cgroup v2: read the process's own cgroup path first
+    try:
+        cgroup_line = Path("/proc/self/cgroup").read_text().strip()
+        # Format: "0::/system.slice/edr-agent.service"
+        for line in cgroup_line.splitlines():
+            parts = line.split(":", 2)
+            if len(parts) == 3 and parts[0] == "0":
+                cgroup_path = parts[2].lstrip("/")
+                if cgroup_path:
+                    mem_file = Path("/sys/fs/cgroup") / cgroup_path / "memory.max"
+                    try:
+                        content = mem_file.read_text().strip()
+                        if content != "max":
+                            return int(content)
+                    except (OSError, ValueError):
+                        pass
+                break
+    except (OSError, ValueError):
+        pass
+
+    # cgroup v2 fallback: root cgroup
+    try:
+        content = Path("/sys/fs/cgroup/memory.max").read_text().strip()
+        if content != "max":
+            return int(content)
+    except (OSError, ValueError):
+        pass
+
+    # cgroup v1 fallback
+    try:
+        value = int(Path("/sys/fs/cgroup/memory/memory.limit_in_bytes").read_text().strip())
+        # Values >= 2^62 mean "no limit" in cgroup v1
+        if value < 2**62:
+            return value
+    except (OSError, ValueError):
+        pass
+
+    return None
+
+
+def compute_graph_memory_mb() -> int:
+    """Compute the optimal KùzuDB buffer pool size (MB) for this host.
+
+    Uses 6.25% of the effective memory ceiling (min of physical RAM and
+    cgroup limit), floored at 128 MB and capped at 256 MB.  The
+    conservative percentage leaves headroom for Kuzu's query processing
+    overhead (2-3x buffer pool), Python, SQLite, IOC feeds, and PID index.
+
+    On mp1001 (4 GB cgroup): 4096 * 0.0625 = 256 MB.  With Kuzu's ~3x
+    multiplier that's ~768 MB for Kuzu total (down from ~1.2 GB at 409 MB).
+    """
+    import psutil
+
+    physical_bytes = psutil.virtual_memory().total
+    cgroup_bytes = _read_cgroup_memory_limit()
+
+    if cgroup_bytes is not None:
+        true_ceiling = min(physical_bytes, cgroup_bytes)
+        ceiling_source = f"cgroup limit {cgroup_bytes // (1024 * 1024)} MB"
+    else:
+        true_ceiling = physical_bytes
+        ceiling_source = f"physical RAM {physical_bytes // (1024 * 1024)} MB"
+
+    computed = max(128, min(int(true_ceiling * 0.0625 / (1024**2)), 256))
+    _logger.info(
+        "Memory ceiling: %s → Computed graph buffer pool: %d MB",
+        ceiling_source,
+        computed,
+    )
+    return computed
 
 
 class Settings(BaseModel):
@@ -133,6 +215,12 @@ class Settings(BaseModel):
     fleet_retry_max: int = 5  # Max retries per queued item
     fleet_registration_key: str = Field(default_factory=lambda: os.environ.get("EDR_REGISTRATION_KEY", ""))
     fleet_public_ip_interval: float = 300.0  # Seconds between public IP lookups
+    flight_recorder_ttl_hours: int = 6  # Rolling DVR retention (hours)
+
+    # Forensic ledger settings (Tier 1 capture)
+    forensic_ledger_enabled: bool = True       # Enable Tier 1 forensic ledger
+    forensic_ledger_ttl_hours: int = 24        # Ledger retention (hours)
+    kuzu_persistent_enabled: bool = True       # Keep persistent Kuzu graph (False = ledger-only)
 
     # NTP clock synchronization (for fleet time correlation)
     ntp_server: str = "pool.ntp.org"
@@ -202,10 +290,14 @@ _YAML_KEY_MAP: dict[tuple[str, ...], str] = {
     ("fleet", "retry_max"): "fleet_retry_max",
     ("fleet", "registration_key"): "fleet_registration_key",
     ("fleet", "public_ip_interval"): "fleet_public_ip_interval",
+    ("fleet", "flight_recorder_ttl_hours"): "flight_recorder_ttl_hours",
     ("fleet", "ntp_server"): "ntp_server",
     ("fleet", "ntp_sync_interval"): "ntp_sync_interval",
     ("graph", "max_memory_mb"): "graph_max_memory_mb",
     ("graph", "ttl_hours"): "graph_ttl_hours",
+    ("ledger", "enabled"): "forensic_ledger_enabled",
+    ("ledger", "ttl_hours"): "forensic_ledger_ttl_hours",
+    ("graph", "persistent"): "kuzu_persistent_enabled",
     ("analysis", "ioc_feeds_enabled"): "ioc_feeds_enabled",
     ("analysis", "ioc_feeds_refresh_hours"): "ioc_feeds_refresh_hours",
 }
@@ -364,6 +456,7 @@ fleet:
   queue_max_size: 10000       # Max items buffered locally
   retry_max: 5                # Max retries per queued item
   public_ip_interval: 300     # Seconds between public IP lookups
+  flight_recorder_ttl_hours: 6  # Rolling DVR buffer (hours)
   ntp_server: "pool.ntp.org"  # NTP server for clock sync (fleet correlation)
   ntp_sync_interval: 300      # Seconds between NTP offset measurements
 """

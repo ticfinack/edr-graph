@@ -61,3 +61,4 @@ fleet:
   forward_interval: 10        # Seconds between forwarding cycles
   forward_events: false       # Forward raw OCSF events (high volume)
   heartbeat_interval: 30      # Seconds between heartbeats
+  flight_recorder_ttl_hours: 6  # Rolling DVR buffer (hours)
