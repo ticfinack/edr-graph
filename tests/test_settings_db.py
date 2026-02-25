@@ -177,6 +177,49 @@ class TestRegistrationKeys:
         keys = db.list_registration_keys()
         assert keys[0]["status"] == "exhausted"
 
+    def test_check_key_status_valid(self, db):
+        db.create_registration_key(key="k1", label="L", created_by="admin")
+        valid, reason = db.check_key_status("k1")
+        assert valid is True
+        assert reason == "ok"
+
+    def test_check_key_status_does_not_increment(self, db):
+        db.create_registration_key(key="k1", label="L", created_by="admin")
+        db.check_key_status("k1")
+        db.check_key_status("k1")
+        db.check_key_status("k1")
+        keys = db.list_registration_keys()
+        assert keys[0]["use_count"] == 0
+
+    def test_check_key_status_invalid(self, db):
+        valid, reason = db.check_key_status("nonexistent")
+        assert valid is False
+        assert reason == "invalid_key"
+
+    def test_check_key_status_revoked(self, db):
+        db.create_registration_key(key="k1", label="L", created_by="admin")
+        db.revoke_registration_key("k1", revoked_by="admin")
+        valid, reason = db.check_key_status("k1")
+        assert valid is False
+        assert reason == "key_revoked"
+
+    def test_check_key_status_expired(self, db):
+        db.create_registration_key(
+            key="k1", label="L", created_by="admin", expires_at=1
+        )
+        valid, reason = db.check_key_status("k1")
+        assert valid is False
+        assert reason == "key_expired"
+
+    def test_check_key_status_exhausted_key_still_valid(self, db):
+        """check_key_status allows exhausted keys (re-registration doesn't need a slot)."""
+        db.create_registration_key(
+            key="k1", label="L", created_by="admin", max_uses=1
+        )
+        db.validate_registration_key("k1")  # exhausts the key
+        valid, reason = db.check_key_status("k1")
+        assert valid is True  # re-registration should still work
+
 
 class TestSettings:
     def test_get_set(self, db):
