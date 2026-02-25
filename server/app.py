@@ -55,6 +55,15 @@ def _generate_password(length: int = 24) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
+def _write_credentials_file(creds_path: Path, user: str, password: str) -> None:
+    """Write bootstrap credentials to a secure file (owner-only permissions)."""
+    fd = os.open(str(creds_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, f"username={user}\npassword={password}\n".encode())
+    finally:
+        os.close(fd)
+
+
 def _migrate_neo4j_to_sqlite(neo4j_client: Neo4jClient, settings_db: SettingsDB) -> None:
     """One-time migration: copy users and registration keys from Neo4j to SQLite."""
     if not settings_db.is_empty():
@@ -143,13 +152,7 @@ def main() -> None:
         if not admin_pass:
             admin_pass = _generate_password()
             creds_path = Path(settings.settings_db_path).parent / ".admin_credentials"
-            with open(creds_path, "w") as f:  # noqa: PTH123
-                f.write("username=")
-                f.write(admin_user)
-                f.write("\npassword=")
-                f.write(admin_pass)  # nosec: intentional secure file write
-                f.write("\n")
-            os.chmod(creds_path, 0o600)
+            _write_credentials_file(creds_path, admin_user, admin_pass)
             logger.warning(
                 "ADMIN_PASSWORD not set -- generated bootstrap credentials written to %s "
                 "(set ADMIN_PASSWORD env var to suppress this)",
