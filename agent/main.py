@@ -1101,6 +1101,12 @@ def main() -> None:
 
     # Ledger reader (shared across dashboard, analyzer, federated queries)
     _ledger_reader = None
+    if settings.forensic_ledger_enabled:
+        try:
+            from agent.ledger.reader import LedgerReader
+            _ledger_reader = LedgerReader(settings.data_dir)
+        except Exception:
+            logger.warning("Failed to create ledger reader", exc_info=True)
 
     kuzu_db = None
     if settings.kuzu_persistent_enabled:
@@ -1129,11 +1135,8 @@ def main() -> None:
         from agent.graph.pid_index import get_pid_index
 
         # Build PID index from ledger instead of Kuzu
-        if settings.forensic_ledger_enabled:
+        if _ledger_reader is not None:
             try:
-                from agent.ledger.reader import LedgerReader
-
-                _ledger_reader = LedgerReader(settings.data_dir)
                 get_pid_index().build_from_ledger(_ledger_reader)
             except Exception:
                 logger.warning("Failed to build PID index from ledger", exc_info=True)

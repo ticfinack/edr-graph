@@ -190,6 +190,8 @@ class LedgerWriter:
                 batch,
             )
             conn.commit()
+            from agent.metrics import ledger_events_written
+            ledger_events_written.inc(len(batch))
         except Exception:
             logger.debug("Forensic ledger batch insert failed", exc_info=True)
 
@@ -204,3 +206,9 @@ class LedgerWriter:
                 logger.debug("Forensic ledger pruned %d stale rows", cur.rowcount)
         except Exception:
             logger.debug("Forensic ledger prune failed", exc_info=True)
+        # Update DB size metric
+        try:
+            from agent.metrics import ledger_db_size_mb
+            ledger_db_size_mb.set(self._db_path.stat().st_size / (1024 * 1024))
+        except Exception:
+            pass
