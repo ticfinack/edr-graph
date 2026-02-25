@@ -7,6 +7,7 @@ and drains the queue when connectivity is restored.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import platform
@@ -383,10 +384,8 @@ class FleetForwarder:
         # Collect IOC feed stats for fleet server
         ioc_stats_json = ""
         if getattr(self, "_ioc_db", None) is not None:
-            try:
+            with contextlib.suppress(Exception):
                 ioc_stats_json = json.dumps(self._ioc_db.stats())
-            except Exception:
-                pass
 
         local_ips = get_local_ips()
         request = fleet_pb2.HeartbeatRequest(

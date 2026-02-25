@@ -36,7 +36,8 @@ class TestIocSuppressions:
             {"indicator_type": "domain", "pattern": "  CDN.EXAMPLE.COM  "},
         ])
         # Should be stored as lowercase trimmed
-        assert "cdn.example.com" in ioc_db._suppressed_domains
+        suppressed = ioc_db._suppressed_domains
+        assert "cdn.example.com" in suppressed
 
     def test_set_suppressions_skips_empty_pattern(self, ioc_db):
         ioc_db.set_suppressions([
@@ -111,7 +112,7 @@ class TestIocSuppressions:
         assert suppressed_count == 3
         assert "1.2.3.4" not in ips
         assert "5.6.7.8" in ips
-        assert "evil.com" in domains
+        assert domains["evil.com"]
         assert "safe.com" not in domains
         assert "deadbeef" not in hashes
 

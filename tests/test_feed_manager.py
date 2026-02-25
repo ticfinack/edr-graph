@@ -6,8 +6,6 @@ import gzip
 import json
 from unittest.mock import patch
 
-import pytest
-
 from server.intel.feed_manager import FeedManager
 
 
@@ -60,7 +58,7 @@ class TestDownloadAndCache:
         assert "1.2.3.4" in bundle["ips"]
         assert bundle["ips"]["1.2.3.4"]["feed_name"] == "feodo"
         assert bundle["ips"]["1.2.3.4"]["confidence"] == "high"
-        assert "evil.com" in bundle["domains"]
+        assert bundle["domains"]["evil.com"]
         assert "a" * 64 in bundle["hashes"]
         assert bundle["feed_stats"]["feodo_tracker"] == 1
 

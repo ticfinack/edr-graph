@@ -36,8 +36,8 @@ from server.auth import hash_password, set_jwt_secret
 from server.config import ServerSettings
 from server.dashboard import app as dashboard_app
 from server.dashboard import set_feed_manager, set_neo4j, set_settings, set_settings_db
-from server.intel.feed_manager import FeedManager
 from server.grpc_service import FleetServicer
+from server.intel.feed_manager import FeedManager
 from server.neo4j_client import Neo4jClient
 from server.ntp_sync import NtpMonitor
 from server.settings_db import SettingsDB

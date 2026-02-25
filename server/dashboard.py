@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import secrets
 import time
-from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response
@@ -691,7 +690,7 @@ def add_custom_rule(body: GlobalRuleRequest, user: dict = Depends(require_admin)
             created_by=user.get("sub", ""),
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"id": rule_id, "status": "created"}
 
 
@@ -727,9 +726,9 @@ def add_suppression(body: SuppressionRequest, user: dict = Depends(require_admin
             created_by=user.get("sub", ""),
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception:
-        raise HTTPException(status_code=409, detail="Duplicate suppression")
+        raise HTTPException(status_code=409, detail="Duplicate suppression") from None
     return row
 
 
@@ -754,7 +753,7 @@ def toggle_sigma_rule(rule_id: str, user: dict = Depends(require_admin)):
     try:
         now_disabled = _settings_db.toggle_sigma_rule(rule_id, disabled_by=user.get("sub", ""))
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"rule_id": rule_id, "disabled": now_disabled}
 
 
