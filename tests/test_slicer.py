@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import tempfile
 import time
@@ -119,7 +120,7 @@ class TestTransientGraph:
         reader = _populate_ledger(tmp_path, events)
 
         now = time.time()
-        with TransientGraph(reader, now - 60, now + 60) as conn:
+        with TransientGraph(reader, now - 60, now + 60, buffer_pool_mb=128) as conn:
             result = conn.execute("MATCH (p:Process) RETURN p.pid, p.name")
             rows = []
             while result.has_next():
@@ -138,7 +139,7 @@ class TestTransientGraph:
         reader = _populate_ledger(tmp_path, events)
 
         now = time.time()
-        with TransientGraph(reader, now - 60, now + 60) as conn:
+        with TransientGraph(reader, now - 60, now + 60, buffer_pool_mb=128) as conn:
             # Check processes
             result = conn.execute("MATCH (p:Process) RETURN p.pid ORDER BY p.pid")
             pids = []
@@ -168,7 +169,7 @@ class TestTransientGraph:
         reader = _populate_ledger(tmp_path, events)
 
         now = time.time()
-        with TransientGraph(reader, now - 60, now + 60) as conn:
+        with TransientGraph(reader, now - 60, now + 60, buffer_pool_mb=128) as conn:
             result = conn.execute(
                 "MATCH (p:Process)-[c:CONNECTED_TO]->(i:IP) "
                 "RETURN p.pid, i.address, c.dst_port"
@@ -183,11 +184,12 @@ class TestTransientGraph:
 
     def test_tmpdir_cleaned_up(self, tmp_path):
         """Tmpdir is removed after context exit."""
+        gc.collect()  # Free Kuzu buffer pools from prior tests
         events = [_make_process_event()]
         reader = _populate_ledger(tmp_path, events)
 
         now = time.time()
-        with TransientGraph(reader, now - 60, now + 60):
+        with TransientGraph(reader, now - 60, now + 60, buffer_pool_mb=128):
             # Find the tmpdir from the graph's internal state
             pass
 
@@ -202,7 +204,7 @@ class TestTransientGraph:
         reader = LedgerReader(tmp_path)
 
         now = time.time()
-        with TransientGraph(reader, now - 60, now + 60) as conn:
+        with TransientGraph(reader, now - 60, now + 60, buffer_pool_mb=128) as conn:
             result = conn.execute("MATCH (p:Process) RETURN count(p)")
             assert result.get_next()[0] == 0
 
@@ -213,7 +215,7 @@ class TestTransientGraph:
 
         # Query a future window that excludes the written events
         future = time.time() + 3600
-        with TransientGraph(reader, future, future + 60) as conn:
+        with TransientGraph(reader, future, future + 60, buffer_pool_mb=128) as conn:
             result = conn.execute("MATCH (p:Process) RETURN count(p)")
             assert result.get_next()[0] == 0
 
@@ -223,7 +225,7 @@ class TestTransientGraph:
         reader = _populate_ledger(tmp_path, [(ocsf, entities)])
 
         now = time.time()
-        with TransientGraph(reader, now - 60, now + 60) as conn:
+        with TransientGraph(reader, now - 60, now + 60, buffer_pool_mb=128) as conn:
             result = conn.execute(
                 "MATCH (p:Process) WHERE p.pid = 42 RETURN p.name, p.hostname, p.parent_pid"
             )
@@ -242,9 +244,10 @@ class TestWarmGraph:
         events = [_make_process_event(pid=500, name="agent")]
         reader = _populate_ledger(tmp_path, events)
 
-        warm = WarmGraph(reader, window_hours=1.0, rebuild_interval_s=600.0)
+        warm = WarmGraph(reader, window_hours=1.0, rebuild_interval_s=600.0, buffer_pool_mb=128)
         try:
             warm.start()
+            warm.wait_ready(timeout=30.0)
             conn = warm.get_connection()
             result = conn.execute("MATCH (p:Process) RETURN p.pid, p.name")
             rows = []
@@ -271,8 +274,9 @@ class TestWarmGraph:
         events = [_make_process_event()]
         reader = _populate_ledger(tmp_path, events)
 
-        warm = WarmGraph(reader, window_hours=1.0, rebuild_interval_s=600.0)
+        warm = WarmGraph(reader, window_hours=1.0, rebuild_interval_s=600.0, buffer_pool_mb=128)
         warm.start()
+        warm.wait_ready(timeout=30.0)
         warm.stop()
 
         # After stop, get_connection should fail
@@ -281,6 +285,7 @@ class TestWarmGraph:
 
     def test_rebuild_updates_connection(self, tmp_path):
         """After a rebuild, the connection reflects the latest data."""
+        gc.collect()  # Free Kuzu buffer pools from prior tests
         # Start with one event
         writer = LedgerWriter(tmp_path)
         ocsf1, ent1 = _make_process_event(pid=100, name="first")
@@ -289,9 +294,10 @@ class TestWarmGraph:
         writer.stop()
 
         reader = LedgerReader(tmp_path)
-        warm = WarmGraph(reader, window_hours=1.0, rebuild_interval_s=600.0)
+        warm = WarmGraph(reader, window_hours=1.0, rebuild_interval_s=600.0, buffer_pool_mb=128)
         try:
             warm.start()
+            warm.wait_ready(timeout=30.0)
 
             # First build shows 1 process
             conn = warm.get_connection()
@@ -322,7 +328,7 @@ class TestWarmGraph:
         events = [_make_process_event(pid=i, name=f"proc-{i}") for i in range(10)]
         reader = _populate_ledger(tmp_path, events)
 
-        warm = WarmGraph(reader, window_hours=1.0, rebuild_interval_s=600.0)
+        warm = WarmGraph(reader, window_hours=1.0, rebuild_interval_s=600.0, buffer_pool_mb=128)
         errors = []
 
         def reader_thread():
@@ -336,6 +342,7 @@ class TestWarmGraph:
 
         try:
             warm.start()
+            warm.wait_ready(timeout=30.0)
 
             threads = [threading.Thread(target=reader_thread) for _ in range(5)]
             for t in threads:

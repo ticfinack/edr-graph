@@ -57,8 +57,8 @@ _PRUNE_INTERVAL = 60.0
 class LedgerWriter:
     """Non-blocking, append-only forensic ledger."""
 
-    def __init__(self, data_dir: Path, ttl_hours: int = 24, queue_size: int = 50_000) -> None:
-        self._data_dir = Path(data_dir)
+    def __init__(self, data_dir: Path | str, ttl_hours: int = 24, queue_size: int = 50_000) -> None:
+        self._data_dir = Path(data_dir).resolve()
         self._db_path = self._data_dir / "forensic_ledger.db"
         self._ttl_seconds = ttl_hours * 3600
         self._data_dir.mkdir(parents=True, exist_ok=True)

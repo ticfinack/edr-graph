@@ -1377,9 +1377,13 @@ def main() -> None:
 
             if _ledger_reader is None:
                 _ledger_reader = LedgerReader(settings.data_dir)
-            _warm_graph = WarmGraph(_ledger_reader, window_hours=2.0)
+            _warm_graph = WarmGraph(
+                _ledger_reader,
+                window_hours=2.0,
+                first_window_hours=0.25,
+            )
             _warm_graph.start()
-            logger.info("Warm graph started (window=2h, rebuild=300s)")
+            logger.info("Warm graph started (first=15min, full=2h, rebuild=300s)")
         except Exception:
             logger.warning("Warm graph initialization failed", exc_info=True)
 
