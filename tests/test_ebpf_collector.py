@@ -14,11 +14,13 @@ from unittest.mock import patch
 from agent.collectors.base import RawEvent
 from agent.collectors.ebpf_collector import (
     EbpfCollector,
+    _WATCHED_PREFIXES,
+    _parse_dns_qname,
     _resolve_username,
 )
 from agent.collectors.psutil_collector import PsutilCollector
 from agent.normalizer import normalize
-from agent.schema.ocsf_types import NetworkActivity
+from agent.schema.ocsf_types import DnsActivity, FileActivity, NetworkActivity
 
 
 class TestEbpfCollector:
@@ -221,6 +223,204 @@ class TestEbpfCollector:
             u32 = struct.unpack("I", packed)[0]
             result = socket.inet_ntop(socket.AF_INET, struct.pack("I", u32))
             assert result == expected_ip, f"Expected {expected_ip}, got {result}"
+
+
+class TestEbpfFileEvents:
+    """Tests for eBPF file activity event handling."""
+
+    def test_file_create_normalizer_dispatch(self):
+        """source='ebpf_file_create' routes through normalize_file correctly."""
+        raw = RawEvent(
+            timestamp=datetime.now(),
+            source="ebpf_file_create",
+            message="file_create: vim -> /etc/passwd",
+            fields={
+                "pid": "1234",
+                "name": "vim",
+                "file_path": "/etc/passwd",
+                "event_type": "file_create",
+                "uid": "0",
+                "username": "root",
+            },
+            hostname="testhost",
+        )
+        result = normalize(raw)
+        assert isinstance(result, FileActivity)
+        assert result.activity_id == 1  # create
+        assert result.file_path == "/etc/passwd"
+        assert result.process.name == "vim"
+        assert result.metadata.log_source == "ebpf_file_create"
+
+    def test_file_modify_normalizer_dispatch(self):
+        """source='ebpf_file_modify' routes through normalize_file correctly."""
+        raw = RawEvent(
+            timestamp=datetime.now(),
+            source="ebpf_file_modify",
+            message="file_modify: bash -> /tmp/test.sh",
+            fields={
+                "pid": "5678",
+                "name": "bash",
+                "file_path": "/tmp/test.sh",
+                "event_type": "file_modify",
+                "uid": "1000",
+                "username": "alice",
+            },
+            hostname="testhost",
+        )
+        result = normalize(raw)
+        assert isinstance(result, FileActivity)
+        assert result.activity_id == 3  # modify
+        assert result.file_path == "/tmp/test.sh"
+
+    def test_file_delete_normalizer_dispatch(self):
+        """source='ebpf_file_delete' routes through normalize_file correctly."""
+        raw = RawEvent(
+            timestamp=datetime.now(),
+            source="ebpf_file_delete",
+            message="file_delete: rm -> /var/log/auth.log",
+            fields={
+                "pid": "9999",
+                "name": "rm",
+                "file_path": "/var/log/auth.log",
+                "event_type": "file_delete",
+                "uid": "0",
+                "username": "root",
+            },
+            hostname="testhost",
+        )
+        result = normalize(raw)
+        assert isinstance(result, FileActivity)
+        assert result.activity_id == 4  # delete
+        assert result.file_path == "/var/log/auth.log"
+
+    def test_file_event_buffer_drain(self):
+        """collect() drains file events from the buffer."""
+        collector = EbpfCollector()
+        ev = RawEvent(
+            timestamp=datetime.now(),
+            source="ebpf_file_create",
+            message="file_create: vim -> /etc/crontab",
+            fields={
+                "pid": "300",
+                "name": "vim",
+                "file_path": "/etc/crontab",
+                "event_type": "file_create",
+            },
+            hostname="testhost",
+        )
+        collector._buffer.append(ev)
+        events = collector.collect()
+        assert len(events) == 1
+        assert events[0].source == "ebpf_file_create"
+
+    def test_watched_prefixes_exist(self):
+        """Ensure watched prefixes include critical security directories."""
+        assert "/etc/" in _WATCHED_PREFIXES
+        assert "/tmp/" in _WATCHED_PREFIXES
+        assert "/var/log/" in _WATCHED_PREFIXES
+        assert "/root/" in _WATCHED_PREFIXES
+        assert "/home/" in _WATCHED_PREFIXES
+
+
+class TestEbpfDnsEvents:
+    """Tests for eBPF DNS activity event handling."""
+
+    def test_dns_normalizer_dispatch(self):
+        """source='ebpf_dns' routes through normalize_dns correctly."""
+        raw = RawEvent(
+            timestamp=datetime.now(),
+            source="ebpf_dns",
+            message="dns: curl -> evil.com",
+            fields={
+                "pid": "4321",
+                "name": "curl",
+                "query_domain": "evil.com",
+                "resolved_ips": "",
+                "dns_server": "8.8.8.8",
+                "uid": "1000",
+                "username": "alice",
+            },
+            hostname="testhost",
+        )
+        result = normalize(raw)
+        assert isinstance(result, DnsActivity)
+        assert result.query_domain == "evil.com"
+        assert result.process.name == "curl"
+        assert result.process.pid == 4321
+        assert result.metadata.log_source == "ebpf_dns"
+
+    def test_dns_event_buffer_drain(self):
+        """collect() drains DNS events from the buffer."""
+        collector = EbpfCollector()
+        ev = RawEvent(
+            timestamp=datetime.now(),
+            source="ebpf_dns",
+            message="dns: wget -> malware.example.com",
+            fields={
+                "pid": "400",
+                "name": "wget",
+                "query_domain": "malware.example.com",
+                "resolved_ips": "",
+            },
+            hostname="testhost",
+        )
+        collector._buffer.append(ev)
+        events = collector.collect()
+        assert len(events) == 1
+        assert events[0].source == "ebpf_dns"
+
+    def test_dns_empty_resolved_ips(self):
+        """eBPF DNS events have empty resolved_ips (only captures queries, not responses)."""
+        raw = RawEvent(
+            timestamp=datetime.now(),
+            source="ebpf_dns",
+            message="dns: python -> api.example.com",
+            fields={
+                "pid": "500",
+                "name": "python",
+                "query_domain": "api.example.com",
+                "resolved_ips": "",
+            },
+            hostname="testhost",
+        )
+        result = normalize(raw)
+        assert isinstance(result, DnsActivity)
+        assert result.resolved_ips == []
+
+
+class TestDnsQnameParsing:
+    """Tests for _parse_dns_qname wire-format parser."""
+
+    def _make_dns_payload(self, name: str) -> bytes:
+        """Build a minimal DNS query payload with the given domain name."""
+        # 12-byte DNS header (all zeros is fine for our parser)
+        header = b"\x00" * 12
+        # Encode labels: "example.com" -> \x07example\x03com\x00
+        labels = b""
+        for label in name.split("."):
+            labels += bytes([len(label)]) + label.encode("ascii")
+        labels += b"\x00"
+        return header + labels
+
+    def test_simple_domain(self):
+        payload = self._make_dns_payload("example.com")
+        assert _parse_dns_qname(payload) == "example.com"
+
+    def test_subdomain(self):
+        payload = self._make_dns_payload("www.evil.example.org")
+        assert _parse_dns_qname(payload) == "www.evil.example.org"
+
+    def test_single_label(self):
+        payload = self._make_dns_payload("localhost")
+        assert _parse_dns_qname(payload) == "localhost"
+
+    def test_too_short(self):
+        assert _parse_dns_qname(b"\x00" * 5) == ""
+
+    def test_empty_after_header(self):
+        # Header followed by zero-length label (root)
+        payload = b"\x00" * 12 + b"\x00"
+        assert _parse_dns_qname(payload) == ""
 
 
 class TestSnapshotMode:

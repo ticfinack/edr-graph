@@ -426,3 +426,199 @@ class TestRoleValidation:
         )
         assert res.status_code == 400
         assert "Invalid role" in res.json()["detail"]
+
+
+class TestCustomRulesAPI:
+    def test_list_empty(self, client, auth_headers):
+        res = client.get("/api/threat-intel/custom-rules", headers=auth_headers)
+        assert res.status_code == 200
+        assert res.json() == []
+
+    def test_add_and_list(self, client, auth_headers):
+        res = client.post(
+            "/api/threat-intel/custom-rules",
+            json={
+                "action": "block", "stage": "fast_path",
+                "rule_type": "dst_ip", "pattern": "10.0.0.1",
+                "description": "test custom rule",
+            },
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        assert "id" in res.json()
+
+        rules = client.get("/api/threat-intel/custom-rules", headers=auth_headers).json()
+        assert len(rules) == 1
+        assert rules[0]["pattern"] == "10.0.0.1"
+
+    def test_delete(self, client, auth_headers):
+        res = client.post(
+            "/api/threat-intel/custom-rules",
+            json={
+                "action": "allow", "stage": "pre_graph",
+                "rule_type": "process_name", "pattern": "safe.exe",
+            },
+            headers=auth_headers,
+        )
+        rule_id = res.json()["id"]
+        del_res = client.delete(
+            f"/api/threat-intel/custom-rules/{rule_id}", headers=auth_headers,
+        )
+        assert del_res.status_code == 200
+
+    def test_delete_nonexistent(self, client, auth_headers):
+        res = client.delete(
+            "/api/threat-intel/custom-rules/99999", headers=auth_headers,
+        )
+        assert res.status_code == 404
+
+    def test_invalid_action_rejected(self, client, auth_headers):
+        res = client.post(
+            "/api/threat-intel/custom-rules",
+            json={
+                "action": "nuke", "stage": "fast_path",
+                "rule_type": "dst_ip", "pattern": "x",
+            },
+            headers=auth_headers,
+        )
+        assert res.status_code == 400
+
+    def test_viewer_cannot_add(self, client, viewer_headers):
+        res = client.post(
+            "/api/threat-intel/custom-rules",
+            json={
+                "action": "block", "stage": "fast_path",
+                "rule_type": "dst_ip", "pattern": "1.2.3.4",
+            },
+            headers=viewer_headers,
+        )
+        assert res.status_code == 403
+
+    def test_viewer_can_list(self, client, viewer_headers):
+        res = client.get("/api/threat-intel/custom-rules", headers=viewer_headers)
+        assert res.status_code == 200
+
+
+class TestSuppressionsAPI:
+    def test_list_empty(self, client, auth_headers):
+        res = client.get("/api/threat-intel/suppressions", headers=auth_headers)
+        assert res.status_code == 200
+        assert res.json() == []
+
+    def test_add_and_list(self, client, auth_headers):
+        res = client.post(
+            "/api/threat-intel/suppressions",
+            json={
+                "indicator_type": "ip", "pattern": "8.8.8.8",
+                "reason": "Google DNS",
+            },
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        assert res.json()["pattern"] == "8.8.8.8"
+
+        items = client.get("/api/threat-intel/suppressions", headers=auth_headers).json()
+        assert len(items) == 1
+
+    def test_delete(self, client, auth_headers):
+        res = client.post(
+            "/api/threat-intel/suppressions",
+            json={"indicator_type": "domain", "pattern": "cdn.example.com"},
+            headers=auth_headers,
+        )
+        sup_id = res.json()["id"]
+        del_res = client.delete(
+            f"/api/threat-intel/suppressions/{sup_id}", headers=auth_headers,
+        )
+        assert del_res.status_code == 200
+
+    def test_delete_nonexistent(self, client, auth_headers):
+        res = client.delete(
+            "/api/threat-intel/suppressions/99999", headers=auth_headers,
+        )
+        assert res.status_code == 404
+
+    def test_invalid_type_rejected(self, client, auth_headers):
+        res = client.post(
+            "/api/threat-intel/suppressions",
+            json={"indicator_type": "url", "pattern": "http://x.com"},
+            headers=auth_headers,
+        )
+        assert res.status_code == 400
+
+    def test_duplicate_rejected(self, client, auth_headers):
+        client.post(
+            "/api/threat-intel/suppressions",
+            json={"indicator_type": "ip", "pattern": "1.1.1.1"},
+            headers=auth_headers,
+        )
+        res = client.post(
+            "/api/threat-intel/suppressions",
+            json={"indicator_type": "ip", "pattern": "1.1.1.1"},
+            headers=auth_headers,
+        )
+        assert res.status_code == 409
+
+    def test_viewer_cannot_add(self, client, viewer_headers):
+        res = client.post(
+            "/api/threat-intel/suppressions",
+            json={"indicator_type": "ip", "pattern": "1.2.3.4"},
+            headers=viewer_headers,
+        )
+        assert res.status_code == 403
+
+    def test_viewer_can_list(self, client, viewer_headers):
+        res = client.get("/api/threat-intel/suppressions", headers=viewer_headers)
+        assert res.status_code == 200
+
+
+class TestSigmaToggleAPI:
+    def test_list_disabled_empty(self, client, auth_headers):
+        res = client.get("/api/threat-intel/sigma/disabled", headers=auth_headers)
+        assert res.status_code == 200
+        assert res.json() == []
+
+    def test_toggle_disable(self, client, auth_headers):
+        res = client.post(
+            "/api/threat-intel/sigma/process_name:bash/toggle",
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["rule_id"] == "process_name:bash"
+        assert data["disabled"] is True
+
+    def test_toggle_re_enable(self, client, auth_headers):
+        # Disable
+        client.post(
+            "/api/threat-intel/sigma/process_name:bash/toggle",
+            headers=auth_headers,
+        )
+        # Re-enable
+        res = client.post(
+            "/api/threat-intel/sigma/process_name:bash/toggle",
+            headers=auth_headers,
+        )
+        assert res.status_code == 200
+        assert res.json()["disabled"] is False
+
+    def test_disabled_appears_in_list(self, client, auth_headers):
+        client.post(
+            "/api/threat-intel/sigma/file_path:/tmp/*/toggle",
+            headers=auth_headers,
+        )
+        res = client.get("/api/threat-intel/sigma/disabled", headers=auth_headers)
+        items = res.json()
+        assert len(items) == 1
+        assert items[0]["rule_id"] == "file_path:/tmp/*"
+
+    def test_viewer_cannot_toggle(self, client, viewer_headers):
+        res = client.post(
+            "/api/threat-intel/sigma/process_name:bash/toggle",
+            headers=viewer_headers,
+        )
+        assert res.status_code == 403
+
+    def test_viewer_can_list_disabled(self, client, viewer_headers):
+        res = client.get("/api/threat-intel/sigma/disabled", headers=viewer_headers)
+        assert res.status_code == 200

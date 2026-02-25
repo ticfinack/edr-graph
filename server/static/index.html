@@ -152,6 +152,25 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
 .key-status.expired{background:rgba(107,114,128,0.15);color:var(--dim)}
 .key-status.exhausted{background:rgba(234,179,8,0.15);color:var(--medium)}
 
+/* Toggle switch */
+.toggle{position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.toggle .slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--border);border-radius:20px;transition:.2s}
+.toggle .slider:before{position:absolute;content:"";height:14px;width:14px;left:3px;bottom:3px;background:var(--dim);border-radius:50%;transition:.2s}
+.toggle input:checked+.slider{background:rgba(34,197,94,0.3)}
+.toggle input:checked+.slider:before{transform:translateX(16px);background:var(--low)}
+
+/* Section headers */
+.section-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.section-header h3{font-size:14px;font-weight:600;letter-spacing:-0.2px;margin:0}
+.section-header .section-sub{color:var(--dim);font-size:11px;margin-top:2px}
+.btn-sm{padding:5px 12px;font-size:12px;border-radius:5px}
+.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--dim);padding:5px 12px;font-size:12px;border-radius:5px}
+.btn-ghost:hover{border-color:var(--accent);color:var(--text)}
+
+/* Disabled row */
+tr.rule-disabled td{opacity:0.4}
+
 /* IP badges */
 .ip-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-family:"SF Mono",Menlo,Monaco,monospace;margin:2px}
 .ip-badge.local{background:rgba(59,130,246,0.12);color:var(--accent)}
@@ -354,32 +373,107 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
 
     <!-- Threat Intel -->
     <div class="tab-panel" id="panel-threatintel">
-      <div class="cards" id="threatintelCards"></div>
-      <div class="filter-bar">
-        <input id="threatintelSearch" placeholder="Search rules..." oninput="renderThreatIntel()">
-        <select id="threatintelType" onchange="renderThreatIntel()">
-          <option value="">All Types</option>
-          <option value="process_name">process_name</option>
-          <option value="file_path">file_path</option>
-        </select>
-        <select id="threatintelScope" onchange="renderThreatIntel()">
-          <option value="">All Scopes</option>
-          <option value="scoped">Scoped (chain_filter)</option>
-          <option value="unscoped">Unscoped</option>
-        </select>
+
+      <!-- 1. Behavioral Rules -->
+      <div style="margin-bottom:28px">
+        <!-- 1a. Custom Global Rules -->
+        <div style="margin-bottom:20px">
+          <div class="section-header">
+            <div>
+              <h3>Custom Global Rules</h3>
+              <div class="section-sub">Fleet-managed rules pushed to all agents via heartbeat</div>
+            </div>
+            <button class="btn btn-sm btn-ghost" onclick="showAddCustomRuleForm()">+ Add Rule</button>
+          </div>
+          <div id="tiCustomRuleForm" style="display:none"></div>
+          <div id="tiCustomRulesTable"></div>
+        </div>
+
+        <!-- 1b. Compiled Sigma Rules -->
+        <div>
+          <div class="section-header">
+            <div>
+              <h3>Compiled Behavioral Rules (Sigma)</h3>
+              <div class="section-sub">Static TTP signatures compiled from YAML. These evaluate behavior, not network IOCs.</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span id="sigmaDisabledCount" style="font-size:11px;color:var(--dim)"></span>
+            </div>
+          </div>
+          <div class="cards" id="threatintelCards" style="margin-bottom:12px"></div>
+          <div class="filter-bar">
+            <input id="threatintelSearch" placeholder="Search rules..." oninput="renderThreatIntel()">
+            <select id="threatintelType" onchange="renderThreatIntel()">
+              <option value="">All Types</option>
+              <option value="process_name">process_name</option>
+              <option value="file_path">file_path</option>
+            </select>
+            <select id="threatintelScope" onchange="renderThreatIntel()">
+              <option value="">All Scopes</option>
+              <option value="scoped">Scoped (chain_filter)</option>
+              <option value="unscoped">Unscoped</option>
+            </select>
+            <select id="threatintelStatus" onchange="renderThreatIntel()">
+              <option value="">All Status</option>
+              <option value="active">Active</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th style="width:56px">Status</th>
+                <th style="width:120px">Rule Type</th>
+                <th>Pattern</th>
+                <th>Chain Filter</th>
+                <th>Description</th>
+                <th>MITRE Tags</th>
+              </tr>
+            </thead>
+            <tbody id="threatintelTableBody"></tbody>
+          </table>
+        </div>
       </div>
-      <table>
-        <thead>
-          <tr>
-            <th style="width:120px">Rule Type</th>
-            <th>Pattern</th>
-            <th>Chain Filter</th>
-            <th>Description</th>
-            <th>MITRE Tags</th>
-          </tr>
-        </thead>
-        <tbody id="threatintelTableBody"></tbody>
-      </table>
+
+      <!-- 1.5 Active OSINT Explorer -->
+      <div style="margin-bottom:28px">
+        <div class="section-header">
+          <div>
+            <h3>Active OSINT Explorer</h3>
+            <div class="section-sub">Browse, search, and audit the centralized OSINT feed database. Suppress false positives before they cause outages.</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+          <select id="iocTypeSelect" onchange="intelExplorer.type=this.value;intelExplorer.page=1;loadIntelExplorer()">
+            <option value="ip">IPs</option>
+            <option value="domain">Domains</option>
+            <option value="hash">Hashes</option>
+          </select>
+          <select id="iocFeedSelect" onchange="intelExplorer.feed=this.value;intelExplorer.page=1;loadIntelExplorer()">
+            <option value="">All Feeds</option>
+          </select>
+          <input id="iocSearchInput" placeholder="Filter indicators..." style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter'){intelExplorer.query=this.value.trim();intelExplorer.page=1;loadIntelExplorer()}">
+          <button class="btn btn-sm" style="background:var(--accent);border-color:var(--accent);color:#fff" onclick="intelExplorer.query=document.getElementById('iocSearchInput').value.trim();intelExplorer.page=1;loadIntelExplorer()">Filter</button>
+        </div>
+        <div id="intelExplorerBody"></div>
+        <div id="intelExplorerPager" style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:12px;color:var(--dim)"></div>
+      </div>
+
+      <!-- 2. Global IOC Exceptions -->
+      <div style="margin-bottom:28px">
+        <div class="section-header">
+          <div>
+            <h3>Global IOC Exceptions (False Positive Filter)</h3>
+            <div class="section-sub">Suppress known-good IPs, domains, and hashes from OSINT feeds before enforcement</div>
+          </div>
+          <button class="btn btn-sm btn-ghost" onclick="showAddSuppressionForm()">+ Add Exception</button>
+        </div>
+        <div id="tiSuppressionForm" style="display:none"></div>
+        <div id="tiSuppressionsTable"></div>
+      </div>
+
+      <!-- 3. Agent IOC Feed Summary -->
+      <div id="tiAgentIocSection"></div>
     </div>
 
     <!-- Settings -->
@@ -566,6 +660,12 @@ async function api(path, opts={}) {
   return res.json();
 }
 
+function authHeaders() {
+  const h = {'Content-Type':'application/json'};
+  if (token) h['Authorization'] = 'Bearer ' + token;
+  return h;
+}
+
 // ── Auth ──
 async function doLogin() {
   const user = document.getElementById('loginUser').value.trim();
@@ -664,7 +764,7 @@ document.getElementById('tabBar').addEventListener('click', e => {
   document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
   hideAllDetails();
   if (btn.dataset.tab === 'settings') { switchSettingsTab('users'); }
-  if (btn.dataset.tab === 'threatintel') { threatIntelLoaded ? renderThreatIntel() : loadThreatIntel(); }
+  if (btn.dataset.tab === 'threatintel') { loadThreatIntel(); }
 });
 
 function hideAllDetails() {
@@ -705,6 +805,8 @@ function esc(s) {
   // Also escape double-quotes for safe use in HTML attributes (title="...")
   return d.innerHTML.replace(/"/g, '&quot;');
 }
+
+function fmtNum(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'k' : String(n); }
 
 // ── Fleet Overview ──
 function renderFleet() {
@@ -1385,15 +1487,307 @@ function renderVertical() {
 // ── Threat Intel ──
 let threatIntelData = {metadata: {}, rules: []};
 let threatIntelLoaded = false;
+let disabledSigmaRules = new Set();
 
 async function loadThreatIntel() {
   try {
-    if (!threatIntelLoaded) {
-      threatIntelData = await api('/api/threat-intel/rules');
-      threatIntelLoaded = true;
-    }
+    const loads = [
+      api('/api/threat-intel/rules').catch(() => ({metadata:{}, rules:[]})),
+      api('/api/threat-intel/sigma/disabled').catch(() => []),
+      loadCustomRules(),
+      loadSuppressions(),
+      loadAgentIocSummary(),
+    ];
+    const [sigmaData, disabledList] = await Promise.all(loads);
+    threatIntelData = sigmaData;
+    disabledSigmaRules = new Set((disabledList || []).map(d => d.rule_id));
+    threatIntelLoaded = true;
     renderThreatIntel();
+    loadIntelExplorer();
   } catch(e) { console.error('Failed to load threat intel:', e); }
+}
+
+// ── Agent IOC Summary ──
+async function loadAgentIocSummary() {
+  const el = document.getElementById('tiAgentIocSection');
+  try {
+    const [summaries, fmStats] = await Promise.all([
+      api('/api/threat-intel/agent-ioc-summary').catch(() => []),
+      api('/api/threat-intel/feed-manager-stats').catch(() => null),
+    ]);
+
+    // Section header with central sync status
+    let centralSyncHtml = '';
+    if (fmStats && fmStats.ready) {
+      const syncTime = fmStats.last_upstream_refresh ? new Date(fmStats.last_upstream_refresh).toLocaleString() : '—';
+      const bundleKb = fmStats.bundle_size_bytes ? (fmStats.bundle_size_bytes / 1024).toFixed(0) + ' KB' : '—';
+      centralSyncHtml = '<div class="cards" style="margin-bottom:12px">' +
+        '<div class="card"><div class="card-label">Last Central Sync</div><div class="card-value" style="font-size:14px">' + esc(syncTime) + '</div><div class="card-sub">Fleet server upstream pull</div></div>' +
+        '<div class="card"><div class="card-label">Central IPs</div><div class="card-value">' + fmtNum(fmStats.ip_count||0) + '</div></div>' +
+        '<div class="card"><div class="card-label">Central Domains</div><div class="card-value">' + fmtNum(fmStats.domain_count||0) + '</div></div>' +
+        '<div class="card"><div class="card-label">Central Hashes</div><div class="card-value">' + fmtNum(fmStats.hash_count||0) + '</div><div class="card-sub">Bundle: ' + esc(bundleKb) + ' gzipped</div></div>' +
+        '</div>';
+    } else if (fmStats && !fmStats.ready) {
+      centralSyncHtml = '<div style="color:var(--medium);font-size:12px;margin-bottom:12px">Feed manager initializing — first download in progress...</div>';
+    }
+
+    if ((!summaries || summaries.length === 0) && !centralSyncHtml) {
+      el.innerHTML = '<div class="section-header"><div><h3>Fleet IOC Synchronization</h3><div class="section-sub">No agents reporting IOC feed data yet</div></div></div>';
+      return;
+    }
+    let totalIps = 0, totalDomains = 0, totalHashes = 0;
+    (summaries||[]).forEach(s => { totalIps += s.ip_count||0; totalDomains += s.domain_count||0; totalHashes += s.hash_count||0; });
+    let html = '<div class="section-header"><div><h3>Fleet IOC Synchronization</h3><div class="section-sub">Centralized OSINT aggregation &amp; per-agent feed coverage</div></div></div>';
+    html += centralSyncHtml;
+    if (summaries && summaries.length > 0) {
+    html += '<div class="cards" style="margin-bottom:12px">';
+    html += '<div class="card"><div class="card-label">Agent IPs</div><div class="card-value">' + fmtNum(totalIps) + '</div></div>';
+    html += '<div class="card"><div class="card-label">Agent Domains</div><div class="card-value">' + fmtNum(totalDomains) + '</div></div>';
+    html += '<div class="card"><div class="card-label">Agent Hashes</div><div class="card-value">' + fmtNum(totalHashes) + '</div></div>';
+    html += '<div class="card"><div class="card-label">Reporting Agents</div><div class="card-value">' + summaries.length + '</div></div>';
+    html += '</div>';
+    html += '<table><thead><tr><th>Hostname</th><th>Status</th><th style="text-align:right">IPs</th><th style="text-align:right">Domains</th><th style="text-align:right">Hashes</th><th>Last Refresh</th></tr></thead><tbody>';
+    summaries.forEach(s => {
+      const statusCls = s.status === 'online' ? 'severity-low' : 'severity-info';
+      const refresh = s.last_refresh ? new Date(s.last_refresh).toLocaleString() : '—';
+      html += '<tr><td>' + esc(s.hostname||'—') + '</td>';
+      html += '<td><span class="severity-badge ' + statusCls + '">' + esc(s.status||'—') + '</span></td>';
+      html += '<td class="mono" style="text-align:right">' + fmtNum(s.ip_count||0) + '</td>';
+      html += '<td class="mono" style="text-align:right">' + fmtNum(s.domain_count||0) + '</td>';
+      html += '<td class="mono" style="text-align:right">' + fmtNum(s.hash_count||0) + '</td>';
+      html += '<td style="color:var(--dim);font-size:12px">' + esc(refresh) + '</td></tr>';
+    });
+    html += '</tbody></table>';
+    }
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = '';
+  }
+}
+
+// ── Custom Global Rules ──
+async function loadCustomRules() {
+  const el = document.getElementById('tiCustomRulesTable');
+  try {
+    const rules = await api('/api/threat-intel/custom-rules');
+    renderCustomRules(rules || []);
+  } catch(e) { el.innerHTML = '<div style="color:var(--dim)">Failed to load custom rules</div>'; }
+}
+
+function renderCustomRules(rules) {
+  const el = document.getElementById('tiCustomRulesTable');
+  if (rules.length === 0) {
+    el.innerHTML = '<div style="color:var(--dim);padding:16px 0;font-size:12px">No custom rules defined.</div>';
+    return;
+  }
+  let html = '<table><thead><tr><th style="width:70px">Action</th><th style="width:90px">Stage</th><th style="width:110px">Type</th><th>Pattern</th><th>Chain Filter</th><th>Description</th><th style="width:50px"></th></tr></thead><tbody>';
+  rules.forEach(r => {
+    const actionCls = r.action === 'block' ? 'severity-critical' : 'severity-low';
+    html += '<tr>';
+    html += '<td><span class="severity-badge ' + actionCls + '">' + esc(r.action) + '</span></td>';
+    html += '<td><span class="severity-badge severity-info">' + esc(r.stage) + '</span></td>';
+    html += '<td><span class="severity-badge severity-medium">' + esc(r.rule_type) + '</span></td>';
+    html += '<td class="mono">' + esc(r.pattern) + '</td>';
+    html += '<td class="mono" style="color:' + (r.chain_filter ? 'var(--lateral)' : 'var(--dim)') + '">' + (r.chain_filter ? esc(r.chain_filter) : '—') + '</td>';
+    html += '<td>' + esc(r.description||'') + '</td>';
+    html += '<td><button class="btn-danger" style="font-size:10px;padding:2px 8px" onclick="deleteCustomRule(' + r.id + ')">Del</button></td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function showAddCustomRuleForm() {
+  const el = document.getElementById('tiCustomRuleForm');
+  el.style.display = 'block';
+  el.innerHTML = '<div class="card" style="padding:12px"><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">' +
+    '<select id="cr-action"><option value="block">block</option><option value="allow">allow</option></select>' +
+    '<select id="cr-stage"><option value="fast_path">fast_path</option><option value="pre_graph">pre_graph</option><option value="response">response</option></select>' +
+    '<select id="cr-type"><option value="process_name">process_name</option><option value="dst_ip">dst_ip</option><option value="dst_cidr">dst_cidr</option><option value="domain">domain</option><option value="file_path">file_path</option><option value="finding_title">finding_title</option><option value="chain_pattern">chain_pattern</option></select>' +
+    '<input id="cr-pattern" placeholder="Pattern..." style="flex:1;min-width:150px">' +
+    '<input id="cr-chain" placeholder="Chain filter (optional)..." style="width:200px">' +
+    '<input id="cr-desc" placeholder="Description..." style="width:200px">' +
+    '<button class="btn btn-sm" style="background:var(--accent);border-color:var(--accent);color:#fff" onclick="doAddCustomRule()">Add</button>' +
+    '<button class="btn btn-sm btn-ghost" onclick="document.getElementById(\'tiCustomRuleForm\').style.display=\'none\'">Cancel</button>' +
+    '</div></div>';
+}
+
+async function doAddCustomRule() {
+  const body = {
+    action: document.getElementById('cr-action').value,
+    stage: document.getElementById('cr-stage').value,
+    rule_type: document.getElementById('cr-type').value,
+    pattern: document.getElementById('cr-pattern').value.trim(),
+    chain_filter: (document.getElementById('cr-chain').value||'').trim(),
+    description: (document.getElementById('cr-desc').value||'').trim(),
+  };
+  if (!body.pattern) { alert('Pattern is required'); return; }
+  try {
+    const r = await fetch('/api/threat-intel/custom-rules', {method:'POST', headers:{...authHeaders(),'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    if (!r.ok) { const e = await r.json().catch(()=>({})); alert(e.detail||'Failed'); return; }
+    document.getElementById('tiCustomRuleForm').style.display = 'none';
+    loadCustomRules();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function deleteCustomRule(id) {
+  if (!confirm('Delete this custom rule?')) return;
+  try {
+    await fetch('/api/threat-intel/custom-rules/' + id, {method:'DELETE', headers:authHeaders()});
+    loadCustomRules();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ── Suppressions ──
+async function loadSuppressions() {
+  const el = document.getElementById('tiSuppressionsTable');
+  try {
+    const items = await api('/api/threat-intel/suppressions');
+    renderSuppressions(items || []);
+  } catch(e) { el.innerHTML = '<div style="color:var(--dim)">Failed to load suppressions</div>'; }
+}
+
+function renderSuppressions(items) {
+  const el = document.getElementById('tiSuppressionsTable');
+  if (items.length === 0) {
+    el.innerHTML = '<div style="color:var(--dim);padding:12px 0;font-size:12px">No exceptions configured. Add indicators here to suppress false positives from OSINT feeds before enforcement.</div>';
+    return;
+  }
+  let html = '<table><thead><tr><th style="width:100px">Type</th><th>Pattern</th><th>Reason</th><th style="width:120px">Created</th><th style="width:60px"></th></tr></thead><tbody>';
+  items.forEach(s => {
+    const created = s.created_at ? new Date(s.created_at * 1000).toLocaleDateString() : '—';
+    html += '<tr>';
+    html += '<td><span class="severity-badge severity-info">' + esc(s.indicator_type) + '</span></td>';
+    html += '<td class="mono">' + esc(s.pattern) + '</td>';
+    html += '<td>' + esc(s.reason||'') + '</td>';
+    html += '<td style="color:var(--dim);font-size:12px">' + esc(created) + '</td>';
+    html += '<td><button class="btn-danger" style="font-size:10px;padding:2px 8px" onclick="deleteSuppression(' + s.id + ')">Del</button></td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function showAddSuppressionForm() {
+  const el = document.getElementById('tiSuppressionForm');
+  el.style.display = 'block';
+  el.innerHTML = '<div class="card" style="padding:12px"><div style="display:flex;gap:8px;align-items:center">' +
+    '<select id="sup-type"><option value="ip">IP</option><option value="domain">Domain</option><option value="hash">Hash</option></select>' +
+    '<input id="sup-pattern" placeholder="Pattern (e.g. 1.2.3.4 or cdn.example.com)..." style="flex:1">' +
+    '<input id="sup-reason" placeholder="Reason..." style="width:250px">' +
+    '<button class="btn btn-sm" style="background:var(--accent);border-color:var(--accent);color:#fff" onclick="doAddSuppression()">Add</button>' +
+    '<button class="btn btn-sm btn-ghost" onclick="document.getElementById(\'tiSuppressionForm\').style.display=\'none\'">Cancel</button>' +
+    '</div></div>';
+}
+
+async function doAddSuppression() {
+  const body = {
+    indicator_type: document.getElementById('sup-type').value,
+    pattern: document.getElementById('sup-pattern').value.trim(),
+    reason: (document.getElementById('sup-reason').value||'').trim(),
+  };
+  if (!body.pattern) { alert('Pattern is required'); return; }
+  try {
+    const r = await fetch('/api/threat-intel/suppressions', {method:'POST', headers:{...authHeaders(),'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    if (!r.ok) { const e = await r.json().catch(()=>({})); alert(e.detail||'Failed'); return; }
+    document.getElementById('tiSuppressionForm').style.display = 'none';
+    loadSuppressions();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function deleteSuppression(id) {
+  if (!confirm('Delete this suppression?')) return;
+  try {
+    await fetch('/api/threat-intel/suppressions/' + id, {method:'DELETE', headers:authHeaders()});
+    loadSuppressions();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ── Active OSINT Explorer ──
+let intelExplorer = { type: 'ip', page: 1, query: '', feed: '' };
+let intelExplorerFeedsPopulated = false;
+
+async function loadIntelExplorer() {
+  const body = document.getElementById('intelExplorerBody');
+  const pager = document.getElementById('intelExplorerPager');
+  const s = intelExplorer;
+  let url = '/api/threat-intel/indicators?type=' + encodeURIComponent(s.type) + '&page=' + s.page + '&limit=100';
+  if (s.query) url += '&q=' + encodeURIComponent(s.query);
+  if (s.feed) url += '&feed=' + encodeURIComponent(s.feed);
+  body.innerHTML = '<div style="color:var(--dim);padding:12px 0;font-size:12px">Loading...</div>';
+  pager.innerHTML = '';
+  try {
+    const data = await api(url);
+    const items = data.items || [];
+    // Populate feed dropdown once from feed-manager-stats
+    if (!intelExplorerFeedsPopulated) {
+      try {
+        const stats = await api('/api/threat-intel/feed-manager-stats');
+        const sel = document.getElementById('iocFeedSelect');
+        if (stats && stats.feed_stats) {
+          Object.keys(stats.feed_stats).sort().forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f; opt.textContent = f + ' (' + stats.feed_stats[f] + ')';
+            sel.appendChild(opt);
+          });
+        }
+        intelExplorerFeedsPopulated = true;
+      } catch(e) { /* ignore — feeds dropdown stays at "All Feeds" */ }
+    }
+    if (items.length === 0) {
+      body.innerHTML = '<div style="color:var(--dim);padding:12px 0;font-size:12px">No indicators found' + (s.query ? ' matching &quot;' + esc(s.query) + '&quot;' : '') + '</div>';
+      pager.innerHTML = '<span>0 results</span><span></span>';
+      return;
+    }
+    let html = '<table><thead><tr><th>Indicator</th><th>Source Feed</th><th style="width:90px">Confidence</th><th style="width:100px">Action</th></tr></thead><tbody>';
+    items.forEach((r, idx) => {
+      const confCls = r.confidence === 'high' ? 'severity-critical' : r.confidence === 'medium' ? 'severity-medium' : 'severity-low';
+      html += '<tr>';
+      html += '<td class="mono" style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(r.indicator) + '">' + esc(r.indicator) + '</td>';
+      html += '<td>' + esc(r.feed_name) + '</td>';
+      html += '<td><span class="severity-badge ' + confCls + '">' + esc(r.confidence) + '</span></td>';
+      html += '<td><button id="suppress-btn-' + idx + '" class="btn btn-sm btn-ghost" style="font-size:11px;padding:2px 10px" onclick="quickSuppress(\'' + esc(r.type) + '\',\'' + esc(r.indicator) + '\',' + idx + ')">Suppress</button></td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    body.innerHTML = html;
+    // Pager
+    const prevDisabled = data.page <= 1 ? ' disabled' : '';
+    const nextDisabled = data.page >= data.pages ? ' disabled' : '';
+    pager.innerHTML = '<button class="btn btn-sm btn-ghost"' + prevDisabled + ' onclick="intelExplorer.page--;loadIntelExplorer()">&larr; Prev</button>' +
+      '<span>Page ' + data.page + ' of ' + data.pages + ' &middot; ' + fmtNum(data.total) + ' total</span>' +
+      '<button class="btn btn-sm btn-ghost"' + nextDisabled + ' onclick="intelExplorer.page++;loadIntelExplorer()">Next &rarr;</button>';
+  } catch(e) {
+    body.innerHTML = '<div style="color:var(--critical);padding:12px 0;font-size:12px">Failed to load indicators: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function quickSuppress(indicatorType, pattern, idx) {
+  if (!confirm('Suppress ' + indicatorType + ' indicator: ' + pattern + '?')) return;
+  const btn = document.getElementById('suppress-btn-' + idx);
+  if (btn) { btn.disabled = true; btn.textContent = 'Suppressing...'; }
+  try {
+    const r = await fetch('/api/threat-intel/suppressions', {
+      method: 'POST',
+      headers: {...authHeaders(), 'Content-Type': 'application/json'},
+      body: JSON.stringify({ indicator_type: indicatorType, pattern: pattern, reason: 'Suppressed from Intel Explorer' }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      if (btn) { btn.disabled = false; btn.textContent = 'Suppress'; }
+      alert(e.detail || 'Failed to create suppression');
+      return;
+    }
+    if (btn) {
+      btn.textContent = 'Suppressed \u2713';
+      btn.style.color = 'var(--ok)';
+      btn.style.borderColor = 'var(--ok)';
+    }
+    loadSuppressions();
+  } catch(e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Suppress'; }
+    alert('Error: ' + e.message);
+  }
 }
 
 function renderThreatIntel() {
@@ -1414,22 +1808,30 @@ function renderThreatIntel() {
 
   const compiledAt = meta.generated_at ? new Date(meta.generated_at).toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'}) : '-';
   const sigmaRef = meta.sigma_commit ? meta.sigma_commit.substring(0,8) : '-';
+  const disabledN = disabledSigmaRules.size;
+  const activeN = rules.length - disabledN;
 
   document.getElementById('threatintelCards').innerHTML = `
-    <div class="card"><div class="card-label">Total Rules</div><div class="card-value">${rules.length}</div><div class="card-sub">Compiled from SigmaHQ</div></div>
+    <div class="card"><div class="card-label">Active Rules</div><div class="card-value">${activeN}</div><div class="card-sub">${disabledN ? disabledN + ' disabled' : 'All enabled'}</div></div>
     <div class="card"><div class="card-label">Scoped Rules</div><div class="card-value">${scoped}</div><div class="card-sub">With chain_filter ancestry match</div></div>
     <div class="card"><div class="card-label">MITRE Techniques</div><div class="card-value">${techniques.size}</div><div class="card-sub">${techniques.size > 0 ? Array.from(techniques).slice(0,3).map(t=>t.replace('attack.','')).join(', ') + (techniques.size>3?' ...':'') : '-'}</div></div>
     <div class="card"><div class="card-label">Last Compiled</div><div class="card-value" style="font-size:16px">${compiledAt}</div><div class="card-sub">Sigma ${sigmaRef}</div></div>
   `;
 
   document.getElementById('threatintelCount').textContent = rules.length;
+  const disabledCountEl = document.getElementById('sigmaDisabledCount');
+  if (disabledCountEl) disabledCountEl.textContent = disabledN ? disabledN + ' disabled' : '';
 
   // Filter
   const search = (document.getElementById('threatintelSearch').value||'').toLowerCase();
   const typeFilter = document.getElementById('threatintelType').value;
   const scopeFilter = document.getElementById('threatintelScope').value;
+  const statusFilter = document.getElementById('threatintelStatus').value;
 
-  let filtered = rules;
+  let filtered = rules.map(r => {
+    const ruleId = r.rule_type + ':' + r.pattern;
+    return { ...r, _ruleId: ruleId, _disabled: disabledSigmaRules.has(ruleId) };
+  });
   if (search) filtered = filtered.filter(r =>
     r.pattern.toLowerCase().includes(search) ||
     (r.description||'').toLowerCase().includes(search) ||
@@ -1439,10 +1841,12 @@ function renderThreatIntel() {
   if (typeFilter) filtered = filtered.filter(r => r.rule_type === typeFilter);
   if (scopeFilter === 'scoped') filtered = filtered.filter(r => r.chain_filter);
   if (scopeFilter === 'unscoped') filtered = filtered.filter(r => !r.chain_filter);
+  if (statusFilter === 'active') filtered = filtered.filter(r => !r._disabled);
+  if (statusFilter === 'disabled') filtered = filtered.filter(r => r._disabled);
 
   const tbody = document.getElementById('threatintelTableBody');
   if (filtered.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--dim);padding:40px">No rules match filter</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:40px">No rules match filter</td></tr>';
     return;
   }
   tbody.innerHTML = filtered.map(r => {
@@ -1452,7 +1856,11 @@ function renderThreatIntel() {
       const cls = isTechnique ? 'severity-high' : 'severity-info';
       return `<span class="severity-badge ${cls}" style="margin:1px;font-size:10px">${esc(label)}</span>`;
     }).join('');
-    return `<tr>
+    const checked = r._disabled ? '' : 'checked';
+    const rowCls = r._disabled ? ' class="rule-disabled"' : '';
+    const rid = esc(r._ruleId).replace(/'/g, "\\'");
+    return `<tr${rowCls}>
+      <td><label class="toggle"><input type="checkbox" ${checked} onchange="toggleSigmaRule('${rid}')"><span class="slider"></span></label></td>
       <td><span class="severity-badge severity-medium">${esc(r.rule_type)}</span></td>
       <td class="mono">${esc(r.pattern)}</td>
       <td class="mono" style="color:${r.chain_filter ? 'var(--lateral)' : 'var(--dim)'}">${r.chain_filter ? esc(r.chain_filter) : '-'}</td>
@@ -1460,6 +1868,20 @@ function renderThreatIntel() {
       <td>${tags}</td>
     </tr>`;
   }).join('');
+}
+
+async function toggleSigmaRule(ruleId) {
+  try {
+    const r = await fetch('/api/threat-intel/sigma/' + encodeURIComponent(ruleId) + '/toggle', {method:'POST', headers:authHeaders()});
+    if (!r.ok) { const e = await r.json().catch(()=>({})); alert(e.detail||'Toggle failed'); return; }
+    const data = await r.json();
+    if (data.disabled) {
+      disabledSigmaRules.add(ruleId);
+    } else {
+      disabledSigmaRules.delete(ruleId);
+    }
+    renderThreatIntel();
+  } catch(e) { alert('Error: ' + e.message); }
 }
 
 // ── Settings Tab ──

@@ -21,6 +21,7 @@ COPY agent/fleet/tls.py /app/agent/fleet/tls.py
 COPY agent/schema/graph_types.py /app/agent/schema/graph_types.py
 COPY agent/__init__.py /app/agent/__init__.py
 COPY agent/schema/__init__.py /app/agent/schema/__init__.py
+COPY agent/intel/ /app/agent/intel/
 
 RUN python -m grpc_tools.protoc \
     --proto_path=proto \

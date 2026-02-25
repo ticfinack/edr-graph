@@ -35,7 +35,8 @@ from agent.fleet.tls import load_mtls_server_credentials
 from server.auth import hash_password, set_jwt_secret
 from server.config import ServerSettings
 from server.dashboard import app as dashboard_app
-from server.dashboard import set_neo4j, set_settings, set_settings_db
+from server.dashboard import set_feed_manager, set_neo4j, set_settings, set_settings_db
+from server.intel.feed_manager import FeedManager
 from server.grpc_service import FleetServicer
 from server.neo4j_client import Neo4jClient
 from server.ntp_sync import NtpMonitor
@@ -217,6 +218,11 @@ def main() -> None:
     )
     xdr_orchestrator.start()
 
+    # ── Intel Feed Manager (non-blocking — initial download in background) ──
+    feed_manager = FeedManager(refresh_interval_hours=settings.intel_refresh_hours)
+    feed_manager.start()
+    set_feed_manager(feed_manager)
+
     # Start HTTP dashboard in a thread
     dashboard_thread = threading.Thread(
         target=uvicorn.run,
@@ -234,6 +240,7 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Shutting down...")
         server.stop(grace=5)
+        feed_manager.stop()
         xdr_orchestrator.stop()
         ntp_monitor.stop()
         settings_db.close()

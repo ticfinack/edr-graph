@@ -214,6 +214,7 @@ class Settings(BaseModel):
     fleet_queue_max_size: int = 10000  # Max items buffered in forwarding queue
     fleet_retry_max: int = 5  # Max retries per queued item
     fleet_registration_key: str = Field(default_factory=lambda: os.environ.get("EDR_REGISTRATION_KEY", ""))
+    fleet_http_port: int = 8080  # Fleet server HTTP port for intel-bundle endpoint
     fleet_public_ip_interval: float = 300.0  # Seconds between public IP lookups
     flight_recorder_ttl_hours: int = 6  # Rolling DVR retention (hours)
 
@@ -289,6 +290,7 @@ _YAML_KEY_MAP: dict[tuple[str, ...], str] = {
     ("fleet", "queue_max_size"): "fleet_queue_max_size",
     ("fleet", "retry_max"): "fleet_retry_max",
     ("fleet", "registration_key"): "fleet_registration_key",
+    ("fleet", "http_port"): "fleet_http_port",
     ("fleet", "public_ip_interval"): "fleet_public_ip_interval",
     ("fleet", "flight_recorder_ttl_hours"): "flight_recorder_ttl_hours",
     ("fleet", "ntp_server"): "ntp_server",

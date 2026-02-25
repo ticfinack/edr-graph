@@ -341,3 +341,187 @@ class TestTagColorValidation:
         db.create_tag("updcolor2")
         with pytest.raises(ValueError, match="Invalid color"):
             db.update_tag("updcolor2", color="not-a-color")
+
+
+class TestGlobalCustomRules:
+    def test_add_and_list(self, db):
+        rule_id = db.add_global_custom_rule(
+            action="block", stage="fast_path", rule_type="dst_ip",
+            pattern="1.2.3.4", description="test rule", created_by="admin",
+        )
+        assert isinstance(rule_id, int)
+        rules = db.list_global_custom_rules()
+        assert len(rules) == 1
+        assert rules[0]["action"] == "block"
+        assert rules[0]["pattern"] == "1.2.3.4"
+        assert rules[0]["created_by"] == "admin"
+
+    def test_delete(self, db):
+        rule_id = db.add_global_custom_rule(
+            action="allow", stage="pre_graph", rule_type="process_name",
+            pattern="safe.exe",
+        )
+        assert db.delete_global_custom_rule(rule_id) is True
+        assert len(db.list_global_custom_rules()) == 0
+
+    def test_delete_nonexistent(self, db):
+        assert db.delete_global_custom_rule(99999) is False
+
+    def test_invalid_action(self, db):
+        with pytest.raises(ValueError, match="Invalid action"):
+            db.add_global_custom_rule(
+                action="nuke", stage="fast_path", rule_type="dst_ip", pattern="x",
+            )
+
+    def test_invalid_stage(self, db):
+        with pytest.raises(ValueError, match="Invalid stage"):
+            db.add_global_custom_rule(
+                action="block", stage="invalid", rule_type="dst_ip", pattern="x",
+            )
+
+    def test_invalid_rule_type(self, db):
+        with pytest.raises(ValueError, match="Invalid rule_type"):
+            db.add_global_custom_rule(
+                action="block", stage="fast_path", rule_type="bad_type", pattern="x",
+            )
+
+    def test_empty_pattern(self, db):
+        with pytest.raises(ValueError, match="Pattern must not be empty"):
+            db.add_global_custom_rule(
+                action="block", stage="fast_path", rule_type="dst_ip", pattern="",
+            )
+
+    def test_resolve_agent_rules_includes_custom(self, db):
+        db.add_global_custom_rule(
+            action="block", stage="fast_path", rule_type="domain",
+            pattern="evil.com", description="custom",
+        )
+        rules = db.resolve_agent_rules("agent-1")
+        assert any(r["pattern"] == "evil.com" and r["description"] == "custom" for r in rules)
+
+
+class TestDisabledSigmaRules:
+    def test_table_exists(self, db):
+        conn = db._conn()
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        assert "disabled_sigma_rules" in tables
+
+    def test_toggle_disable_and_enable(self, db):
+        # First toggle: disable → returns True
+        assert db.toggle_sigma_rule("process_name:bash") is True
+        assert db.is_sigma_rule_disabled("process_name:bash") is True
+        # Second toggle: enable → returns False
+        assert db.toggle_sigma_rule("process_name:bash") is False
+        assert db.is_sigma_rule_disabled("process_name:bash") is False
+
+    def test_list_disabled(self, db):
+        db.toggle_sigma_rule("process_name:bash")
+        db.toggle_sigma_rule("file_path:/tmp/*")
+        disabled = db.list_disabled_sigma_rules()
+        assert len(disabled) == 2
+        ids = {d["rule_id"] for d in disabled}
+        assert "process_name:bash" in ids
+        assert "file_path:/tmp/*" in ids
+
+    def test_list_disabled_empty(self, db):
+        assert db.list_disabled_sigma_rules() == []
+
+    def test_toggle_empty_rule_id_raises(self, db):
+        with pytest.raises(ValueError, match="rule_id is required"):
+            db.toggle_sigma_rule("")
+
+    def test_toggle_whitespace_rule_id_raises(self, db):
+        with pytest.raises(ValueError, match="rule_id is required"):
+            db.toggle_sigma_rule("   ")
+
+    def test_disabled_by_stored(self, db):
+        db.toggle_sigma_rule("process_name:test", disabled_by="admin")
+        disabled = db.list_disabled_sigma_rules()
+        assert disabled[0]["disabled_by"] == "admin"
+        assert disabled[0]["disabled_at"] > 0
+
+    def test_resolve_agent_rules_excludes_disabled(self, db):
+        # Inject fake global rules
+        db._global_rules = [
+            {"action": "block", "stage": "fast_path", "rule_type": "process_name", "pattern": "bash", "chain_filter": "", "description": "rule1", "tags": []},
+            {"action": "block", "stage": "fast_path", "rule_type": "process_name", "pattern": "curl", "chain_filter": "", "description": "rule2", "tags": []},
+            {"action": "block", "stage": "fast_path", "rule_type": "file_path", "pattern": "/tmp/*", "chain_filter": "", "description": "rule3", "tags": []},
+        ]
+        # Disable one rule
+        db.toggle_sigma_rule("process_name:bash")
+        rules = db.resolve_agent_rules("agent-1")
+        patterns = [r["pattern"] for r in rules]
+        assert "bash" not in patterns
+        assert "curl" in patterns
+        assert "/tmp/*" in patterns
+
+    def test_resolve_excludes_multiple_disabled(self, db):
+        db._global_rules = [
+            {"action": "block", "stage": "fast_path", "rule_type": "process_name", "pattern": "a", "chain_filter": "", "description": "", "tags": []},
+            {"action": "block", "stage": "fast_path", "rule_type": "process_name", "pattern": "b", "chain_filter": "", "description": "", "tags": []},
+            {"action": "block", "stage": "fast_path", "rule_type": "process_name", "pattern": "c", "chain_filter": "", "description": "", "tags": []},
+        ]
+        db.toggle_sigma_rule("process_name:a")
+        db.toggle_sigma_rule("process_name:c")
+        rules = db.resolve_agent_rules("agent-1")
+        patterns = [r["pattern"] for r in rules]
+        assert patterns == ["b"]
+
+    def test_re_enable_restores_to_resolve(self, db):
+        db._global_rules = [
+            {"action": "block", "stage": "fast_path", "rule_type": "process_name", "pattern": "bash", "chain_filter": "", "description": "", "tags": []},
+        ]
+        db.toggle_sigma_rule("process_name:bash")  # disable
+        assert len(db.resolve_agent_rules("agent-1")) == 0
+        db.toggle_sigma_rule("process_name:bash")  # re-enable
+        assert len(db.resolve_agent_rules("agent-1")) == 1
+
+
+class TestGlobalIntelSuppressions:
+    def test_add_and_list(self, db):
+        row = db.add_global_intel_suppression(
+            indicator_type="ip", pattern="8.8.8.8",
+            reason="Google DNS", created_by="admin",
+        )
+        assert row["indicator_type"] == "ip"
+        assert row["pattern"] == "8.8.8.8"
+        items = db.list_global_intel_suppressions()
+        assert len(items) == 1
+
+    def test_add_normalizes_pattern(self, db):
+        row = db.add_global_intel_suppression(
+            indicator_type="domain", pattern="  CDN.Example.COM  ",
+        )
+        assert row["pattern"] == "cdn.example.com"
+
+    def test_delete(self, db):
+        row = db.add_global_intel_suppression(
+            indicator_type="hash", pattern="abc123",
+        )
+        assert db.delete_global_intel_suppression(row["id"]) is True
+        assert len(db.list_global_intel_suppressions()) == 0
+
+    def test_delete_nonexistent(self, db):
+        assert db.delete_global_intel_suppression(99999) is False
+
+    def test_uniqueness_constraint(self, db):
+        db.add_global_intel_suppression(indicator_type="ip", pattern="1.1.1.1")
+        with pytest.raises(Exception):
+            db.add_global_intel_suppression(indicator_type="ip", pattern="1.1.1.1")
+
+    def test_invalid_type(self, db):
+        with pytest.raises(ValueError, match="Invalid indicator_type"):
+            db.add_global_intel_suppression(indicator_type="url", pattern="x")
+
+    def test_empty_pattern(self, db):
+        with pytest.raises(ValueError, match="Pattern must not be empty"):
+            db.add_global_intel_suppression(indicator_type="ip", pattern="  ")
+
+    def test_resolve_agent_config_includes_suppressions(self, db):
+        db.add_global_intel_suppression(
+            indicator_type="ip", pattern="10.0.0.1", reason="test",
+        )
+        config = db.resolve_agent_config("agent-1")
+        assert "suppressions" in config
+        assert len(config["suppressions"]) == 1
+        assert config["suppressions"][0]["pattern"] == "10.0.0.1"
