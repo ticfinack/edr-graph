@@ -16,7 +16,7 @@ class ServerSettings(BaseModel):
     # Neo4j connection
     neo4j_uri: str = Field(default_factory=lambda: os.environ.get("NEO4J_URI", "bolt://localhost:7687"))
     neo4j_user: str = Field(default_factory=lambda: os.environ.get("NEO4J_USER", "neo4j"))
-    neo4j_password: str = Field(default_factory=lambda: os.environ.get("NEO4J_PASSWORD", "changeme"))
+    neo4j_password: str = Field(default_factory=lambda: os.environ.get("NEO4J_PASSWORD", ""))
 
     # TLS certificates for mTLS
     tls_ca_cert: str = Field(default_factory=lambda: os.environ.get("TLS_CA_CERT", ""))
@@ -41,6 +41,11 @@ class ServerSettings(BaseModel):
     # NTP clock synchronization
     ntp_server: str = Field(default_factory=lambda: os.environ.get("NTP_SERVER", "pool.ntp.org"))
     ntp_sync_interval: int = 300  # seconds
+
+    # XDR orchestrator
+    xdr_poll_interval: int = 15           # orchestrator poll seconds
+    xdr_query_timeout: int = 300          # max wait for XDR query completion (seconds)
+    incident_auto_close_hours: int = 48   # auto-close stale incidents after this many hours
 
     # Settings database
     settings_db_path: str = Field(

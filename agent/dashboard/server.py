@@ -40,6 +40,8 @@ _state: dict[str, Any] = {
     "start_time": time.time(),
     "paused": False,
     "collector_names": [],
+    "warm_graph": None,
+    "ledger_reader": None,
 }
 
 # Recent events circular buffer (processor thread appends, API reads)
@@ -66,11 +68,21 @@ def _get_queue() -> SqliteQueue:
     return q
 
 
-def _get_conn() -> kuzu.Connection:
-    db = _state.get("kuzu_db")
-    if db is None:
-        raise HTTPException(503, "Graph database not initialized")
-    return kuzu.Connection(db)
+def _get_conn():
+    # Prefer warm graph (ledger-backed) if available
+    warm = _state.get("warm_graph")
+    if warm is not None:
+        try:
+            return warm.get_connection()
+        except RuntimeError as exc:
+            raise HTTPException(503, "Warm graph not ready") from exc
+
+    from agent.graph.connection import get_connection
+
+    try:
+        return get_connection()
+    except RuntimeError as exc:
+        raise HTTPException(503, "Graph database not initialized") from exc
 
 
 def _get_settings():
@@ -503,9 +515,20 @@ def get_process_by_name(name: str):
         return {"matches": []}
 
 
+_graph_stats_cache: dict = {}
+_graph_stats_cache_time: float = 0.0
+_GRAPH_STATS_TTL = 5.0  # seconds
+
+
 @app.get("/api/graph/stats")
 def get_graph_stats():
-    """Node and edge counts."""
+    """Node and edge counts (cached for 5s to avoid contention during writes)."""
+    global _graph_stats_cache, _graph_stats_cache_time
+
+    now = time.monotonic()
+    if _graph_stats_cache and (now - _graph_stats_cache_time) < _GRAPH_STATS_TTL:
+        return _graph_stats_cache
+
     conn = _get_conn()
     nodes = {}
     edges = {}
@@ -518,17 +541,9 @@ def get_graph_stats():
             nodes[table] = 0
 
     for table in [
-        "SPAWNED",
-        "CONNECTED_TO",
-        "RESOLVED",
-        "RESOLVES_TO",
-        "CREATED_FILE",
-        "MODIFIED_FILE",
-        "READ_FILE",
-        "DELETED_FILE",
-        "CREATED_REG",
-        "MODIFIED_REG",
-        "DELETED_REG",
+        "SPAWNED", "CONNECTED_TO", "RESOLVED", "RESOLVES_TO",
+        "CREATED_FILE", "MODIFIED_FILE", "READ_FILE", "DELETED_FILE",
+        "CREATED_REG", "MODIFIED_REG", "DELETED_REG",
     ]:
         try:
             r = conn.execute(f"MATCH ()-[e:{table}]->() RETURN COUNT(e)")
@@ -536,12 +551,73 @@ def get_graph_stats():
         except Exception:
             edges[table] = 0
 
-    return {
+    result = {
         "nodes": nodes,
         "edges": edges,
         "total_nodes": sum(nodes.values()),
         "total_edges": sum(edges.values()),
     }
+    _graph_stats_cache = result
+    _graph_stats_cache_time = now
+    return result
+
+
+@app.get("/api/ledger/events")
+def get_ledger_events(
+    start: float | None = Query(None, description="Start epoch timestamp"),
+    end: float | None = Query(None, description="End epoch timestamp"),
+    pid: int | None = Query(None),
+    ip: str | None = Query(None),
+    event_type: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+):
+    """Query the forensic ledger directly."""
+    reader = _state.get("ledger_reader")
+    if reader is None:
+        raise HTTPException(503, "Forensic ledger not available")
+
+    now = time.time()
+    if start is None:
+        start = now - 3600  # Default: last hour
+    if end is None:
+        end = now
+
+    if pid is not None:
+        rows = reader.query_by_pid(pid, since=start, limit=limit)
+    elif ip is not None:
+        rows = reader.query_by_ip(ip, since=start, limit=limit)
+    else:
+        event_types = [event_type] if event_type else None
+        rows = reader.query_time_range(start, end, event_types=event_types, limit=limit)
+
+    return {
+        "events": [
+            {
+                "id": r.id,
+                "ts": r.ts,
+                "event_type": r.event_type,
+                "hostname": r.hostname,
+                "pid": r.pid,
+                "process_name": r.process_name,
+                "username": r.username,
+                "remote_ip": r.remote_ip,
+                "remote_port": r.remote_port,
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
+@app.get("/api/ledger/stats")
+def get_ledger_stats():
+    """Forensic ledger statistics."""
+    reader = _state.get("ledger_reader")
+    if reader is None:
+        return {"enabled": False}
+    stats = reader.get_stats()
+    stats["enabled"] = True
+    return stats
 
 
 @app.get("/api/metrics")
@@ -729,6 +805,14 @@ def get_ioc_stats():
         return {"enabled": False}
     stats = ioc_db.stats()
     stats["enabled"] = True
+    # Include fleet-pushed Sigma rule count from the fast-path blocklist
+    fast_blocklist = _state.get("fast_blocklist")
+    if fast_blocklist:
+        net_rules = fast_blocklist._network_rules
+        sigma_count = sum(1 for r in net_rules if "Sigma:" in (r.get("description") or ""))
+        stats["fleet_sigma_rules"] = sigma_count
+    else:
+        stats["fleet_sigma_rules"] = 0
     return stats
 
 
@@ -766,11 +850,14 @@ def set_response_mode(body: dict):
     baseline_gate = _state.get("baseline_gate")
     if previous_mode == "learning" and mode != "learning" and baseline_gate:
         try:
-            from agent.graph.cleanup import purge_baselined_edges
+            from agent.graph.write_queue import WriteJob, WriteJobType, submit_sync
 
             baseline_gate.invalidate()
-            conn = _get_conn()
-            graph_purged = purge_baselined_edges(conn, baseline_gate)
+            result = submit_sync(WriteJob(
+                job_type=WriteJobType.PURGE_BASELINE,
+                payload={"baseline_gate": baseline_gate},
+            ))
+            graph_purged = result or 0
         except Exception:
             logger.warning("Baseline graph purge failed on mode switch", exc_info=True)
 
@@ -817,11 +904,14 @@ def purge_baseline_graph():
         raise HTTPException(503, "Baseline gate not initialized")
 
     try:
-        from agent.graph.cleanup import purge_baselined_edges
+        from agent.graph.write_queue import WriteJob, WriteJobType, submit_sync
 
         baseline_gate.invalidate()
-        conn = _get_conn()
-        purged = purge_baselined_edges(conn, baseline_gate)
+        purged = submit_sync(WriteJob(
+            job_type=WriteJobType.PURGE_BASELINE,
+            payload={"baseline_gate": baseline_gate},
+        ))
+        purged = purged or 0
     except Exception as exc:
         logger.exception("On-demand baseline graph purge failed")
         raise HTTPException(500, "Purge failed") from exc
@@ -864,10 +954,13 @@ def add_allowlist_rule(body: dict):
     graph_purged = 0
     if rule_type in ResponseAllowlist.GRAPH_FILTERABLE_TYPES and not chain_filter:
         try:
-            from agent.graph.cleanup import purge_by_rule
+            from agent.graph.write_queue import WriteJob, WriteJobType, submit_sync
 
-            conn = _get_conn()
-            graph_purged = purge_by_rule(conn, rule_type, pattern)
+            result = submit_sync(WriteJob(
+                job_type=WriteJobType.PURGE_BY_RULE,
+                payload={"rule_type": rule_type, "pattern": pattern},
+            ))
+            graph_purged = result or 0
         except Exception:
             logger.warning("Graph purge failed for rule %s/%s", rule_type, pattern, exc_info=True)
 
@@ -892,11 +985,13 @@ def delete_allowlist_rule(rule_id: int):
 
 @app.get("/api/response/blocklist")
 def get_blocklist():
-    """Get all blocklist rules."""
+    """Get all blocklist rules (local + fleet-pushed network rules)."""
     blocklist = _state.get("blocklist")
-    if blocklist is None:
-        return {"rules": []}
-    return {"rules": blocklist.get_rules()}
+    local_rules = blocklist.get_rules() if blocklist else []
+    # Include fleet-pushed Sigma/network rules from the fast-path blocklist
+    fast_blocklist = _state.get("fast_blocklist")
+    fleet_rules = list(fast_blocklist._network_rules) if fast_blocklist else []
+    return {"rules": local_rules + fleet_rules}
 
 
 @app.post("/api/response/blocklist")

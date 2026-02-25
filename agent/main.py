@@ -21,7 +21,9 @@ from agent.analyzer.llm_analyzer import LlmAnalyzer
 from agent.analyzer.preflight import is_novel
 from agent.collectors import collect_all, get_collectors
 from agent.collectors.base import RawEvent
-from agent.config import Settings, load_settings
+from agent.config import Settings, compute_graph_memory_mb, load_config_file, load_settings
+from agent.graph import connection as kuzu_conn
+from agent.graph.connection import get_connection
 from agent.health import start_health_server
 from agent.logging_setup import setup_logging
 from agent.normalizer import normalize
@@ -61,6 +63,13 @@ _tray_app = None
 # Fleet forwarder instance (set in main() if fleet is enabled)
 _fleet_forwarder = None
 
+# Flight recorder instance (set in main() — always-on DVR, independent of fleet)
+_flight_recorder = None
+
+# Forensic ledger writer instance (Tier 1 capture — set in main())
+_ledger_writer = None
+
+
 
 def collector_thread(
     settings: Settings,
@@ -98,6 +107,55 @@ def collector_thread(
             c.stop()
 
 
+def _record_to_dvr(entities, ocsf) -> None:
+    """Record event to the continuous DVR flight recorder (no filtering)."""
+    import time as _time
+
+    event_type = type(ocsf).__name__
+    # Only record activity types relevant for forensics
+    if event_type not in ("ProcessActivity", "NetworkActivity", "Authentication"):
+        return
+
+    proc = entities.processes[0] if entities.processes else None
+    proc_name = proc.name if proc else getattr(getattr(ocsf, "process", None), "name", None)
+    pid = proc.pid if proc else getattr(getattr(ocsf, "process", None), "pid", None)
+    cmd_line = proc.cmd_line if proc else getattr(getattr(ocsf, "process", None), "cmd_line", None)
+    username = (entities.users[0].name or entities.users[0].id) if entities.users else None
+
+    # For network events: record one row per IP
+    if entities.ips:
+        for ip in entities.ips:
+            port = None
+            for edge in entities.connected_edges:
+                if edge.get("ip_id") == ip.id:
+                    port = edge.get("dst_port")
+                    break
+            if port is None:
+                ep = getattr(ocsf, "dst_endpoint", None) or getattr(ocsf, "src_endpoint", None)
+                if ep:
+                    port = ep.port or None
+            _flight_recorder.record({
+                "timestamp": _time.time(),
+                "event_type": event_type,
+                "process_name": proc_name,
+                "pid": pid,
+                "username": username,
+                "cmd_line": cmd_line,
+                "remote_ip": ip.address,
+                "remote_port": port,
+            })
+    else:
+        # Process/auth events without IPs
+        _flight_recorder.record({
+            "timestamp": _time.time(),
+            "event_type": event_type,
+            "process_name": proc_name,
+            "pid": pid,
+            "username": username,
+            "cmd_line": cmd_line,
+        })
+
+
 def processor_thread(
     settings: Settings,
     queue: SqliteQueue,
@@ -110,13 +168,14 @@ def processor_thread(
     fast_blocklist=None,
 ) -> None:
     """Process queued events: normalize, extract entities, write to graph."""
+    from agent.graph.write_queue import WriteJob, WriteJobType
+    from agent.graph.write_queue import submit as submit_write
     from agent.processor.allowlist_filter import filter_entities, has_entities
     from agent.processor.baseline_gate import gate_baselined_edges
     from agent.processor.self_filter import filter_agent_noise
 
     _agent_pid = os.getpid()
 
-    builder = GraphBuilder(kuzu_db)
     _last_prune = time.monotonic()
     _PRUNE_INTERVAL = 300.0  # Run retention pruning every 5 minutes
 
@@ -148,7 +207,8 @@ def processor_thread(
             continue
 
         try:
-            batch = queue.pop_batch(settings.processor_batch_size)
+            batch_size = settings.processor_batch_size
+            batch = queue.pop_batch(batch_size)
             if not batch:
                 _shutdown.wait(timeout=settings.processor_poll_interval)
                 continue
@@ -179,6 +239,12 @@ def processor_thread(
                             dga_threshold=settings.dga_score_threshold,
                             port_mapper=port_mapper,
                         )
+                        # ── Forensic Ledger (Tier 1, unfiltered) ──
+                        if _ledger_writer is not None:
+                            _ledger_writer.record(ocsf, entities, event_id)
+                        # ── DVR flight recorder (non-blocking) ──
+                        if _flight_recorder is not None:
+                            _record_to_dvr(entities, ocsf)
                         # Agent self-allowlist: suppress own telemetry
                         self_removed = filter_agent_noise(entities, _agent_pid)
                         if self_removed:
@@ -243,7 +309,7 @@ def processor_thread(
                     ).inc()
 
             if entity_batch:
-                builder.write_batch(entity_batch)
+                submit_write(WriteJob(job_type=WriteJobType.ENTITY_BATCH, payload=entity_batch))
             if event_ids:
                 queue.mark_processed(event_ids)
                 logger.debug("Processed %d events", len(event_ids))
@@ -270,10 +336,11 @@ def analyzer_thread(
     kuzu_db: kuzu.Database,
     response_engine: ResponseEngine | None = None,
     ioc_db=None,
+    ledger_reader=None,
 ) -> None:
     """Periodically analyze novel events with the LLM."""
-    analyzer = LlmAnalyzer(settings, kuzu_db, queue, ioc_db=ioc_db)
-    conn = kuzu.Connection(kuzu_db)
+    analyzer = LlmAnalyzer(settings, kuzu_db, queue, ioc_db=ioc_db, ledger_reader=ledger_reader)
+    conn = get_connection() if settings.kuzu_persistent_enabled else None
     # Start near the current queue head so we don't re-analyze the entire
     # history on every restart.  Only look back ~1000 events.
     last_analyzed_id = max(0, queue.max_processed_id() - 1000)
@@ -301,7 +368,7 @@ def analyzer_thread(
                 try:
                     raw = RawEvent.from_dict(raw_data)
                     ocsf = normalize(raw)
-                    if ocsf is not None and is_novel(conn, ocsf, settings.novel_edge_threshold):
+                    if ocsf is not None and (conn is None or is_novel(conn, ocsf, settings.novel_edge_threshold)):
                         novel_events.append((event_id, ocsf))
                 except Exception:
                     logger.debug("Failed to pre-flight event %d", event_id, exc_info=True)
@@ -329,7 +396,7 @@ def analyzer_thread(
                     # Trigger response engine for each finding
                     if response_engine:
                         try:
-                            _trigger_response(response_engine, finding, novel_events, kuzu_db=kuzu_db)
+                            _trigger_response(response_engine, finding, novel_events, kuzu_db=kuzu_db, graph_conn=conn)
                         except Exception:
                             logger.exception("Response engine failed for finding %s", finding.id)
 
@@ -366,57 +433,210 @@ def forwarder_thread(
 
 
 def reaper_thread(settings: Settings, kuzu_db: kuzu.Database) -> None:
-    """Periodically prune graph edges older than the configured TTL."""
-    from agent.graph.reaper import prune_old_edges
+    """Graph reaper: TTL-based pruning with memory pressure awareness.
 
-    logger.info("Started reaper thread (ttl=%dh)", settings.graph_ttl_hours)
+    Monitors RSS vs. memory limit and adjusts pruning aggressiveness.
+    Collectors NEVER pause — the forensic ledger captures all telemetry.
+
+    Pressure tiers (RSS / memory limit):
+      normal    (<75%): configured TTL, prune every hour
+      warning   (75-90%): 2h TTL, more aggressive edge-only prune + CHECKPOINT
+      critical  (>90%): 5min TTL, edge-only prune + high-degree pruning + CHECKPOINT
+
+    All write operations are submitted to the MPSC write queue.
+    """
+    from agent.graph.reaper import (
+        DB_SIZE_EMERGENCY_THRESHOLD_MB,
+        get_memory_limit_mb,
+        get_rss_mb,
+        measure_db_dir_size_mb,
+    )
+    from agent.graph.write_queue import WriteJob, WriteJobType
+    from agent.graph.write_queue import submit as submit_write
+
+    WAKE_INTERVAL = 60.0
+    FULL_PRUNE_INTERVAL = 3600.0
+
+    memory_limit_mb = get_memory_limit_mb()
+    logger.info(
+        "Started reaper thread (ttl=%dh, wake=%ds, memory_limit=%.0fMB)",
+        settings.graph_ttl_hours,
+        int(WAKE_INTERVAL),
+        memory_limit_mb,
+    )
+
+    graph_path = settings.graph_path
+    last_full_prune = 0.0
+    last_pressure = "normal"
+    first_run = True
 
     while not _shutdown.is_set():
-        _shutdown.wait(timeout=3600.0)  # 1 hour
+        if first_run:
+            first_run = False
+            try:
+                logger.info("Graph reaper: first-run edge-only prune starting")
+                submit_write(WriteJob(
+                    job_type=WriteJobType.PRUNE_EDGES,
+                    payload={"ttl_hours": settings.graph_ttl_hours},
+                ))
+                last_full_prune = time.monotonic()
+            except Exception:
+                logger.exception("Graph reaper first-run prune failed")
+            _shutdown.wait(timeout=WAKE_INTERVAL)
+            continue
+
+        _shutdown.wait(timeout=WAKE_INTERVAL)
         if _shutdown.is_set():
             break
+
         try:
-            conn = kuzu.Connection(kuzu_db)
-            pruned = prune_old_edges(conn, settings.graph_ttl_hours)
-            if pruned:
-                logger.info(
-                    "Graph reaper: pruned %d items (ttl=%dh)",
-                    pruned,
-                    settings.graph_ttl_hours,
+            rss_mb = get_rss_mb()
+            db_size_mb = measure_db_dir_size_mb(graph_path)
+            metrics.graph_db_size_mb.set(db_size_mb)
+            metrics.graph_rss_mb.set(rss_mb)
+
+            # --- Compute pressure tier from RSS ---
+            ratio = rss_mb / memory_limit_mb if memory_limit_mb > 0 else 0.0
+
+            if ratio > 0.90:
+                pressure = "critical"
+                effective_ttl = 5.0 / 60.0  # 5 minutes
+                metrics.graph_pressure_level.set(3)
+            elif ratio > 0.75:
+                pressure = "warning"
+                effective_ttl = min(settings.graph_ttl_hours, 2.0)
+                metrics.graph_pressure_level.set(2)
+            else:
+                pressure = "normal"
+                effective_ttl = float(settings.graph_ttl_hours)
+                metrics.graph_pressure_level.set(0)
+
+            # Log pressure transitions
+            if pressure != last_pressure:
+                logger.warning(
+                    "Memory pressure: %s -> %s (RSS=%.0fMB / %.0fMB = %.0f%%, TTL=%.2fh)",
+                    last_pressure, pressure,
+                    rss_mb, memory_limit_mb, ratio * 100,
+                    effective_ttl,
                 )
+                last_pressure = pressure
+
+            now = time.monotonic()
+
+            # --- Decide what to prune ---
+            if pressure == "critical":
+                # Edge-only prune + high-degree node pruning + CHECKPOINT
+                submit_write(WriteJob(
+                    job_type=WriteJobType.PRUNE_EDGES,
+                    payload={"ttl_hours": effective_ttl},
+                ))
+                submit_write(WriteJob(
+                    job_type=WriteJobType.PRUNE_HIGH_DEGREE,
+                    payload={"edge_threshold": 100, "keep_pct": 0.80},
+                ))
+                submit_write(WriteJob(job_type=WriteJobType.CHECKPOINT))
+                metrics.graph_reaper_emergency_prunes.inc()
+                last_full_prune = now
+            elif pressure == "warning":
+                # Full prune with reduced TTL + CHECKPOINT
+                submit_write(WriteJob(
+                    job_type=WriteJobType.PRUNE_FULL,
+                    payload={"ttl_hours": effective_ttl},
+                ))
+                submit_write(WriteJob(job_type=WriteJobType.CHECKPOINT))
+                last_full_prune = now
+            elif db_size_mb > DB_SIZE_EMERGENCY_THRESHOLD_MB:
+                # DB file size emergency (even if RSS is fine)
+                logger.warning(
+                    "Graph reaper: DB size %.1f MB > %d MB threshold",
+                    db_size_mb, DB_SIZE_EMERGENCY_THRESHOLD_MB,
+                )
+                submit_write(WriteJob(
+                    job_type=WriteJobType.PRUNE_EDGES,
+                    payload={"ttl_hours": effective_ttl},
+                ))
+                metrics.graph_reaper_emergency_prunes.inc()
+                last_full_prune = now
+            elif now - last_full_prune >= FULL_PRUNE_INTERVAL:
+                # Scheduled: full prune with configured TTL
+                submit_write(WriteJob(
+                    job_type=WriteJobType.PRUNE_FULL,
+                    payload={"ttl_hours": effective_ttl},
+                ))
+                last_full_prune = now
+            else:
+                logger.debug(
+                    "Graph reaper idle (RSS=%.0fMB, DB=%.1fMB)",
+                    rss_mb, db_size_mb,
+                )
+
         except Exception:
             logger.exception("Graph reaper cycle failed")
 
 
-def _graph_chain_to_chainsteps(graph_chain: list[dict]) -> list:
-    """Convert get_process_chain() output dicts to ChainStep objects.
+def graph_writer_thread(settings: Settings, kuzu_db: kuzu.Database) -> None:
+    """Single-writer consumer: drains the MPSC write queue using ONE Kuzu connection.
 
-    get_process_chain() returns dicts like:
-      - {"type": "user", "id": ..., "name": ...}
-      - {"id": ..., "name": ..., "pid": ..., "parent_pid": ..., ...}
+    This is the ONLY thread that writes to Kuzu. All other threads submit
+    WriteJob objects to the queue via write_queue.submit().
     """
-    from agent.schema.graph_types import ChainStep
+    import queue as _queue_mod
 
-    steps = []
-    for entry in graph_chain:
-        if entry.get("type") == "user":
-            steps.append(
-                ChainStep(
-                    entity_type="user",
-                    entity_id=entry.get("id", ""),
-                    entity_name=entry.get("name", ""),
+    # Create the ONE write connection + GraphBuilder for this thread
+    from agent.graph.connection import get_writer_connection
+    from agent.graph.reaper import prune_edges_only, prune_high_degree_nodes, prune_old_edges
+    from agent.graph.write_queue import WriteJobType, get_queue
+
+    conn = get_writer_connection()
+    builder = GraphBuilder(kuzu_db, conn=conn)
+
+    q = get_queue()
+    logger.info("Graph writer thread started (single-writer mode)")
+
+    while not _shutdown.is_set():
+        try:
+            job = q.get(timeout=1.0)
+        except _queue_mod.Empty:
+            continue
+
+        if job.job_type == WriteJobType.SHUTDOWN:
+            logger.info("Graph writer received shutdown signal")
+            break
+
+        try:
+            if job.job_type == WriteJobType.ENTITY_BATCH:
+                builder._write_batch_unlocked(job.payload)
+            elif job.job_type == WriteJobType.IP_ENRICHMENT:
+                builder.upsert_ip_enrichment(job.payload)
+            elif job.job_type == WriteJobType.PRUNE_EDGES:
+                job._result = prune_edges_only(conn, job.payload["ttl_hours"])
+            elif job.job_type == WriteJobType.PRUNE_FULL:
+                job._result = prune_old_edges(conn, job.payload["ttl_hours"])
+            elif job.job_type == WriteJobType.PRUNE_HIGH_DEGREE:
+                job._result = prune_high_degree_nodes(
+                    conn,
+                    edge_threshold=job.payload.get("edge_threshold", 100),
+                    keep_pct=job.payload.get("keep_pct", 0.80),
                 )
-            )
-        else:
-            steps.append(
-                ChainStep(
-                    entity_type="process",
-                    entity_id=entry.get("id", ""),
-                    entity_name=entry.get("name", ""),
-                    pid=entry.get("pid"),
-                )
-            )
-    return steps
+            elif job.job_type == WriteJobType.PURGE_BASELINE:
+                from agent.graph.cleanup import purge_baselined_edges
+
+                job._result = purge_baselined_edges(conn, job.payload["baseline_gate"])
+            elif job.job_type == WriteJobType.PURGE_BY_RULE:
+                from agent.graph.cleanup import purge_by_rule
+
+                job._result = purge_by_rule(conn, job.payload["rule_type"], job.payload["pattern"])
+            elif job.job_type == WriteJobType.CHECKPOINT:
+                try:
+                    conn.execute("CHECKPOINT")
+                except Exception:
+                    logger.debug("Checkpoint failed (non-fatal)", exc_info=True)
+        except Exception:
+            logger.exception("Graph writer failed for %s job", job.job_type.name)
+        finally:
+            job._result_event.set()  # Wake any sync waiters
+
+    logger.info("Graph writer thread stopped")
 
 
 def _trigger_response(
@@ -424,6 +644,7 @@ def _trigger_response(
     finding,
     events: list,
     kuzu_db=None,
+    graph_conn: kuzu.Connection | None = None,
 ) -> None:
     """Trigger the response engine for a finding.
 
@@ -473,12 +694,12 @@ def _trigger_response(
     chain = finding.chain
     if kuzu_db and target_pid and target_pid > 0:
         try:
-            from agent.graph.queries import get_process_chain
+            from agent.graph.queries import get_process_chain, graph_chain_to_chainsteps
 
-            conn = kuzu.Connection(kuzu_db)
+            conn = graph_conn or get_connection()
             graph_chain = get_process_chain(conn, target_pid)
             if graph_chain:
-                chain = _graph_chain_to_chainsteps(graph_chain)
+                chain = graph_chain_to_chainsteps(graph_chain)
         except Exception:
             logger.debug("Graph chain lookup failed for PID %s, using finding.chain", target_pid, exc_info=True)
 
@@ -689,6 +910,12 @@ def _push_finding_notification(finding) -> None:
 def main() -> None:
     global _tray_app
 
+    # Ensure "import agent.main" resolves to THIS module even when launched
+    # via "python -m agent.main" (which loads us as __main__).  Without this,
+    # deferred imports like `from agent.main import _flight_recorder` in
+    # federated_queries.py would get a *second* copy with stale globals.
+    sys.modules.setdefault("agent.main", sys.modules[__name__])
+
     # Set process title so we show as "edr-graph" in Activity Monitor / ps
     try:
         import setproctitle
@@ -859,24 +1086,52 @@ def main() -> None:
         queue_depth_fn=queue.count_unprocessed,
     )
 
-    # Initialize Kuzu graph
-    kuzu_db = kuzu.Database(
-        str(settings.graph_path),
-        buffer_pool_size=settings.graph_max_memory_mb * 1024 * 1024,
-    )
-    init_conn = kuzu.Connection(kuzu_db)
-    init_graph_schema(init_conn)
-    logger.info("Graph schema initialized")
+    # Dynamic memory: auto-detect unless config file explicitly sets graph_max_memory_mb
+    overrides = load_config_file(Path(config_path)) if config_path else {}
+    if "graph_max_memory_mb" not in overrides:
+        settings.graph_max_memory_mb = compute_graph_memory_mb()
 
-    # Backfill parent_pid for existing processes using psutil
-    from agent.processor.graph_builder import backfill_parent_pids
+    # Ledger reader (shared across dashboard, analyzer, federated queries)
+    _ledger_reader = None
+    if settings.forensic_ledger_enabled:
+        try:
+            from agent.ledger.reader import LedgerReader
+            _ledger_reader = LedgerReader(settings.data_dir)
+        except Exception:
+            logger.warning("Failed to create ledger reader", exc_info=True)
 
-    backfill_parent_pids(kuzu_db)
+    kuzu_db = None
+    if settings.kuzu_persistent_enabled:
+        # Initialize persistent Kuzu graph
+        kuzu_db = kuzu.Database(
+            str(settings.graph_path),
+            buffer_pool_size=settings.graph_max_memory_mb * 1024 * 1024,
+        )
+        # Initialize the shared database (thread-local connections created on demand)
+        kuzu_conn.init(kuzu_db)
+        init_conn = get_connection()
+        init_graph_schema(init_conn)
+        logger.info("Graph schema initialized (persistent)")
 
-    # Build in-memory PID index for fast dashboard graph queries
-    from agent.graph.pid_index import get_pid_index
+        # Backfill parent_pid for existing processes using psutil
+        from agent.processor.graph_builder import backfill_parent_pids
 
-    get_pid_index().build(init_conn)
+        backfill_parent_pids(kuzu_db)
+
+        # Build in-memory PID index from Kuzu scan
+        from agent.graph.pid_index import get_pid_index
+
+        get_pid_index().build(init_conn)
+    else:
+        logger.info("Persistent Kuzu disabled — using forensic ledger + on-demand graph")
+        from agent.graph.pid_index import get_pid_index
+
+        # Build PID index from ledger instead of Kuzu
+        if _ledger_reader is not None:
+            try:
+                get_pid_index().build_from_ledger(_ledger_reader)
+            except Exception:
+                logger.warning("Failed to build PID index from ledger", exc_info=True)
 
     # Initialize file attribution cache (for FSEvents PID 0 attribution)
     from agent.enrichment.file_attribution import get_file_attribution_cache
@@ -1000,6 +1255,17 @@ def main() -> None:
         fast_blocklist = FastBlocklist(blocklist)
         logger.info("Fast-path blocklist enforcer initialized")
 
+    # Start single graph writer thread (MUST start before processor/reaper)
+    if settings.kuzu_persistent_enabled:
+        t = threading.Thread(
+            target=graph_writer_thread,
+            args=(settings, kuzu_db),
+            daemon=True,
+            name="graph-writer",
+        )
+        t.start()
+        threads.append(t)
+
     t = threading.Thread(target=collector_thread, args=(settings, queue), daemon=True, name="collector")
     t.start()
     threads.append(t)
@@ -1015,15 +1281,32 @@ def main() -> None:
 
     t = threading.Thread(
         target=analyzer_thread,
-        args=(settings, queue, kuzu_db, response_engine, ioc_db),
+        args=(settings, queue, kuzu_db, response_engine, ioc_db, _ledger_reader),
         daemon=True,
         name="analyzer",
     )
     t.start()
     threads.append(t)
 
+    # Initialize forensic ledger (Tier 1 capture — always-on)
+    global _fleet_forwarder, _flight_recorder, _ledger_writer
+    if settings.forensic_ledger_enabled:
+        try:
+            from agent.ledger.writer import LedgerWriter
+
+            _ledger_writer = LedgerWriter(settings.data_dir, ttl_hours=settings.forensic_ledger_ttl_hours)
+        except Exception:
+            logger.warning("Forensic ledger initialization failed", exc_info=True)
+
+    # Initialize flight recorder (continuous DVR — always-on, independent of fleet)
+    try:
+        from agent.flight_recorder import FlightRecorder
+
+        _flight_recorder = FlightRecorder(settings.data_dir, ttl_hours=settings.flight_recorder_ttl_hours)
+    except Exception:
+        logger.debug("Flight recorder initialization failed", exc_info=True)
+
     # Fleet forwarder thread (optional)
-    global _fleet_forwarder
     if settings.fleet_enabled and settings.fleet_url:
         try:
             from agent.fleet.forwarder import FleetForwarder
@@ -1051,6 +1334,17 @@ def main() -> None:
             )
             _fleet_forwarder.register()
 
+            # Wire federated query executor so the agent can answer
+            # XDR queries from the fleet server against its local Kuzu DB
+            try:
+                from agent.graph.federated_queries import execute_query as _exec_federated
+
+                _fleet_forwarder.set_query_executor(
+                    lambda qt, params: _exec_federated(kuzu_db, qt, params)
+                )
+            except Exception:
+                logger.debug("Federated query executor wiring failed", exc_info=True)
+
             t = threading.Thread(
                 target=forwarder_thread,
                 args=(settings, _fleet_forwarder),
@@ -1063,15 +1357,31 @@ def main() -> None:
         except Exception:
             logger.warning("Fleet forwarder initialization failed", exc_info=True)
 
-    # Graph reaper thread (TTL pruning)
-    t = threading.Thread(
-        target=reaper_thread,
-        args=(settings, kuzu_db),
-        daemon=True,
-        name="reaper",
-    )
-    t.start()
-    threads.append(t)
+    # Graph reaper thread (TTL pruning) — only when persistent Kuzu is enabled
+    if settings.kuzu_persistent_enabled:
+        t = threading.Thread(
+            target=reaper_thread,
+            args=(settings, kuzu_db),
+            daemon=True,
+            name="reaper",
+        )
+        t.start()
+        threads.append(t)
+
+    # Warm graph for dashboard (when persistent Kuzu is disabled)
+    _warm_graph = None
+    if not settings.kuzu_persistent_enabled and settings.forensic_ledger_enabled:
+        try:
+            from agent.ledger.reader import LedgerReader
+            from agent.ledger.warm_cache import WarmGraph
+
+            if _ledger_reader is None:
+                _ledger_reader = LedgerReader(settings.data_dir)
+            _warm_graph = WarmGraph(_ledger_reader, window_hours=2.0)
+            _warm_graph.start()
+            logger.info("Warm graph started (window=2h, rebuild=300s)")
+        except Exception:
+            logger.warning("Warm graph initialization failed", exc_info=True)
 
     logger.info("All pipeline threads started")
 
@@ -1104,6 +1414,11 @@ def main() -> None:
                 allowlist_cache=allowlist_cache,
                 baseline_gate=baseline_gate,
             )
+            # Set warm graph and ledger reader for dashboard
+            if _warm_graph is not None:
+                _ds["warm_graph"] = _warm_graph
+            if _ledger_reader is not None:
+                _ds["ledger_reader"] = _ledger_reader
             start_dashboard_server(port=settings.dashboard_port)
             logger.info("Dashboard server started on http://127.0.0.1:%d", settings.dashboard_port)
 
@@ -1155,10 +1470,21 @@ def main() -> None:
     else:
         _wait_for_shutdown()
 
-    # Shutdown sequence
+    # Shutdown sequence — signal the graph writer to drain and stop
+    if settings.kuzu_persistent_enabled:
+        from agent.graph.write_queue import WriteJob, WriteJobType
+        from agent.graph.write_queue import submit as _submit_shutdown
+
+        _submit_shutdown(WriteJob(job_type=WriteJobType.SHUTDOWN))
     _shutdown.set()
+    if _warm_graph is not None:
+        _warm_graph.stop()
     if tamper_checker:
         tamper_checker.stop()
+    if _ledger_writer:
+        _ledger_writer.stop()
+    if _flight_recorder:
+        _flight_recorder.stop()
     logger.info("Waiting for threads to stop...")
     for t in threads:
         t.join(timeout=5.0)

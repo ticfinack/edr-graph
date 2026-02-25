@@ -163,6 +163,37 @@ def get_process_chain(conn: kuzu.Connection, pid: int) -> list[dict]:
         return []
 
 
+def graph_chain_to_chainsteps(graph_chain: list[dict]) -> list:
+    """Convert get_process_chain() output dicts to ChainStep objects.
+
+    get_process_chain() returns dicts like:
+      - {"type": "user", "id": ..., "name": ...}
+      - {"id": ..., "name": ..., "pid": ..., "parent_pid": ..., ...}
+    """
+    from agent.schema.graph_types import ChainStep
+
+    steps = []
+    for entry in graph_chain:
+        if entry.get("type") == "user":
+            steps.append(
+                ChainStep(
+                    entity_type="user",
+                    entity_id=entry.get("id", ""),
+                    entity_name=entry.get("name", ""),
+                )
+            )
+        else:
+            steps.append(
+                ChainStep(
+                    entity_type="process",
+                    entity_id=entry.get("id", ""),
+                    entity_name=entry.get("name", ""),
+                    pid=entry.get("pid"),
+                )
+            )
+    return steps
+
+
 def get_process_children(conn: kuzu.Connection, pid: int, limit: int = 50) -> list[dict]:
     """Get direct child processes via parent_pid.
 

@@ -24,7 +24,7 @@ RestartSec=5
 # Resource limits
 LimitNOFILE=65536
 LimitNPROC=4096
-MemoryMax=512M
+MemoryMax=4G
 CPUQuota=20%
 
 # Working directory and data paths

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import platform
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -45,6 +46,10 @@ class FleetForwarder:
         self._stub: fleet_pb2_grpc.FleetServiceStub | None = None
         self._connected = False
         self._ntp_monitor = ntp_monitor
+        self._query_executor: callable | None = None
+        self._pending_results: list[dict] = []
+        self._surveillance_lock = threading.Lock()
+        self._surveillance_targets: dict = {}
         self._public_ip_monitor: PublicIpMonitor | None = None
         if settings.fleet_public_ip_interval > 0:
             self._public_ip_monitor = PublicIpMonitor(
@@ -216,6 +221,14 @@ class FleetForwarder:
             self._queue.mark_forward_failed(ids, max_retries=self._settings.fleet_retry_max)
             logger.warning("Failed to forward events: %s", e)
 
+    @property
+    def surveillance_targets(self) -> dict:
+        """Thread-safe deep copy of current surveillance targets from active incidents."""
+        import copy
+
+        with self._surveillance_lock:
+            return copy.deepcopy(self._surveillance_targets)
+
     def set_enforcement_stages(
         self,
         allowlist=None,
@@ -228,6 +241,10 @@ class FleetForwarder:
         self._blocklist = blocklist
         self._fast_blocklist = fast_blocklist
         self._allowlist_cache = allowlist_cache
+
+    def set_query_executor(self, executor: callable) -> None:
+        """Set callback for executing federated queries against local graph DB."""
+        self._query_executor = executor
 
     def _apply_rules(self, rules: list[dict]) -> None:
         """Split rules by action+stage and push to the appropriate enforcement stages."""
@@ -304,6 +321,28 @@ class FleetForwarder:
             logger.debug("Bad config_json from heartbeat: %s", config_json[:100])
             return
 
+        # Extract surveillance targets from active incidents
+        surveillance = overrides.pop("active_surveillance", None)
+        if isinstance(surveillance, dict):
+            with self._surveillance_lock:
+                self._surveillance_targets = surveillance
+        elif surveillance is None:
+            with self._surveillance_lock:
+                self._surveillance_targets = {}
+
+        # Extract and execute federated queries
+        pending_queries = overrides.pop("pending_queries", [])
+        if isinstance(pending_queries, list) and self._query_executor:
+            for q in pending_queries:
+                try:
+                    result = self._query_executor(q["query_type"], q.get("params", {}))
+                    self._pending_results.append({
+                        "query_id": q["query_id"],
+                        "result": result,
+                    })
+                except Exception:
+                    logger.debug("Federated query %s failed", q.get("query_id"), exc_info=True)
+
         # Extract and distribute rules before processing scalar overrides
         rules = overrides.pop("rules", [])
         if isinstance(rules, list):
@@ -326,6 +365,12 @@ class FleetForwarder:
         if self._ntp_monitor is not None:
             clock_offset_ms = self._ntp_monitor.current_offset_ms
 
+        # Collect completed federated query results
+        query_results_json = ""
+        if self._pending_results:
+            query_results_json = json.dumps(self._pending_results)
+            self._pending_results.clear()
+
         local_ips = get_local_ips()
         request = fleet_pb2.HeartbeatRequest(
             agent_id=self._agent_id,
@@ -336,6 +381,7 @@ class FleetForwarder:
             clock_offset_ms=clock_offset_ms,
             ip_addresses=local_ips,
             public_ip=self._public_ip_monitor.current_ip if self._public_ip_monitor else "",
+            query_results_json=query_results_json,
         )
         try:
             response = self._stub.Heartbeat(request, timeout=10)

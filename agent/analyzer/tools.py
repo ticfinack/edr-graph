@@ -22,6 +22,7 @@ from typing import Any
 import kuzu
 
 from agent.config import Settings
+from agent.graph.connection import get_connection
 from agent.intel import mitre_attack
 
 from .tool_cache import ToolCache
@@ -374,10 +375,12 @@ class ToolExecutor:
         settings: Settings,
         kuzu_db: kuzu.Database,
         cache: ToolCache,
+        conn: kuzu.Connection | None = None,
     ) -> None:
         self._settings = settings
         self._kuzu_db = kuzu_db
         self._cache = cache
+        self._graph_conn: kuzu.Connection | None = conn
 
     def execute(self, tool_name: str, arguments: dict) -> str:
         """Dispatch a tool call, checking cache first."""
@@ -489,7 +492,14 @@ class ToolExecutor:
         return json.dumps({"query": query, "matches": results})
 
     def _handle_graph_context_query(self, entity_type: str, entity_id: str) -> str:
-        conn = kuzu.Connection(self._kuzu_db)
+        if self._graph_conn is not None:
+            conn = self._graph_conn
+        else:
+            try:
+                conn = get_connection()
+            except RuntimeError:
+                self._graph_conn = kuzu.Connection(self._kuzu_db)
+                conn = self._graph_conn
         limit = self._settings.graph_context_limit
         rows: list[dict[str, Any]] = []
 

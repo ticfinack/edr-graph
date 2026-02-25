@@ -85,6 +85,50 @@ CREATE TABLE IF NOT EXISTS tag_rules (
     updated_at INTEGER NOT NULL,
     FOREIGN KEY (tag_name) REFERENCES tags(tag_name) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS xdr_queries (
+    query_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    finding_id TEXT NOT NULL,
+    query_type TEXT NOT NULL,
+    params_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    result_json TEXT,
+    created_at INTEGER NOT NULL,
+    completed_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS incident_surveillance_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    side TEXT NOT NULL,
+    original_log_id INTEGER NOT NULL,
+    timestamp REAL NOT NULL,
+    event_type TEXT NOT NULL,
+    process_name TEXT,
+    pid INTEGER,
+    username TEXT,
+    cmd_line TEXT,
+    remote_ip TEXT,
+    remote_port INTEGER,
+    details_json TEXT,
+    ingested_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_surv_dedup
+    ON incident_surveillance_logs (incident_id, agent_id, original_log_id);
+
+CREATE INDEX IF NOT EXISTS idx_surv_incident
+    ON incident_surveillance_logs (incident_id, side);
+
+CREATE TABLE IF NOT EXISTS surveillance_pull_state (
+    incident_id TEXT NOT NULL,
+    side TEXT NOT NULL,
+    last_enqueue_at INTEGER NOT NULL DEFAULT 0,
+    last_record_ts REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (incident_id, side)
+);
 """
 
 _DEFAULT_SETTINGS: dict[str, str] = {
@@ -590,6 +634,181 @@ class SettingsDB:
             base[r["setting_key"]] = r["setting_value"]
         base["rules"] = self.resolve_agent_rules(agent_id)
         return base
+
+    # ── XDR Federated Queries ──
+
+    def enqueue_xdr_query(self, query_id: str, agent_id: str, finding_id: str, query_type: str, params_json: str) -> None:
+        """Insert a pending federated query for delivery to an agent."""
+        conn = self._conn()
+        now = int(time.time())
+        conn.execute(
+            "INSERT OR IGNORE INTO xdr_queries (query_id, agent_id, finding_id, query_type, params_json, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+            (query_id, agent_id, finding_id, query_type, params_json, now),
+        )
+        conn.commit()
+
+    def get_pending_queries_for_agent(self, agent_id: str) -> list[dict]:
+        """Return pending queries for delivery via heartbeat."""
+        rows = self._conn().execute(
+            "SELECT query_id, query_type, params_json FROM xdr_queries WHERE agent_id = ? AND status = 'pending'",
+            (agent_id,),
+        ).fetchall()
+        import json as _json
+        result = []
+        for r in rows:
+            entry = {"query_id": r["query_id"], "query_type": r["query_type"]}
+            try:
+                entry["params"] = _json.loads(r["params_json"])
+            except (ValueError, TypeError):
+                entry["params"] = {}
+            result.append(entry)
+        return result
+
+    def complete_xdr_query(self, query_id: str, result_json: str) -> dict | None:
+        """Mark a query completed with results.
+
+        Returns dict with {agent_id, finding_id, query_type} on success, None otherwise.
+        """
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT agent_id, finding_id, query_type FROM xdr_queries WHERE query_id = ? AND status = 'pending'",
+            (query_id,),
+        ).fetchone()
+        if not row:
+            return None
+        now = int(time.time())
+        conn.execute(
+            "UPDATE xdr_queries SET status = 'completed', result_json = ?, completed_at = ? "
+            "WHERE query_id = ? AND status = 'pending'",
+            (result_json, now, query_id),
+        )
+        conn.commit()
+        return {"agent_id": row["agent_id"], "finding_id": row["finding_id"], "query_type": row["query_type"]}
+
+    def get_xdr_result(self, finding_id: str, query_type: str) -> dict | None:
+        """Get query status/result for a finding. Returns {status, result_json} or None."""
+        row = self._conn().execute(
+            "SELECT status, result_json FROM xdr_queries WHERE finding_id = ? AND query_type = ? ORDER BY created_at DESC LIMIT 1",
+            (finding_id, query_type),
+        ).fetchone()
+        return dict(row) if row else None
+
+    # ── Surveillance Log Storage ──
+
+    def upsert_surveillance_logs(self, incident_id: str, agent_id: str, side: str, records: list[dict]) -> int:
+        """Insert surveillance log records, deduplicating via original_log_id.
+
+        Returns count of newly inserted rows.
+        """
+        conn = self._conn()
+        now = int(time.time())
+        rows_before = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM incident_surveillance_logs WHERE incident_id = ?",
+            (incident_id,),
+        ).fetchone()["cnt"]
+        conn.executemany(
+            "INSERT OR IGNORE INTO incident_surveillance_logs "
+            "(incident_id, agent_id, side, original_log_id, timestamp, event_type, "
+            "process_name, pid, username, cmd_line, remote_ip, remote_port, details_json, ingested_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    incident_id, agent_id, side,
+                    r.get("id", 0),
+                    r.get("timestamp", 0),
+                    r.get("event_type", ""),
+                    r.get("process_name"),
+                    r.get("pid"),
+                    r.get("username"),
+                    r.get("cmd_line"),
+                    r.get("remote_ip"),
+                    r.get("remote_port"),
+                    None,
+                    now,
+                )
+                for r in records
+            ],
+        )
+        conn.commit()
+        rows_after = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM incident_surveillance_logs WHERE incident_id = ?",
+            (incident_id,),
+        ).fetchone()["cnt"]
+        return rows_after - rows_before
+
+    def get_surveillance_logs(self, incident_id: str) -> dict:
+        """Get surveillance logs partitioned by side.
+
+        Returns {"dst_logs": [...], "src_logs": [...]}.
+        """
+        rows = self._conn().execute(
+            "SELECT side, original_log_id, timestamp, event_type, process_name, pid, "
+            "username, cmd_line, remote_ip, remote_port "
+            "FROM incident_surveillance_logs WHERE incident_id = ? ORDER BY timestamp DESC",
+            (incident_id,),
+        ).fetchall()
+        dst_logs: list[dict] = []
+        src_logs: list[dict] = []
+        for r in rows:
+            entry = {
+                "id": r["original_log_id"],
+                "timestamp": r["timestamp"],
+                "event_type": r["event_type"],
+                "process_name": r["process_name"],
+                "pid": r["pid"],
+                "username": r["username"],
+                "cmd_line": r["cmd_line"],
+                "remote_ip": r["remote_ip"],
+                "remote_port": r["remote_port"],
+            }
+            if r["side"] == "dst":
+                dst_logs.append(entry)
+            else:
+                src_logs.append(entry)
+        return {"dst_logs": dst_logs, "src_logs": src_logs}
+
+    def get_surveillance_pull_state(self, incident_id: str, side: str) -> dict:
+        """Get pull state for an incident side. Returns defaults if not found."""
+        row = self._conn().execute(
+            "SELECT last_enqueue_at, last_record_ts FROM surveillance_pull_state "
+            "WHERE incident_id = ? AND side = ?",
+            (incident_id, side),
+        ).fetchone()
+        if row:
+            return {"last_enqueue_at": row["last_enqueue_at"], "last_record_ts": row["last_record_ts"]}
+        return {"last_enqueue_at": 0, "last_record_ts": 0.0}
+
+    def set_surveillance_pull_state(
+        self, incident_id: str, side: str,
+        last_enqueue_at: int | None = None,
+        last_record_ts: float | None = None,
+    ) -> None:
+        """Upsert pull state. Uses MAX for last_record_ts to avoid regression."""
+        conn = self._conn()
+        conn.execute(
+            "INSERT INTO surveillance_pull_state (incident_id, side, last_enqueue_at, last_record_ts) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(incident_id, side) DO UPDATE SET "
+            "last_enqueue_at = CASE WHEN ? IS NOT NULL THEN ? ELSE surveillance_pull_state.last_enqueue_at END, "
+            "last_record_ts = CASE WHEN ? IS NOT NULL THEN MAX(surveillance_pull_state.last_record_ts, ?) "
+            "ELSE surveillance_pull_state.last_record_ts END",
+            (
+                incident_id, side,
+                last_enqueue_at or 0, last_record_ts or 0.0,
+                last_enqueue_at, last_enqueue_at,
+                last_record_ts, last_record_ts,
+            ),
+        )
+        conn.commit()
+
+    def has_pending_xdr_query(self, finding_id: str, query_type: str) -> bool:
+        """Check if there's a pending XDR query for this finding_id and query_type."""
+        row = self._conn().execute(
+            "SELECT 1 FROM xdr_queries WHERE finding_id = ? AND query_type = ? AND status = 'pending' LIMIT 1",
+            (finding_id, query_type),
+        ).fetchone()
+        return row is not None
 
     def close(self) -> None:
         if hasattr(self._local, "conn") and self._local.conn:

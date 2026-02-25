@@ -132,6 +132,12 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
 .vtree-step.type-domain{border-color:#34d399}
 .vtree-step.type-file{border-color:#fbbf24}
 .vtree-arrow{color:var(--dim);font-size:18px;padding:4px 0;text-align:center}
+.vtree-commands{margin-top:4px;display:flex;flex-direction:column;align-items:center;gap:0}
+.vtree-cmd-arrow{color:var(--high);font-size:14px;padding:2px 0;text-align:center}
+.vtree-command{background:rgba(249,115,22,0.06);border:1px solid var(--high);border-radius:6px;padding:8px 12px;min-width:120px;max-width:280px;text-align:left;font-size:12px}
+.vtree-command .cmd-label{color:var(--high);font-size:10px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px;font-weight:600}
+.vtree-command .cmd-line{font-family:"SF Mono",Menlo,Monaco,monospace;font-size:11px;word-break:break-all;color:var(--text);line-height:1.4}
+.vtree-command .cmd-meta{color:var(--dim);font-size:10px;margin-top:3px}
 
 /* Empty state */
 .empty-state{text-align:center;padding:60px 20px;color:var(--dim)}
@@ -182,6 +188,14 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
 .loading{text-align:center;padding:40px;color:var(--dim)}
 .spinner{display:inline-block;width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;margin-right:8px;vertical-align:middle}
 @keyframes spin{to{transform:rotate(360deg)}}
+.sweep-spinner{width:12px;height:12px;border:2px solid var(--dim);border-top-color:var(--yellow,var(--medium));border-radius:50%;animation:spin 1s linear infinite;display:inline-block}
+
+/* Incident status badges */
+.incident-status{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase}
+.incident-status.detected{background:rgba(234,179,8,0.15);color:var(--medium)}
+.incident-status.sweeping{background:rgba(59,130,246,0.15);color:var(--accent)}
+.incident-status.active{background:rgba(239,68,68,0.15);color:var(--critical)}
+.incident-status.closed{background:rgba(107,114,128,0.15);color:var(--dim)}
 </style>
 </head>
 <body>
@@ -219,6 +233,7 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
   <div class="tab-bar" id="tabBar">
     <button class="tab-btn active" data-tab="fleet">Fleet Overview</button>
     <button class="tab-btn" data-tab="findings">Findings <span id="findingsCount" class="tab-count">0</span></button>
+    <button class="tab-btn" data-tab="incidents">Incidents <span id="incidentsCount" class="tab-count warn">0</span></button>
     <button class="tab-btn" data-tab="lateral">Lateral Movement <span id="lateralCount" class="tab-count warn">0</span></button>
     <button class="tab-btn" data-tab="vertical">Vertical Movement <span id="verticalCount" class="tab-count warn">0</span></button>
     <button class="tab-btn" data-tab="threatintel">Threat Intel <span id="threatintelCount" class="tab-count">0</span></button>
@@ -276,6 +291,26 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
             </tr>
           </thead>
           <tbody id="findingsTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Incidents -->
+    <div class="tab-panel" id="panel-incidents">
+      <div id="incidentDetail" class="hidden"></div>
+      <div id="incidentList">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:80px">Status</th>
+              <th>Source Host</th>
+              <th style="width:120px">Pivot IP</th>
+              <th>Target Host</th>
+              <th style="width:80px">Follow-On</th>
+              <th style="width:160px">Updated</th>
+            </tr>
+          </thead>
+          <tbody id="incidentsTableBody"></tbody>
         </table>
       </div>
     </div>
@@ -513,8 +548,13 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
 // ── State ──
 let token = localStorage.getItem('soc_token');
 let currentUser = null;
-let fleetData = {agents:[], findings:[], lateral:[], vertical:[], hostConns:[]};
+let fleetData = {agents:[], findings:[], lateral:[], vertical:[], hostConns:[], incidents:[]};
 let refreshTimer = null;
+let _survPollInterval = null;
+let _currentIncidentId = null;
+let _currentIncidentStatus = null;
+let _currentSrcChain = [];
+let _currentTgtChain = [];
 
 // ── API helpers ──
 async function api(path, opts={}) {
@@ -577,18 +617,20 @@ async function showApp() {
 
 async function refreshAll() {
   try {
-    const [agents, findings, lateral, vertical, hostConns, threatIntel] = await Promise.all([
+    const [agents, findings, lateral, vertical, hostConns, incidents, threatIntel] = await Promise.all([
       api('/api/fleet/agents'),
       api('/api/fleet/findings?limit=200'),
       api('/api/fleet/lateral-movements?limit=100'),
       api('/api/fleet/vertical-movements?limit=100'),
       api('/api/fleet/host-connections?limit=100'),
+      api('/api/fleet/incidents?limit=100'),
       api('/api/threat-intel/rules').catch(() => null),
     ]);
-    fleetData = {agents, findings, lateral, vertical, hostConns};
+    fleetData = {agents, findings, lateral, vertical, hostConns, incidents};
     if (threatIntel) { threatIntelData = threatIntel; threatIntelLoaded = true; }
     renderFleet();
     renderFindings();
+    renderIncidents();
     renderLateral();
     renderVertical();
     updateCounts();
@@ -605,6 +647,10 @@ function updateCounts() {
   const vc = document.getElementById('verticalCount');
   vc.textContent = fleetData.vertical.length;
   vc.className = 'tab-count' + (fleetData.vertical.length > 0 ? ' warn' : '');
+  const ic = document.getElementById('incidentsCount');
+  const activeIncidents = (fleetData.incidents || []).filter(i => i.status !== 'closed');
+  ic.textContent = activeIncidents.length;
+  ic.className = 'tab-count' + (activeIncidents.length > 0 ? ' warn' : '');
   document.getElementById('threatintelCount').textContent = (threatIntelData.rules || []).length;
 }
 
@@ -626,6 +672,8 @@ function hideAllDetails() {
   document.getElementById('fleetAgentList').classList.remove('hidden');
   document.getElementById('findingDetail').classList.add('hidden');
   document.getElementById('findingsList').classList.remove('hidden');
+  document.getElementById('incidentDetail').classList.add('hidden');
+  document.getElementById('incidentList').classList.remove('hidden');
   document.getElementById('lateralDetail').classList.add('hidden');
   document.getElementById('lateralList').classList.remove('hidden');
 }
@@ -820,13 +868,70 @@ function renderVerticalChain(steps) {
     steps.map((s, i) => {
       const arrow = i > 0 ? '<div class="vtree-arrow">&darr;</div>' : '';
       const t = (s.entity_type||'').toLowerCase();
+      const icon = t === 'user' ? '&#x1F464; ' : t === 'host' ? '&#x1F5A5; ' : '';
       return `${arrow}<div class="vtree-step type-${t}">
         <div class="step-type">${esc(s.entity_type)}</div>
-        <div class="step-name">${esc(s.entity_name || s.entity_id)}</div>
+        <div class="step-name">${icon}${esc(s.entity_name || s.entity_id)}</div>
         ${s.pid ? `<div class="step-pid">PID ${s.pid}</div>` : ''}
       </div>`;
     }).join('')
   }</div>`;
+}
+
+function renderVerticalChainWithTrace(steps, logs) {
+  if (!steps || steps.length === 0) return '<div style="color:var(--dim);font-size:12px">No chain data</div>';
+  const procLogs = (logs || []).filter(r => r.cmd_line && r.cmd_line !== '-');
+  return `<div class="vtree">${
+    steps.map((s, i) => {
+      const arrow = i > 0 ? '<div class="vtree-arrow">&darr;</div>' : '';
+      const t = (s.entity_type||'').toLowerCase();
+      const icon = t === 'user' ? '&#x1F464; ' : t === 'host' ? '&#x1F5A5; ' : '';
+      let stepHtml = `${arrow}<div class="vtree-step type-${t}">
+        <div class="step-type">${esc(s.entity_type)}</div>
+        <div class="step-name">${icon}${esc(s.entity_name || s.entity_id)}</div>
+        ${s.pid ? `<div class="step-pid">PID ${s.pid}</div>` : ''}
+      </div>`;
+      if (t === 'process') {
+        const pName = (s.entity_name||'').toLowerCase();
+        const pPid = s.pid;
+        const matched = procLogs.filter(r =>
+          (r.process_name && r.process_name.toLowerCase() === pName) ||
+          (pPid && r.pid === pPid)
+        );
+        const seen = new Set();
+        const deduped = [];
+        for (const r of matched) {
+          if (!seen.has(r.cmd_line)) { seen.add(r.cmd_line); deduped.push(r); }
+          if (deduped.length >= 5) break;
+        }
+        if (deduped.length > 0) {
+          stepHtml += '<div class="vtree-commands">' + deduped.map(r =>
+            `<div class="vtree-cmd-arrow">&darr;</div>
+            <div class="vtree-command">
+              <div class="cmd-label">EXEC</div>
+              <div class="cmd-line">${esc(r.cmd_line)}</div>
+              <div class="cmd-meta">${esc(r.username||'')} &middot; PID ${r.pid||'-'} &middot; ${fmtTime(r.timestamp)}</div>
+            </div>`
+          ).join('') + '</div>';
+        }
+      }
+      return stepHtml;
+    }).join('')
+  }</div>`;
+}
+
+function _updateChainTraces(srcLogs, dstLogs) {
+  const hosts = document.querySelectorAll('.stitch-host');
+  if (hosts.length >= 2) {
+    if (_currentSrcChain.length > 0 && srcLogs && srcLogs.length > 0) {
+      const vtree = hosts[0].querySelector('.vtree');
+      if (vtree) vtree.outerHTML = renderVerticalChainWithTrace(_currentSrcChain, srcLogs);
+    }
+    if (_currentTgtChain.length > 0 && dstLogs && dstLogs.length > 0) {
+      const vtree = hosts[1].querySelector('.vtree');
+      if (vtree) vtree.outerHTML = renderVerticalChainWithTrace(_currentTgtChain, dstLogs);
+    }
+  }
 }
 
 // ── Findings ──
@@ -919,13 +1024,13 @@ function renderLateral() {
     return;
   }
   tbody.innerHTML = list.map(m => {
-    return `<tr class="clickable" onclick="showLateralDetail('${esc(m.dst_finding_id)}')">
-      <td>${sevBadge(m.dst_severity)}</td>
+    return `<tr class="clickable" onclick="showLateralDetail('${esc(m.src_finding_id)}')">
+      <td>${sevBadge(m.src_severity)}</td>
       <td>${esc(m.src_hostname)}</td>
       <td class="mono">${esc(m.pivot_ip)}</td>
       <td>${esc(m.dst_hostname)}</td>
-      <td class="truncate">${esc(m.dst_finding_title)}</td>
-      <td>${fmtTime(m.dst_timestamp)}</td>
+      <td class="truncate">${esc(m.src_finding_title)}</td>
+      <td>${fmtTime(m.src_timestamp)}</td>
     </tr>`;
   }).join('');
 }
@@ -942,7 +1047,7 @@ async function showLateralDetail(findingId) {
 
     const pivotIp = d.pivot_ip || '';
     const srcChain = (d.source_chain||[]).filter(s => s.entity_type);
-    const victimChain = (d.victim_chain||[]).filter(s => s.entity_type);
+    const tgtChain = (d.target_chain||[]).filter(s => s.entity_type);
 
     panel.innerHTML = `
       <a class="back-link" onclick="hideLateralDetail()">&larr; Back to lateral movements</a>
@@ -951,9 +1056,15 @@ async function showLateralDetail(findingId) {
       <div class="stitch-container">
         <div class="stitch-host" style="flex:1">
           <h4>${esc(d.src_hostname)} <span style="color:var(--dim);font-weight:normal">(source)</span></h4>
+          <div style="margin-bottom:8px">${sevBadge(d.severity)} <span style="margin-left:8px">${esc(d.title)}</span></div>
+          ${d.source_chain_pending
+            ? '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:11px;color:var(--medium)"><span class="sweep-spinner"></span>Tactical Sweep Pending &mdash; querying source agent&hellip;</div>'
+            : d.source_chain_xdr_stitched
+              ? '<div style="margin-bottom:8px;font-size:11px;color:var(--low)">&#9432; Stitched from edge agent telemetry (XDR)</div>'
+              : ''}
           ${srcChain.length > 0
             ? renderVerticalChain(srcChain)
-            : '<div style="color:var(--dim);font-size:12px;margin-top:12px">No source process chain available</div>'}
+            : '<div style="color:var(--dim);font-size:12px;margin-top:12px">No chain data on source host</div>'}
         </div>
 
         <div class="stitch-pivot-arrow">
@@ -962,9 +1073,17 @@ async function showLateralDetail(findingId) {
         </div>
 
         <div class="stitch-host" style="flex:1">
-          <h4>${esc(d.dst_hostname)} <span style="color:var(--dim);font-weight:normal">(victim)</span></h4>
-          <div style="margin-bottom:8px">${sevBadge(d.severity)} <span style="margin-left:8px">${esc(d.title)}</span></div>
-          ${renderVerticalChain(victimChain)}
+          <h4>${esc(d.dst_hostname)} <span style="color:var(--dim);font-weight:normal">(target)</span></h4>
+          ${d.target_chain_pending
+            ? '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:11px;color:var(--medium)"><span class="sweep-spinner"></span>Tactical Sweep Pending &mdash; querying target agent&hellip;</div>'
+            : d.target_chain_xdr_stitched
+              ? '<div style="margin-bottom:8px;font-size:11px;color:var(--low)">&#9432; Stitched from edge agent telemetry (XDR)</div>'
+              : d.target_chain_inferred
+                ? '<div style="margin-bottom:8px;font-size:11px;color:var(--dim)">No correlated finding on target host</div>'
+                : ''}
+          ${tgtChain.length > 0
+            ? renderVerticalChain(tgtChain)
+            : '<div style="color:var(--dim);font-size:12px;margin-top:12px">No chain data on target host</div>'}
         </div>
       </div>
 
@@ -980,10 +1099,14 @@ async function showLateralDetail(findingId) {
           <dt>Time</dt><dd>${fmtTime(d.timestamp)}</dd>
           <dt>Pivot IP</dt><dd class="mono">${esc(pivotIp)}</dd>
           <dt>Source Host</dt><dd>${esc(d.src_hostname)}</dd>
-          <dt>Victim Host</dt><dd>${esc(d.dst_hostname)}</dd>
+          <dt>Target Host</dt><dd>${esc(d.dst_hostname)}</dd>
         </div>
       </div>
     `;
+    // Auto-refresh when either side has a sweep pending
+    if (d.source_chain_pending || d.target_chain_pending) {
+      setTimeout(() => showLateralDetail(findingId), 10000);
+    }
   } catch(e) {
     panel.innerHTML = `<a class="back-link" onclick="hideLateralDetail()">&larr; Back</a><div class="empty-state"><h3>Error</h3><p>${esc(e.message)}</p></div>`;
   }
@@ -992,6 +1115,251 @@ async function showLateralDetail(findingId) {
 function hideLateralDetail() {
   document.getElementById('lateralDetail').classList.add('hidden');
   document.getElementById('lateralList').classList.remove('hidden');
+}
+
+// ── Incidents ──
+function incidentStatusBadge(status) {
+  const s = (status || 'detected').toLowerCase();
+  return `<span class="incident-status ${s}">${s}</span>`;
+}
+
+function renderIncidents() {
+  const list = fleetData.incidents || [];
+  const tbody = document.getElementById('incidentsTableBody');
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:40px">No incidents detected</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(inc => `
+    <tr class="clickable" onclick="showIncidentDetail('${esc(inc.incident_id)}')">
+      <td>${incidentStatusBadge(inc.status)}</td>
+      <td>${esc(inc.src_hostname || inc.src_agent_id)}</td>
+      <td class="mono">${esc(inc.pivot_ip)}</td>
+      <td>${esc(inc.dst_hostname || inc.dst_agent_id)}</td>
+      <td style="text-align:center">${inc.follow_on_count || 0}</td>
+      <td>${fmtTime(inc.updated_at)}</td>
+    </tr>
+  `).join('');
+}
+
+async function showIncidentDetail(incidentId) {
+  document.getElementById('incidentList').classList.add('hidden');
+  const panel = document.getElementById('incidentDetail');
+  panel.classList.remove('hidden');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span> Loading incident detail...</div>';
+
+  try {
+    const d = await api(`/api/fleet/incidents/${incidentId}`);
+    if (!d || !d.incident_id) throw new Error('Incident not found');
+
+    const srcChain = (d.source_chain||[]).filter(s => s.entity_type);
+    const tgtChain = (d.target_chain||[]).filter(s => s.entity_type);
+    const followOns = d.follow_on_findings || [];
+
+    panel.innerHTML = `
+      <a class="back-link" onclick="hideIncidentDetail()">&larr; Back to incidents</a>
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+        <h3 style="font-size:16px">Incident: ${esc(d.src_hostname)} &rarr; ${esc(d.dst_hostname)}</h3>
+        ${incidentStatusBadge(d.status)}
+        ${d.status !== 'closed' && currentUser && currentUser.role === 'admin'
+          ? `<button class="btn btn-danger" onclick="closeIncident('${esc(d.incident_id)}')">Close Incident</button>`
+          : ''}
+      </div>
+
+      <div class="stitch-container">
+        <div class="stitch-host" style="flex:1">
+          <h4>${esc(d.src_hostname)} <span style="color:var(--dim);font-weight:normal">(source)</span></h4>
+          ${srcChain.length > 0
+            ? renderVerticalChain(srcChain)
+            : '<div style="color:var(--dim);font-size:12px;margin-top:12px">No chain data</div>'}
+        </div>
+        <div class="stitch-pivot-arrow">
+          <div>&rarr;</div>
+          <div class="stitch-pivot-ip">${esc(d.pivot_ip)}</div>
+        </div>
+        <div class="stitch-host" style="flex:1">
+          <h4>${esc(d.dst_hostname)} <span style="color:var(--dim);font-weight:normal">(target)</span></h4>
+          ${tgtChain.length > 0
+            ? renderVerticalChain(tgtChain)
+            : '<div style="color:var(--dim);font-size:12px;margin-top:12px">No chain data</div>'}
+        </div>
+      </div>
+
+      <div class="detail-section" style="margin-top:16px">
+        <h4>Details</h4>
+        <div class="detail-grid">
+          <dt>Incident ID</dt><dd class="mono" style="font-size:11px">${esc(d.incident_id)}</dd>
+          <dt>Source Finding</dt><dd>${esc(d.source_finding_title || d.source_finding_id || '-')}</dd>
+          <dt>Pivot IP</dt><dd class="mono">${esc(d.pivot_ip)}</dd>
+          <dt>Created</dt><dd>${fmtTime(d.created_at)}</dd>
+          <dt>Last Activity</dt><dd>${fmtTime(d.updated_at)}</dd>
+        </div>
+      </div>
+
+      ${followOns.length > 0 ? `
+      <div class="detail-section" style="margin-top:16px">
+        <h4>Follow-On Findings (${followOns.length})</h4>
+        <table>
+          <thead><tr><th style="width:80px">Severity</th><th>Title</th><th style="width:160px">Time</th></tr></thead>
+          <tbody>
+            ${followOns.map(fo => `<tr>
+              <td>${sevBadge(fo.severity)}</td>
+              <td class="truncate">${esc(fo.title)}</td>
+              <td>${fmtTime(fo.timestamp)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>` : ''}
+
+      <div class="detail-section" style="margin-top:16px">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+          <h4>Surveillance Logs</h4>
+          ${currentUser && currentUser.role === 'admin' && d.status !== 'active'
+            ? `<button class="btn" onclick="pullSurveillanceLogs('${esc(d.incident_id)}')">Pull Target Surveillance Logs</button>`
+            : ''}
+          ${d.status === 'active'
+            ? '<span style="font-size:11px;color:var(--low)">&#9679; Auto-collecting</span>'
+            : ''}
+        </div>
+        <div id="surveillanceLogs">
+          <div style="color:var(--dim);font-size:12px">Click "Pull" to request flight recorder data from agents.</div>
+        </div>
+      </div>
+    `;
+
+    _currentIncidentId = d.incident_id;
+    _currentIncidentStatus = d.status;
+    _currentSrcChain = srcChain;
+    _currentTgtChain = tgtChain;
+
+    if (_survPollInterval) { clearInterval(_survPollInterval); _survPollInterval = null; }
+
+    if (d.status === 'active') {
+      loadSurveillanceLogs(d.incident_id);
+      _survPollInterval = setInterval(() => loadSurveillanceLogs(d.incident_id), 15000);
+    } else {
+      loadSurveillanceLogs(d.incident_id);
+    }
+  } catch(e) {
+    panel.innerHTML = `<a class="back-link" onclick="hideIncidentDetail()">&larr; Back</a><div class="empty-state"><h3>Error</h3><p>${esc(e.message)}</p></div>`;
+  }
+}
+
+function hideIncidentDetail() {
+  if (_survPollInterval) { clearInterval(_survPollInterval); _survPollInterval = null; }
+  _currentIncidentId = null;
+  _currentIncidentStatus = null;
+  _currentSrcChain = [];
+  _currentTgtChain = [];
+  document.getElementById('incidentDetail').classList.add('hidden');
+  document.getElementById('incidentList').classList.remove('hidden');
+}
+
+async function closeIncident(incidentId) {
+  if (!confirm('Close this incident? Follow-on tagging and surveillance will stop.')) return;
+  try {
+    await api(`/api/fleet/incidents/${incidentId}/close`, {method: 'POST'});
+    await refreshAll();
+  } catch(e) {
+    alert('Failed to close incident: ' + e.message);
+  }
+}
+
+// ── Surveillance Logs ──
+async function pullSurveillanceLogs(incidentId) {
+  const container = document.getElementById('surveillanceLogs');
+  if (_currentIncidentStatus === 'active') {
+    // Backend auto-collects for active incidents; just refresh the view
+    await loadSurveillanceLogs(incidentId);
+    return;
+  }
+  try {
+    await api(`/api/fleet/incidents/${incidentId}/pull-surveillance`, {method: 'POST'});
+    container.innerHTML = '<div style="color:var(--dim);font-size:12px">Query enqueued. Logs will arrive after next agent heartbeat (~30s). Refreshing automatically...</div>';
+    let attempts = 0;
+    const poll = setInterval(async () => {
+      attempts++;
+      const loaded = await loadSurveillanceLogs(incidentId);
+      if (loaded || attempts >= 12) clearInterval(poll);
+    }, 10000);
+  } catch(e) {
+    container.innerHTML = `<div style="color:var(--danger)">Failed: ${esc(e.message)}</div>`;
+  }
+}
+
+async function loadSurveillanceLogs(incidentId) {
+  try {
+    const data = await api(`/api/fleet/incidents/${incidentId}/surveillance-logs`);
+    const container = document.getElementById('surveillanceLogs');
+    if (!container) return false;
+
+    const dstLogs = data.dst_logs || [];
+    const srcLogs = data.src_logs || [];
+    const dstStatus = data.dst_status;
+    const srcStatus = data.src_status;
+
+    if (dstStatus === 'not_requested' && srcStatus === 'not_requested') return false;
+
+    const dstDone = (dstStatus === 'completed' || dstStatus === 'not_requested');
+    const srcDone = (srcStatus === 'completed' || srcStatus === 'not_requested');
+    const dstCollecting = (dstStatus === 'collecting');
+    const srcCollecting = (srcStatus === 'collecting');
+    const allDone = dstDone && srcDone;
+    const pending = !allDone || dstCollecting || srcCollecting;
+
+    if (pending && dstLogs.length === 0 && srcLogs.length === 0 && !dstCollecting && !srcCollecting) return false;
+
+    let html = '';
+
+    if (pending) {
+      const waiting = [];
+      if (!dstDone) waiting.push('target');
+      if (!srcDone) waiting.push('source');
+      html += `<div style="color:var(--dim);font-size:12px;margin-bottom:8px"><span class="spinner"></span> Waiting for ${waiting.join(' & ')} agent response...</div>`;
+    }
+
+    function renderLogTable(logs, label, status) {
+      if (status === 'pending' || (status === 'collecting' && (!logs || logs.length === 0))) return `<div style="color:var(--dim);font-size:12px;margin:8px 0">${label}: <span class="spinner"></span> ${status === 'collecting' ? 'Collecting...' : 'Pending...'}</div>`;
+      if (!logs || logs.length === 0) return `<div style="color:var(--dim);font-size:12px;margin:8px 0">${label}: No records</div>`;
+      return `
+        <div style="margin-top:8px">
+          <h5 style="font-size:13px;margin-bottom:6px">${label} (${logs.length})</h5>
+          <table style="font-size:12px">
+            <thead><tr>
+              <th style="width:140px">Time</th>
+              <th>Event</th>
+              <th>Process</th>
+              <th>PID</th>
+              <th>User</th>
+              <th>Remote IP</th>
+              <th>Port</th>
+              <th style="max-width:300px">Command Line</th>
+            </tr></thead>
+            <tbody>
+              ${logs.map(r => `<tr>
+                <td>${fmtTime(r.timestamp)}</td>
+                <td>${esc(r.event_type||'-')}</td>
+                <td>${esc(r.process_name||'-')}</td>
+                <td>${r.pid||'-'}</td>
+                <td>${esc(r.username||'-')}</td>
+                <td class="mono">${esc(r.remote_ip||'-')}</td>
+                <td>${r.remote_port||'-'}</td>
+                <td class="mono truncate" style="max-width:300px">${esc(r.cmd_line||'-')}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    }
+
+    html += renderLogTable(dstLogs, 'Target Agent Logs', dstStatus);
+    html += renderLogTable(srcLogs, 'Source Agent Logs', srcStatus);
+
+    container.innerHTML = html;
+    _updateChainTraces(srcLogs, dstLogs);
+    return allDone;
+  } catch(e) {
+    return false;
+  }
 }
 
 // ── Vertical Movement ──

@@ -14,6 +14,7 @@ CONSTRAINTS = [
     "CREATE CONSTRAINT chain_node_id IF NOT EXISTS FOR (c:ChainNode) REQUIRE c.chain_node_id IS UNIQUE",
     "CREATE CONSTRAINT dashboard_user_username IF NOT EXISTS FOR (u:DashboardUser) REQUIRE u.username IS UNIQUE",
     "CREATE CONSTRAINT registration_key_unique IF NOT EXISTS FOR (k:RegistrationKey) REQUIRE k.key IS UNIQUE",
+    "CREATE CONSTRAINT incident_id IF NOT EXISTS FOR (inc:Incident) REQUIRE inc.incident_id IS UNIQUE",
 ]
 
 INDEXES = [
@@ -25,6 +26,8 @@ INDEXES = [
     "CREATE INDEX chain_node_host IF NOT EXISTS FOR (c:ChainNode) ON (c.host_agent_id)",
     "CREATE INDEX chain_node_entity IF NOT EXISTS FOR (c:ChainNode) ON (c.entity_type, c.entity_id)",
     "CREATE INDEX registration_key_revoked IF NOT EXISTS FOR (k:RegistrationKey) ON (k.revoked)",
+    "CREATE INDEX incident_status IF NOT EXISTS FOR (inc:Incident) ON (inc.status)",
+    "CREATE INDEX incident_dst IF NOT EXISTS FOR (inc:Incident) ON (inc.dst_agent_id)",
 ]
 
 INIT_QUERIES = CONSTRAINTS + INDEXES
