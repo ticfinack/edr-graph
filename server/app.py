@@ -6,7 +6,7 @@ Usage:
 Environment variables:
     NEO4J_URI       - Neo4j connection URI (default: bolt://localhost:7687)
     NEO4J_USER      - Neo4j username (default: neo4j)
-    NEO4J_PASSWORD  - Neo4j password (default: changeme)
+    NEO4J_PASSWORD  - Neo4j password (required, no default)
     TLS_CA_CERT     - CA certificate path for mTLS (optional)
     TLS_SERVER_CERT - Server certificate path for mTLS (optional)
     TLS_SERVER_KEY  - Server private key path for mTLS (optional)
@@ -20,6 +20,7 @@ Environment variables:
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 import string
 import threading
@@ -39,6 +40,7 @@ from server.grpc_service import FleetServicer
 from server.neo4j_client import Neo4jClient
 from server.ntp_sync import NtpMonitor
 from server.settings_db import SettingsDB
+from server.xdr_orchestrator import XdrOrchestrator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -140,14 +142,14 @@ def main() -> None:
         admin_pass = settings.bootstrap_admin_password
         if not admin_pass:
             admin_pass = _generate_password()
-            print(  # noqa: T201 -- intentional console-only output for first-run setup
-                f"\n{'='*60}\n"
-                f"  ADMIN_PASSWORD not set -- generated bootstrap password:\n"
-                f"  {admin_pass}\n"
-                f"  Set BOOTSTRAP_ADMIN_PASSWORD env var to suppress this.\n"
-                f"{'='*60}\n"
+            creds_path = Path(settings.settings_db_path).parent / ".admin_credentials"
+            creds_path.write_text(f"username={admin_user}\npassword={admin_pass}\n")
+            os.chmod(creds_path, 0o600)
+            logger.warning(
+                "ADMIN_PASSWORD not set -- generated bootstrap credentials written to %s "
+                "(set ADMIN_PASSWORD env var to suppress this)",
+                creds_path,
             )
-            logger.warning("ADMIN_PASSWORD not set -- generated bootstrap password (see console output)")
         settings_db.create_user(admin_user, hash_password(admin_pass), role="admin")
         logger.info("Bootstrap admin user created: %s", admin_user)
 
@@ -197,6 +199,16 @@ def main() -> None:
     server.start()
     logger.info("gRPC server started")
 
+    # ── XDR Orchestrator ──
+    xdr_orchestrator = XdrOrchestrator(
+        neo4j_client,
+        settings_db,
+        poll_interval=settings.xdr_poll_interval,
+        query_timeout=settings.xdr_query_timeout,
+        auto_close_hours=settings.incident_auto_close_hours,
+    )
+    xdr_orchestrator.start()
+
     # Start HTTP dashboard in a thread
     dashboard_thread = threading.Thread(
         target=uvicorn.run,
@@ -214,6 +226,7 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Shutting down...")
         server.stop(grace=5)
+        xdr_orchestrator.stop()
         ntp_monitor.stop()
         settings_db.close()
         neo4j_client.close()
