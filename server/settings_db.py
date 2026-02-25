@@ -359,6 +359,21 @@ class SettingsDB:
             conn.commit()
         return True, "ok"
 
+    def check_key_status(self, key: str) -> tuple[bool, str]:
+        """Check if a key is valid (not revoked/expired) without incrementing use_count.
+
+        Used for re-registrations where the agent is already known.
+        """
+        row = self._conn().execute("SELECT * FROM registration_keys WHERE key = ?", (key,)).fetchone()
+        if not row:
+            return False, "invalid_key"
+        if row["revoked"]:
+            return False, "key_revoked"
+        now = int(time.time())
+        if row["expires_at"] is not None and row["expires_at"] < now:
+            return False, "key_expired"
+        return True, "ok"
+
     def revoke_registration_key(self, key: str, revoked_by: str) -> bool:
         conn = self._conn()
         now = int(time.time())

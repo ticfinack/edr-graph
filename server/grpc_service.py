@@ -61,11 +61,27 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
                 message="registration_key is required",
             )
 
-        # Validate key via settings_db (SQLite), fall back to Neo4j
-        if self._settings_db:
-            valid, reason = self._settings_db.validate_registration_key(reg_key)
+        # Check if this is a re-registration (same agent_id + same key).
+        # If so, skip validate_registration_key to avoid incrementing use_count.
+        agent_id = request.agent_info.agent_id if request.agent_info else ""
+        is_reregistration = False
+        if agent_id and self._settings_db:
+            existing_key = self._settings_db.get_agent_key(agent_id)
+            if existing_key == reg_key:
+                is_reregistration = True
+
+        if not is_reregistration:
+            # Validate key via settings_db (SQLite), fall back to Neo4j
+            if self._settings_db:
+                valid, reason = self._settings_db.validate_registration_key(reg_key)
+            else:
+                valid, reason = self._neo4j.validate_registration_key(reg_key)
         else:
-            valid, reason = self._neo4j.validate_registration_key(reg_key)
+            # Re-registration: just verify the key isn't revoked/expired
+            if self._settings_db:
+                valid, reason = self._settings_db.check_key_status(reg_key)
+            else:
+                valid, reason = True, "ok"
 
         if not valid:
             context.set_code(grpc.StatusCode.PERMISSION_DENIED)
