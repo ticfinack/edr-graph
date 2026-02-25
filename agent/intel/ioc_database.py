@@ -23,6 +23,8 @@ import csv
 import io
 import logging
 import re
+import shutil
+import subprocess
 import threading
 import time
 import urllib.request
@@ -272,7 +274,22 @@ class IocDatabase:
 
     @staticmethod
     def _http_get(url: str) -> str:
-        """Download a URL, return body text."""
+        """Download a URL, return body text.
+
+        Prefers curl (handles CDN/HTTP2 reliably) with urllib as fallback.
+        Python 3.14's urllib can stall on some CDN hosts (e.g.
+        raw.githubusercontent.com via Fastly) where curl works instantly.
+        """
+        if shutil.which("curl"):
+            result = subprocess.run(
+                ["curl", "-sfL", "--max-time", str(_HTTP_TIMEOUT),
+                 "-A", "edr-graph-agent/1.0", url],
+                capture_output=True, timeout=_HTTP_TIMEOUT + 5,
+            )
+            if result.returncode == 0:
+                return result.stdout.decode("utf-8", errors="replace")
+            # Non-zero exit — fall through to urllib
+            logger.debug("curl failed for %s (rc=%d), trying urllib", url, result.returncode)
         req = urllib.request.Request(
             url,
             headers={"User-Agent": "edr-graph-agent/1.0"},

@@ -369,6 +369,7 @@ spawned by explorer.exe violates SANS Hunt Evil parent-child rule")
 - iocs: object with optional keys:
   - domains: array of FQDNs observed (e.g., ["evil.com", "c2.example.org"])
   - ips: array of IP addresses (e.g., ["1.2.3.4"])
+  - ports: array of destination port numbers observed (e.g., [22, 443])
   - files: array of file paths (e.g., ["/tmp/payload.sh"])
   - urls: array of full URLs if known
 - id: (optional) if updating an existing finding, include its ID

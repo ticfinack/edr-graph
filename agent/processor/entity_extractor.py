@@ -46,6 +46,10 @@ def _ensure_identity_import():
 _ppid_cache: dict[int, int] = {}  # pid -> parent_pid, populated once per PID
 _create_time_cache: dict[int, float] = {}  # pid -> create_time epoch, populated once per PID
 _username_cache: dict[int, str] = {}  # pid -> username (empty string = unresolvable)
+_UID_NAME_MAP: dict[str, str] = {
+    "0": "root",
+    "65534": "nobody",
+}
 _name_cache: dict[int, str] = {}  # pid -> process_name, for fast-path enforcer chain building
 _sshd_cache: dict[str, tuple[str | None, float]] = {}  # hostname -> (proc_id, cache_time)
 
@@ -192,6 +196,12 @@ def _extract_user_for_process(
             except Exception:
                 _username_cache[pid] = ""
 
+    # Tier 3: UID-based fallback — eBPF gave us a UID but name resolution failed
+    if not user_name and user_uid is not None:
+        user_name = _UID_NAME_MAP.get(str(user_uid), str(user_uid))
+        if pid > 0 and pid not in _username_cache:
+            _username_cache[pid] = user_name
+
     if not user_name:
         return
 
@@ -325,6 +335,7 @@ def _extract_network_activity(
     now: datetime,
     port_mapper=None,
 ) -> None:
+    proc_id = None
     if event.process:
         proc = event.process
         hostname = event.device.hostname
@@ -352,19 +363,22 @@ def _extract_network_activity(
             activity_id=event.activity_id,
         )
 
-        if event.dst_endpoint and event.dst_endpoint.ip:
-            ip_addr = event.dst_endpoint.ip
-            dst_port = event.dst_endpoint.port
-            is_private = _is_private_ip(ip_addr)
-            entities.ips.append(
-                IpNode(
-                    id=ip_addr,
-                    address=ip_addr,
-                    is_private=is_private,
-                    first_seen=now,
-                    last_seen=now,
-                )
+    # Extract dst IP and connected edge (even without process context,
+    # e.g. connection_metadata events from tcpdump SYN capture)
+    if event.dst_endpoint and event.dst_endpoint.ip:
+        ip_addr = event.dst_endpoint.ip
+        dst_port = event.dst_endpoint.port
+        is_private = _is_private_ip(ip_addr)
+        entities.ips.append(
+            IpNode(
+                id=ip_addr,
+                address=ip_addr,
+                is_private=is_private,
+                first_seen=now,
+                last_seen=now,
             )
+        )
+        if proc_id:
             entities.connected_edges.append(
                 {
                     "process_id": proc_id,

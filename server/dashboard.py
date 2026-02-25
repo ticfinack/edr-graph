@@ -167,7 +167,7 @@ async def lateral_movement_detail(
     user: dict = Depends(get_current_user),
 ):
     """Chain detail for a lateral movement finding, with source host info."""
-    detail = _neo4j.get_lateral_movement_detail(finding_id)
+    detail = _neo4j.get_lateral_movement_detail(finding_id, settings_db=_settings_db)
     if not detail:
         raise HTTPException(status_code=404, detail="Movement not found")
     return detail
@@ -192,6 +192,132 @@ async def host_connections(
 
 
 # ── Existing endpoints (kept for compatibility) ──
+
+
+@app.get("/api/fleet/incidents")
+def list_incidents(
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, le=200),
+    user: dict = Depends(get_current_user),
+):
+    """List incidents with status, hosts, pivot IP, follow-on count."""
+    return _neo4j.list_incidents(status=status, limit=limit)
+
+
+@app.get("/api/fleet/incidents/{incident_id}")
+def incident_detail(incident_id: str, user: dict = Depends(get_current_user)):
+    """Full incident detail: stitched chains + follow-on finding list."""
+    detail = _neo4j.get_incident_detail(incident_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return detail
+
+
+@app.post("/api/fleet/incidents/{incident_id}/close")
+def close_incident(incident_id: str, user: dict = Depends(require_admin)):
+    """Admin closes an incident (stops follow-on tagging, clears surveillance)."""
+    detail = _neo4j.get_incident_detail(incident_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    _neo4j.update_incident_status(incident_id, "closed")
+    return {"status": "closed"}
+
+
+def _extract_chain_pids(chain: list[dict]) -> list[int]:
+    """Extract unique process PIDs from chain step data."""
+    return list({step["pid"] for step in chain
+                 if step.get("entity_type") == "process" and step.get("pid", 0) > 0})
+
+
+def _extract_chain_usernames(chain: list[dict]) -> list[str]:
+    """Extract unique usernames from chain step data."""
+    return list({step["entity_name"] for step in chain
+                 if step.get("entity_type") == "user" and step.get("entity_name")})
+
+
+@app.post("/api/fleet/incidents/{incident_id}/pull-surveillance")
+def pull_surveillance_logs(incident_id: str, user: dict = Depends(require_admin)):
+    """Enqueue pull_surveillance_logs XDR query on both src/dst agents.
+
+    For active incidents, autonomous collection is handled by XdrOrchestrator;
+    manual pulls are only needed for non-active incidents.
+    """
+    import json
+    import uuid
+
+    detail = _neo4j.get_incident_detail(incident_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    if detail.get("status") == "active":
+        return {"message": "Auto-collection is active"}
+
+    src_agent = detail.get("src_agent_id", "")
+    dst_agent = detail.get("dst_agent_id", "")
+    pivot_ip = detail.get("pivot_ip", "")
+    src_ips = _neo4j.get_incident_src_ips(incident_id)
+
+    # Extract anchor PIDs and usernames from chain data
+    src_pids = _extract_chain_pids(detail.get("source_chain", []))
+    dst_pids = _extract_chain_pids(detail.get("target_chain", []))
+    src_users = _extract_chain_usernames(detail.get("source_chain", []))
+    dst_users = _extract_chain_usernames(detail.get("target_chain", []))
+
+    enqueued = []
+    # Pull from target (dst) agent — surveillance of source IPs + target PIDs + target usernames
+    if dst_agent and (src_ips or dst_pids or dst_users):
+        qid = str(uuid.uuid4())
+        _settings_db.enqueue_xdr_query(
+            qid, dst_agent,
+            f"{incident_id}:surv_dst",
+            "pull_surveillance_logs",
+            json.dumps({"ips": src_ips, "anchor_pids": dst_pids, "usernames": dst_users, "limit": 200}),
+        )
+        enqueued.append({"query_id": qid, "agent_id": dst_agent, "ips": src_ips})
+
+    # Pull from source agent — surveillance of pivot IP + source PIDs + source usernames
+    if src_agent and (pivot_ip or src_pids or src_users):
+        qid = str(uuid.uuid4())
+        _settings_db.enqueue_xdr_query(
+            qid, src_agent,
+            f"{incident_id}:surv_src",
+            "pull_surveillance_logs",
+            json.dumps({"ips": [pivot_ip] if pivot_ip else [], "anchor_pids": src_pids, "usernames": src_users, "limit": 200}),
+        )
+        enqueued.append({"query_id": qid, "agent_id": src_agent, "ips": [pivot_ip] if pivot_ip else []})
+
+    return {"enqueued": enqueued}
+
+
+@app.get("/api/fleet/incidents/{incident_id}/surveillance-logs")
+def get_surveillance_logs(incident_id: str, user: dict = Depends(get_current_user)):
+    """Return surveillance logs for an incident from the persistent store."""
+    logs = _settings_db.get_surveillance_logs(incident_id)
+    dst_logs = logs.get("dst_logs", [])
+    src_logs = logs.get("src_logs", [])
+
+    # Determine status: 'completed' if logs exist, 'collecting' if orchestrator
+    # is actively pulling, 'not_requested' otherwise
+    def _side_status(side_logs: list, side: str) -> str:
+        if side_logs:
+            return "completed"
+        # Check if there's a pending pull
+        if _settings_db.has_pending_xdr_query(
+            f"{incident_id}:surv_{side}", "pull_surveillance_logs",
+        ):
+            return "collecting"
+        # Check if we've ever enqueued a pull for this side
+        state = _settings_db.get_surveillance_pull_state(incident_id, side)
+        if state["last_enqueue_at"] > 0:
+            return "collecting"
+        return "not_requested"
+
+    return {
+        "dst_logs": dst_logs,
+        "src_logs": src_logs,
+        "dst_status": _side_status(dst_logs, "dst"),
+        "src_status": _side_status(src_logs, "src"),
+    }
 
 
 @app.get("/api/fleet/cross-host/{ip}")

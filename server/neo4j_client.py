@@ -15,6 +15,47 @@ from server.neo4j_schema import INIT_QUERIES
 logger = logging.getLogger("server.neo4j")
 
 
+def _build_chain_from_xdr_records(
+    records: list[dict], *, reverse: bool = False,
+) -> list[dict]:
+    """Build a chain from federated XDR query results.
+
+    Natural order (reverse=False): USER → PROCESS → IP
+        Used for source chains (outbound — shows who initiated).
+    Reversed order (reverse=True): IP → PROCESS → USER
+        Used for target chains (inbound — flow enters from pivot IP).
+    """
+    steps: list[dict] = []
+    # User
+    for rec in records:
+        if rec.get("username"):
+            steps.append({"entity_type": "user", "entity_id": rec["username"],
+                          "entity_name": rec["username"], "pid": 0, "timestamp": 0})
+            break
+    # Unique processes
+    seen: set[str] = set()
+    for rec in records:
+        p = rec.get("process_name")
+        if p and p not in seen:
+            steps.append({"entity_type": "process", "entity_id": p,
+                          "entity_name": p, "pid": rec.get("pid", 0), "timestamp": 0})
+            seen.add(p)
+    # Remote IP
+    for rec in records:
+        if rec.get("from_ip"):
+            steps.append({"entity_type": "ip", "entity_id": rec["from_ip"],
+                          "entity_name": rec["from_ip"], "pid": 0, "timestamp": 0})
+            break
+
+    if reverse:
+        steps.reverse()
+
+    # Assign step_index after ordering
+    for i, step in enumerate(steps):
+        step["step_index"] = i
+    return steps
+
+
 class Neo4jClient:
     """Neo4j driver wrapper for fleet graph operations."""
 
@@ -298,113 +339,168 @@ class Neo4jClient:
         """Detect lateral movement: a finding on one host mentions an IP
         that belongs to a different monitored host (via Host.ip_addresses).
 
+        Naming convention (attack-direction semantics):
+        - src = the host that generated the finding (initiated the movement)
+        - dst = the host whose IP was found in the finding (target of movement)
+
         Two detection paths (UNION):
         1. Chain-based: finding chain contains an IP step matching another host
         2. IOC-based: finding INVOLVES_IP an address belonging to another host
         """
         query = """
         CALL {
-            MATCH (victim:Host)-[:GENERATED]->(f:Finding)-[:HAS_CHAIN]->(step:ChainNode)
+            MATCH (initiator:Host)-[:GENERATED]->(f:Finding)-[:HAS_CHAIN]->(step:ChainNode)
             WHERE step.entity_type = 'ip'
-            MATCH (source:Host)
-            WHERE source.agent_id <> victim.agent_id
-              AND step.entity_id IN source.ip_addresses
-            RETURN source.agent_id AS src_agent_id,
-                   source.hostname AS src_hostname,
-                   victim.agent_id AS dst_agent_id,
-                   victim.hostname AS dst_hostname,
-                   f.finding_id AS dst_finding_id,
-                   f.title AS dst_finding_title,
-                   f.severity AS dst_severity,
-                   f.timestamp AS dst_timestamp,
+            MATCH (target:Host)
+            WHERE target.agent_id <> initiator.agent_id
+              AND step.entity_id IN target.ip_addresses
+            RETURN initiator.agent_id AS src_agent_id,
+                   initiator.hostname AS src_hostname,
+                   target.agent_id AS dst_agent_id,
+                   target.hostname AS dst_hostname,
+                   f.finding_id AS src_finding_id,
+                   f.title AS src_finding_title,
+                   f.severity AS src_severity,
+                   f.timestamp AS src_timestamp,
                    step.entity_id AS pivot_ip
-            ORDER BY dst_timestamp DESC
+            ORDER BY src_timestamp DESC
             LIMIT $limit
             UNION
-            MATCH (victim:Host)-[:GENERATED]->(f:Finding)-[:INVOLVES_IP]->(ip:IP)
-            MATCH (source:Host)
-            WHERE source.agent_id <> victim.agent_id
-              AND ip.address IN source.ip_addresses
-            RETURN source.agent_id AS src_agent_id,
-                   source.hostname AS src_hostname,
-                   victim.agent_id AS dst_agent_id,
-                   victim.hostname AS dst_hostname,
-                   f.finding_id AS dst_finding_id,
-                   f.title AS dst_finding_title,
-                   f.severity AS dst_severity,
-                   f.timestamp AS dst_timestamp,
+            MATCH (initiator:Host)-[:GENERATED]->(f:Finding)-[:INVOLVES_IP]->(ip:IP)
+            MATCH (target:Host)
+            WHERE target.agent_id <> initiator.agent_id
+              AND ip.address IN target.ip_addresses
+            RETURN initiator.agent_id AS src_agent_id,
+                   initiator.hostname AS src_hostname,
+                   target.agent_id AS dst_agent_id,
+                   target.hostname AS dst_hostname,
+                   f.finding_id AS src_finding_id,
+                   f.title AS src_finding_title,
+                   f.severity AS src_severity,
+                   f.timestamp AS src_timestamp,
                    ip.address AS pivot_ip
-            ORDER BY dst_timestamp DESC
+            ORDER BY src_timestamp DESC
             LIMIT $limit
         }
         RETURN src_agent_id, src_hostname, dst_agent_id, dst_hostname,
-               dst_finding_id, dst_finding_title, dst_severity, dst_timestamp, pivot_ip
-        ORDER BY dst_timestamp DESC
+               src_finding_id, src_finding_title, src_severity, src_timestamp, pivot_ip
+        ORDER BY src_timestamp DESC
         LIMIT $limit
         """
         with self._driver.session() as session:
             result = session.run(query, {"limit": limit})
             return [dict(record) for record in result]
 
-    def get_lateral_movement_detail(self, finding_id: str) -> dict:
+    def get_lateral_movement_detail(self, finding_id: str, settings_db=None) -> dict:
         """Get XDR attack graph detail for a lateral movement finding.
 
-        3-phase approach:
-        Phase 1: Victim finding + pivot IP + source host identification
-        Phase 2A: Source chain from source host's findings (preferred)
-        Phase 2B: Fallback — synthetic chain from OCSF Process edges
+        Naming convention (attack-direction semantics):
+        - src = finding host (initiated the movement, e.g. SSH client)
+        - dst = IP-match host (target of movement, e.g. SSH server)
+        - source_chain = what happened on the source (finding's chain)
+        - target_chain = what happened on the target (XDR-stitched)
+
+        4-phase approach:
+        Phase 0: Check for persisted Incident with stitched chains (instant)
+        Phase 1: Finding + chain + pivot IP + target host identification
+        Phase 2A: Target chain from target host's findings in Neo4j
+        Phase 2B: Federated XDR → lateral_victim_trace on TARGET (inbound)
+        Phase 2C: Federated XDR → lateral_source_trace on SOURCE (outbound)
         """
         with self._driver.session() as session:
-            # ── Phase 1: Victim finding, chain, pivot IP, source host ──
+            # ── Phase 0: Check for persisted Incident chains ──
+            phase0_query = """
+            MATCH (inc:Incident)-[:SOURCE_FINDING]->(f:Finding {finding_id: $finding_id})
+            OPTIONAL MATCH (inc)-[:HAS_SOURCE_CHAIN]->(sc:ChainNode)
+            WITH inc, sc ORDER BY sc.step_index
+            WITH inc, collect(CASE WHEN sc IS NOT NULL THEN {
+                entity_type: sc.entity_type, entity_id: sc.entity_id,
+                entity_name: sc.entity_name, pid: sc.pid,
+                timestamp: sc.timestamp, step_index: sc.step_index
+            } END) AS source_chain_raw
+            OPTIONAL MATCH (inc)-[:HAS_TARGET_CHAIN]->(tc:ChainNode)
+            WITH inc, source_chain_raw, tc ORDER BY tc.step_index
+            WITH inc, source_chain_raw, collect(CASE WHEN tc IS NOT NULL THEN {
+                entity_type: tc.entity_type, entity_id: tc.entity_id,
+                entity_name: tc.entity_name, pid: tc.pid,
+                timestamp: tc.timestamp, step_index: tc.step_index
+            } END) AS target_chain_raw
+            WHERE size([s IN source_chain_raw WHERE s IS NOT NULL]) > 0
+               OR size([t IN target_chain_raw WHERE t IS NOT NULL]) > 0
+            OPTIONAL MATCH (src:Host {agent_id: inc.src_agent_id})
+            OPTIONAL MATCH (dst:Host {agent_id: inc.dst_agent_id})
+            OPTIONAL MATCH (inc)-[:SOURCE_FINDING]->(sf:Finding)
+            RETURN inc.incident_id AS incident_id,
+                   inc.src_agent_id AS src_agent_id,
+                   src.hostname AS src_hostname,
+                   inc.dst_agent_id AS dst_agent_id,
+                   dst.hostname AS dst_hostname,
+                   inc.pivot_ip AS pivot_ip,
+                   sf.finding_id AS finding_id,
+                   sf.title AS title,
+                   sf.severity AS severity,
+                   sf.timestamp AS timestamp,
+                   sf.description AS description,
+                   [s IN source_chain_raw WHERE s IS NOT NULL] AS source_chain,
+                   [t IN target_chain_raw WHERE t IS NOT NULL] AS target_chain
+            LIMIT 1
+            """
+            p0_result = session.run(phase0_query, {"finding_id": finding_id})
+            p0_record = p0_result.single()
+            if p0_record:
+                data = dict(p0_record)
+                data["incident_chains_persisted"] = True
+                return data
+            # ── Phase 1: Finding, chain, pivot IP, target host ──
             phase1_query = """
-            MATCH (victim:Host)-[:GENERATED]->(f:Finding {finding_id: $finding_id})
+            MATCH (initiator:Host)-[:GENERATED]->(f:Finding {finding_id: $finding_id})
             OPTIONAL MATCH (f)-[:HAS_CHAIN]->(c:ChainNode)
-            WITH victim, f, c ORDER BY c.step_index
-            WITH victim, f, collect(CASE WHEN c IS NOT NULL THEN {
+            WITH initiator, f, c ORDER BY c.step_index
+            WITH initiator, f, collect(CASE WHEN c IS NOT NULL THEN {
                 entity_type: c.entity_type,
                 entity_id: c.entity_id,
                 entity_name: c.entity_name,
                 pid: c.pid,
                 timestamp: c.timestamp,
                 step_index: c.step_index
-            } END) AS victim_chain_raw
+            } END) AS source_chain_raw
             // Collect candidate pivot IPs from chain steps
             OPTIONAL MATCH (f)-[:HAS_CHAIN]->(step:ChainNode)
             WHERE step.entity_type = 'ip'
-            WITH victim, f, victim_chain_raw,
+            WITH initiator, f, source_chain_raw,
                  collect(DISTINCT step.entity_id) AS chain_ips
             // Collect candidate pivot IPs from INVOLVES_IP
             OPTIONAL MATCH (f)-[:INVOLVES_IP]->(ip:IP)
-            WITH victim, f, victim_chain_raw, chain_ips,
+            WITH initiator, f, source_chain_raw, chain_ips,
                  collect(DISTINCT ip.address) AS ioc_ips
-            WITH victim, f, victim_chain_raw,
+            WITH initiator, f, source_chain_raw,
                  [x IN chain_ips + ioc_ips WHERE x IS NOT NULL] AS candidate_ips
-            // Find source host whose ip_addresses contains a candidate
+            // Find target host whose ip_addresses contains a candidate
             UNWIND CASE WHEN size(candidate_ips) > 0 THEN candidate_ips ELSE [null] END AS cip
-            OPTIONAL MATCH (src:Host)
+            OPTIONAL MATCH (tgt:Host)
             WHERE cip IS NOT NULL
-              AND src.agent_id <> victim.agent_id
-              AND cip IN src.ip_addresses
-            WITH victim, f, victim_chain_raw, candidate_ips,
-                 collect(DISTINCT {ip: cip, agent_id: src.agent_id,
-                         hostname: src.hostname,
-                         ip_addresses: src.ip_addresses}) AS src_matches
-            WITH victim, f, victim_chain_raw, candidate_ips,
-                 [m IN src_matches WHERE m.agent_id IS NOT NULL] AS valid_matches
-            WITH victim, f, victim_chain_raw, candidate_ips,
-                 CASE WHEN size(valid_matches) > 0 THEN valid_matches[0] ELSE null END AS src_match
-            RETURN victim.agent_id AS dst_agent_id,
-                   victim.hostname AS dst_hostname,
-                   victim.ip_addresses AS dst_ip_addresses,
+              AND tgt.agent_id <> initiator.agent_id
+              AND cip IN tgt.ip_addresses
+            WITH initiator, f, source_chain_raw, candidate_ips,
+                 collect(DISTINCT {ip: cip, agent_id: tgt.agent_id,
+                         hostname: tgt.hostname,
+                         ip_addresses: tgt.ip_addresses}) AS tgt_matches
+            WITH initiator, f, source_chain_raw, candidate_ips,
+                 [m IN tgt_matches WHERE m.agent_id IS NOT NULL] AS valid_matches
+            WITH initiator, f, source_chain_raw, candidate_ips,
+                 CASE WHEN size(valid_matches) > 0 THEN valid_matches[0] ELSE null END AS tgt_match
+            RETURN initiator.agent_id AS src_agent_id,
+                   initiator.hostname AS src_hostname,
+                   initiator.ip_addresses AS src_ip_addresses,
                    f.finding_id AS finding_id,
                    f.title AS title,
                    f.severity AS severity,
                    f.timestamp AS timestamp,
                    f.description AS description,
-                   [s IN victim_chain_raw WHERE s IS NOT NULL] AS victim_chain,
-                   CASE WHEN src_match IS NOT NULL THEN src_match.ip ELSE null END AS pivot_ip,
-                   CASE WHEN src_match IS NOT NULL THEN src_match.agent_id ELSE null END AS src_agent_id,
-                   CASE WHEN src_match IS NOT NULL THEN src_match.hostname ELSE null END AS src_hostname
+                   [s IN source_chain_raw WHERE s IS NOT NULL] AS source_chain,
+                   CASE WHEN tgt_match IS NOT NULL THEN tgt_match.ip ELSE null END AS pivot_ip,
+                   CASE WHEN tgt_match IS NOT NULL THEN tgt_match.agent_id ELSE null END AS dst_agent_id,
+                   CASE WHEN tgt_match IS NOT NULL THEN tgt_match.hostname ELSE null END AS dst_hostname
             LIMIT 1
             """
             result = session.run(phase1_query, {"finding_id": finding_id})
@@ -413,81 +509,147 @@ class Neo4jClient:
                 return {}
 
             data = dict(record)
-            src_agent_id = data.get("src_agent_id")
-            dst_ip_addresses = data.get("dst_ip_addresses") or []
-            source_chain: list[dict] = []
+            dst_agent_id = data.get("dst_agent_id")
+            src_ip_addresses = data.get("src_ip_addresses") or []
+            target_chain: list[dict] = []
 
-            # ── Phase 2A: Source chain from findings ──
-            if src_agent_id and dst_ip_addresses:
+            # ── Phase 2A: Target chain — finding with IP match ──
+            # Check both chain steps and IOC INVOLVES_IP edges.
+            if dst_agent_id and src_ip_addresses:
                 phase2a_query = """
-                MATCH (src:Host {agent_id: $src_agent_id})-[:GENERATED]->(sf:Finding)
-                MATCH (sf)-[:HAS_CHAIN]->(sc:ChainNode)
-                WHERE sc.entity_type = 'ip' AND sc.entity_id IN $victim_ips
-                WITH sf ORDER BY sf.timestamp DESC LIMIT 1
-                MATCH (sf)-[:HAS_CHAIN]->(sc2:ChainNode)
-                WITH sc2 ORDER BY sc2.step_index
+                CALL {
+                    MATCH (dst:Host {agent_id: $dst_agent_id})-[:GENERATED]->(tf:Finding)
+                          -[:HAS_CHAIN]->(tc:ChainNode)
+                    WHERE tc.entity_type = 'ip' AND tc.entity_id IN $src_ips
+                    RETURN tf ORDER BY tf.timestamp DESC LIMIT 1
+                    UNION
+                    MATCH (dst:Host {agent_id: $dst_agent_id})-[:GENERATED]->(tf:Finding)
+                          -[:INVOLVES_IP]->(ip:IP)
+                    WHERE ip.address IN $src_ips
+                    RETURN tf ORDER BY tf.timestamp DESC LIMIT 1
+                }
+                WITH tf ORDER BY tf.timestamp DESC LIMIT 1
+                MATCH (tf)-[:HAS_CHAIN]->(tc2:ChainNode)
+                WITH tc2 ORDER BY tc2.step_index
                 RETURN collect({
-                    entity_type: sc2.entity_type,
-                    entity_id: sc2.entity_id,
-                    entity_name: sc2.entity_name,
-                    pid: sc2.pid,
-                    timestamp: sc2.timestamp,
-                    step_index: sc2.step_index
-                }) AS source_chain
+                    entity_type: tc2.entity_type,
+                    entity_id: tc2.entity_id,
+                    entity_name: tc2.entity_name,
+                    pid: tc2.pid,
+                    timestamp: tc2.timestamp,
+                    step_index: tc2.step_index
+                }) AS target_chain
                 """
                 r2a = session.run(
                     phase2a_query,
-                    {"src_agent_id": src_agent_id, "victim_ips": dst_ip_addresses},
+                    {"dst_agent_id": dst_agent_id, "src_ips": src_ip_addresses},
                 )
                 rec2a = r2a.single()
-                if rec2a and rec2a["source_chain"]:
-                    source_chain = rec2a["source_chain"]
+                if rec2a and rec2a["target_chain"]:
+                    target_chain = rec2a["target_chain"]
 
-            # ── Phase 2B: Fallback — synthetic chain from Process edges ──
-            if not source_chain and src_agent_id and dst_ip_addresses:
-                phase2b_query = """
-                MATCH (src:Host {agent_id: $src_agent_id})-[:RUNS]->(p:Process)
-                      -[:CONNECTED_TO]->(ip:IP)
-                WHERE ip.address IN $victim_ips
-                RETURN p.name AS process_name, ip.address AS ip_address
-                """
-                r2b = session.run(
-                    phase2b_query,
-                    {"src_agent_id": src_agent_id, "victim_ips": dst_ip_addresses},
-                )
-                seen = set()
-                idx = 0
-                for rec in r2b:
-                    pname = rec["process_name"]
-                    ip_addr = rec["ip_address"]
-                    pkey = ("process", pname)
-                    ikey = ("ip", ip_addr)
-                    if pkey not in seen:
-                        source_chain.append({
-                            "entity_type": "process",
-                            "entity_id": pname,
-                            "entity_name": pname,
-                            "pid": 0,
-                            "timestamp": 0,
-                            "step_index": idx,
-                        })
-                        seen.add(pkey)
-                        idx += 1
-                    if ikey not in seen:
-                        source_chain.append({
-                            "entity_type": "ip",
-                            "entity_id": ip_addr,
-                            "entity_name": ip_addr,
-                            "pid": 0,
-                            "timestamp": 0,
-                            "step_index": idx,
-                        })
-                        seen.add(ikey)
-                        idx += 1
+            # ── Phase 2B: Federated XDR query for target chain ──
+            # Query the TARGET agent for INBOUND connections from the
+            # source's IPs — that reveals the process chain on the target
+            # (e.g. sshd→bash) that received the lateral movement.
+            if not target_chain and dst_agent_id:
+                xdr_chain = None
+
+                if settings_db:
+                    victim_qtype = "lateral_victim_trace"
+                    victim_qkey = f"{finding_id}:victim"
+                    xdr_result = settings_db.get_xdr_result(victim_qkey, victim_qtype)
+
+                    if xdr_result is None:
+                        import uuid
+                        port = self._extract_finding_port(session, finding_id)
+                        settings_db.enqueue_xdr_query(
+                            str(uuid.uuid4()), dst_agent_id, victim_qkey,
+                            victim_qtype,
+                            json.dumps({"victim_ips": src_ip_addresses,
+                                        "target_port": port,
+                                        "finding_ts": data.get("timestamp") or 0}),
+                        )
+                        data["target_chain_pending"] = True
+
+                    elif xdr_result["status"] == "pending":
+                        data["target_chain_pending"] = True
+
+                    elif xdr_result["status"] == "completed":
+                        try:
+                            result_data = json.loads(xdr_result["result_json"])
+                            records = result_data.get("records", [])
+                            if records:
+                                xdr_chain = _build_chain_from_xdr_records(
+                                    records, reverse=True,
+                                )
+                                data["target_chain_xdr_stitched"] = True
+                        except (json.JSONDecodeError, KeyError):
+                            pass
+
+                if xdr_chain:
+                    target_chain = xdr_chain
+                elif "target_chain_pending" not in data:
+                    # Final fallback: just the pivot IP
+                    pivot_ip = data.get("pivot_ip") or ""
+                    target_chain = []
+                    if pivot_ip:
+                        target_chain.append(
+                            {"entity_type": "ip", "entity_id": pivot_ip,
+                             "entity_name": pivot_ip, "pid": 0,
+                             "timestamp": 0, "step_index": 0},
+                        )
+                    data["target_chain_inferred"] = True
+
+            # ── Phase 2C: Federated XDR query for source chain ──
+            # If Phase 1 returned no chain for the source (chain data
+            # not ingested to Neo4j), query the SOURCE agent for OUTBOUND
+            # connections to the target's pivot IP.
+            source_chain = data.get("source_chain") or []
+            src_agent_id = data.get("src_agent_id")
+            pivot_ip = data.get("pivot_ip")
+
+            if not source_chain and src_agent_id and pivot_ip and settings_db:
+                xdr_source_chain = None
+                source_qtype = "lateral_source_trace"
+                source_qkey = f"{finding_id}:source"
+                xdr_result = settings_db.get_xdr_result(source_qkey, source_qtype)
+
+                if xdr_result is None:
+                    import uuid
+                    port = self._extract_finding_port(session, finding_id)
+                    settings_db.enqueue_xdr_query(
+                        str(uuid.uuid4()), src_agent_id, source_qkey,
+                        source_qtype,
+                        json.dumps({"dst_ips": [pivot_ip],
+                                    "target_port": port,
+                                    "finding_ts": data.get("timestamp") or 0}),
+                    )
+                    data["source_chain_pending"] = True
+
+                elif xdr_result["status"] == "pending":
+                    data["source_chain_pending"] = True
+
+                elif xdr_result["status"] == "completed":
+                    try:
+                        result_data = json.loads(xdr_result["result_json"])
+                        records = result_data.get("records", [])
+                        if records:
+                            xdr_source_chain = _build_chain_from_xdr_records(
+                                records,
+                            )
+                            data["source_chain_xdr_stitched"] = True
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+
+                if xdr_source_chain:
+                    source_chain = xdr_source_chain
+
+            data["source_chain"] = source_chain
+            data["target_chain"] = target_chain
 
             # Remove internal fields and build final response
-            data.pop("dst_ip_addresses", None)
-            data["source_chain"] = source_chain
+            data.pop("src_ip_addresses", None)
             return data
 
     def detect_vertical_movements(self, limit: int = 50) -> list[dict]:
@@ -938,6 +1100,418 @@ class Neo4jClient:
                 {"key": key},
             )
             return True, "ok"
+
+    # ── Port extraction ──
+
+    def _extract_finding_port(self, session, finding_id: str) -> int | None:
+        """Extract the destination port from a finding's IOCs."""
+        result = session.run(
+            "MATCH (f:Finding {finding_id: $fid}) RETURN f.iocs AS iocs_json",
+            {"fid": finding_id},
+        )
+        record = result.single()
+        if not record or not record["iocs_json"]:
+            return None
+        try:
+            iocs = json.loads(record["iocs_json"])
+            ports = iocs.get("ports", [])
+            return int(ports[0]) if ports else None
+        except (json.JSONDecodeError, ValueError, IndexError, TypeError):
+            return None
+
+    def extract_finding_port(self, finding_id: str) -> int | None:
+        """Extract the destination port from a finding's IOCs (standalone session)."""
+        with self._driver.session() as session:
+            return self._extract_finding_port(session, finding_id)
+
+    # ── Incident management ──
+
+    def check_finding_for_lateral_movement(self, agent_id: str, finding_id: str) -> list[dict]:
+        """Check if a single finding's IPs match any other host's ip_addresses.
+
+        Returns list of {dst_agent_id, dst_hostname, pivot_ip} for each match.
+        """
+        query = """
+        MATCH (initiator:Host {agent_id: $agent_id})-[:GENERATED]->(f:Finding {finding_id: $finding_id})
+        OPTIONAL MATCH (f)-[:HAS_CHAIN]->(step:ChainNode)
+        WHERE step.entity_type = 'ip'
+        WITH initiator, f, collect(DISTINCT step.entity_id) AS chain_ips
+        OPTIONAL MATCH (f)-[:INVOLVES_IP]->(ip:IP)
+        WITH initiator, f, chain_ips, collect(DISTINCT ip.address) AS ioc_ips
+        WITH initiator, f, [x IN chain_ips + ioc_ips WHERE x IS NOT NULL] AS candidate_ips
+        WHERE size(candidate_ips) > 0
+        UNWIND candidate_ips AS cip
+        MATCH (target:Host)
+        WHERE target.agent_id <> initiator.agent_id
+          AND cip IN target.ip_addresses
+        RETURN DISTINCT target.agent_id AS dst_agent_id,
+               target.hostname AS dst_hostname,
+               cip AS pivot_ip
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"agent_id": agent_id, "finding_id": finding_id})
+            return [dict(record) for record in result]
+
+    def check_finding_for_follow_on(self, agent_id: str, finding_id: str) -> list[str]:
+        """Link finding to active incidents where this agent is the target.
+
+        Creates FOLLOW_ON relationships and bumps updated_at.
+        Returns list of incident_ids that were linked.
+        """
+        query = """
+        MATCH (inc:Incident {dst_agent_id: $agent_id})
+        WHERE inc.status = 'active'
+        MATCH (f:Finding {finding_id: $finding_id})
+        MERGE (inc)-[:FOLLOW_ON]->(f)
+        SET inc.updated_at = $now
+        RETURN inc.incident_id AS incident_id
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {
+                "agent_id": agent_id,
+                "finding_id": finding_id,
+                "now": int(time.time()),
+            })
+            return [record["incident_id"] for record in result]
+
+    def has_incident_for_finding(self, finding_id: str, pivot_ip: str) -> bool:
+        """Check if an incident already exists for this finding+pivot_ip combo."""
+        query = """
+        MATCH (inc:Incident)-[:SOURCE_FINDING]->(f:Finding {finding_id: $finding_id})
+        WHERE inc.pivot_ip = $pivot_ip
+        RETURN count(inc) AS cnt
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"finding_id": finding_id, "pivot_ip": pivot_ip})
+            record = result.single()
+            return record["cnt"] > 0 if record else False
+
+    def create_incident(
+        self,
+        incident_id: str,
+        finding_id: str,
+        src_agent_id: str,
+        dst_agent_id: str,
+        pivot_ip: str,
+        dst_port: int | None = None,
+    ) -> None:
+        """Create an Incident node with relationships to source finding and hosts."""
+        now = int(time.time())
+        query = """
+        MERGE (inc:Incident {incident_id: $incident_id})
+        SET inc.incident_type = 'lateral_movement',
+            inc.status = 'detected',
+            inc.src_agent_id = $src_agent_id,
+            inc.dst_agent_id = $dst_agent_id,
+            inc.pivot_ip = $pivot_ip,
+            inc.dst_port = $dst_port,
+            inc.created_at = $now,
+            inc.updated_at = $now
+        WITH inc
+        MATCH (f:Finding {finding_id: $finding_id})
+        MERGE (inc)-[:SOURCE_FINDING]->(f)
+        WITH inc
+        OPTIONAL MATCH (src:Host {agent_id: $src_agent_id})
+        FOREACH (_ IN CASE WHEN src IS NOT NULL THEN [1] ELSE [] END |
+            MERGE (inc)-[:INVOLVES_HOST]->(src)
+        )
+        WITH inc
+        OPTIONAL MATCH (dst:Host {agent_id: $dst_agent_id})
+        FOREACH (_ IN CASE WHEN dst IS NOT NULL THEN [1] ELSE [] END |
+            MERGE (inc)-[:INVOLVES_HOST]->(dst)
+        )
+        WITH inc
+        MERGE (ip:IP {address: $pivot_ip})
+        MERGE (inc)-[:PIVOT_VIA]->(ip)
+        """
+        with self._driver.session() as session:
+            session.run(query, {
+                "incident_id": incident_id,
+                "finding_id": finding_id,
+                "src_agent_id": src_agent_id,
+                "dst_agent_id": dst_agent_id,
+                "pivot_ip": pivot_ip,
+                "dst_port": dst_port,
+                "now": now,
+            })
+        logger.info(
+            "Created incident %s: %s → %s via %s:%s",
+            incident_id, src_agent_id, dst_agent_id, pivot_ip, dst_port,
+        )
+
+    def get_incidents_by_status(self, status: str) -> list[dict]:
+        """Get all incidents with a given status."""
+        query = """
+        MATCH (inc:Incident {status: $status})
+        OPTIONAL MATCH (inc)-[:SOURCE_FINDING]->(f:Finding)
+        RETURN inc.incident_id AS incident_id,
+               inc.incident_type AS incident_type,
+               inc.status AS status,
+               inc.src_agent_id AS src_agent_id,
+               inc.dst_agent_id AS dst_agent_id,
+               inc.pivot_ip AS pivot_ip,
+               inc.dst_port AS dst_port,
+               inc.created_at AS created_at,
+               inc.updated_at AS updated_at,
+               f.finding_id AS finding_id
+        ORDER BY inc.created_at ASC
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"status": status})
+            return [dict(record) for record in result]
+
+    def update_incident_status(self, incident_id: str, new_status: str) -> None:
+        """Transition an incident to a new status."""
+        query = """
+        MATCH (inc:Incident {incident_id: $incident_id})
+        SET inc.status = $new_status,
+            inc.updated_at = $now
+        """
+        with self._driver.session() as session:
+            session.run(query, {
+                "incident_id": incident_id,
+                "new_status": new_status,
+                "now": int(time.time()),
+            })
+
+    def get_incident_src_ips(self, incident_id: str) -> list[str]:
+        """Get the source host's ip_addresses for XDR query params."""
+        query = """
+        MATCH (inc:Incident {incident_id: $incident_id})
+        MATCH (src:Host {agent_id: inc.src_agent_id})
+        RETURN src.ip_addresses AS ip_addresses
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"incident_id": incident_id})
+            record = result.single()
+            return record["ip_addresses"] if record and record["ip_addresses"] else []
+
+    def persist_incident_chains(
+        self,
+        incident_id: str,
+        source_chain: list[dict],
+        target_chain: list[dict],
+    ) -> None:
+        """Write ChainNodes linked to an Incident via HAS_SOURCE_CHAIN / HAS_TARGET_CHAIN."""
+        with self._driver.session() as session:
+            for rel_type, chain in [("HAS_SOURCE_CHAIN", source_chain), ("HAS_TARGET_CHAIN", target_chain)]:
+                for step in chain:
+                    node_id = f"{incident_id}:{rel_type.lower()}:{step.get('step_index', 0)}"
+                    session.run(
+                        """
+                        MERGE (c:ChainNode {chain_node_id: $chain_node_id})
+                        SET c.finding_id = $incident_id,
+                            c.step_index = $step_index,
+                            c.entity_type = $entity_type,
+                            c.entity_id = $entity_id,
+                            c.entity_name = $entity_name,
+                            c.pid = $pid,
+                            c.timestamp = $timestamp,
+                            c.host_agent_id = $host_agent_id
+                        WITH c
+                        MATCH (inc:Incident {incident_id: $incident_id})
+                        MERGE (inc)-[r:""" + rel_type + """ {step_index: $step_index}]->(c)
+                        """,
+                        {
+                            "chain_node_id": node_id,
+                            "incident_id": incident_id,
+                            "step_index": step.get("step_index", 0),
+                            "entity_type": step.get("entity_type", ""),
+                            "entity_id": step.get("entity_id", ""),
+                            "entity_name": step.get("entity_name", ""),
+                            "pid": step.get("pid", 0),
+                            "timestamp": step.get("timestamp", 0),
+                            "host_agent_id": step.get("host_agent_id", ""),
+                        },
+                    )
+
+    def list_incidents(self, status: str | None = None, limit: int = 50) -> list[dict]:
+        """List incidents for dashboard API."""
+        if status:
+            query = """
+            MATCH (inc:Incident {status: $status})
+            OPTIONAL MATCH (inc)-[:FOLLOW_ON]->(fo:Finding)
+            WITH inc, count(fo) AS follow_on_count
+            OPTIONAL MATCH (src:Host {agent_id: inc.src_agent_id})
+            OPTIONAL MATCH (dst:Host {agent_id: inc.dst_agent_id})
+            RETURN inc.incident_id AS incident_id,
+                   inc.incident_type AS incident_type,
+                   inc.status AS status,
+                   inc.src_agent_id AS src_agent_id,
+                   src.hostname AS src_hostname,
+                   inc.dst_agent_id AS dst_agent_id,
+                   dst.hostname AS dst_hostname,
+                   inc.pivot_ip AS pivot_ip,
+                   inc.created_at AS created_at,
+                   inc.updated_at AS updated_at,
+                   follow_on_count
+            ORDER BY inc.updated_at DESC
+            LIMIT $limit
+            """
+            params = {"status": status, "limit": limit}
+        else:
+            query = """
+            MATCH (inc:Incident)
+            OPTIONAL MATCH (inc)-[:FOLLOW_ON]->(fo:Finding)
+            WITH inc, count(fo) AS follow_on_count
+            OPTIONAL MATCH (src:Host {agent_id: inc.src_agent_id})
+            OPTIONAL MATCH (dst:Host {agent_id: inc.dst_agent_id})
+            RETURN inc.incident_id AS incident_id,
+                   inc.incident_type AS incident_type,
+                   inc.status AS status,
+                   inc.src_agent_id AS src_agent_id,
+                   src.hostname AS src_hostname,
+                   inc.dst_agent_id AS dst_agent_id,
+                   dst.hostname AS dst_hostname,
+                   inc.pivot_ip AS pivot_ip,
+                   inc.created_at AS created_at,
+                   inc.updated_at AS updated_at,
+                   follow_on_count
+            ORDER BY inc.updated_at DESC
+            LIMIT $limit
+            """
+            params = {"limit": limit}
+        with self._driver.session() as session:
+            result = session.run(query, params)
+            return [dict(record) for record in result]
+
+    def get_incident_detail(self, incident_id: str) -> dict | None:
+        """Full incident detail with chains and follow-on findings."""
+        with self._driver.session() as session:
+            # Base info
+            base_query = """
+            MATCH (inc:Incident {incident_id: $incident_id})
+            OPTIONAL MATCH (inc)-[:SOURCE_FINDING]->(sf:Finding)
+            OPTIONAL MATCH (src:Host {agent_id: inc.src_agent_id})
+            OPTIONAL MATCH (dst:Host {agent_id: inc.dst_agent_id})
+            RETURN inc.incident_id AS incident_id,
+                   inc.incident_type AS incident_type,
+                   inc.status AS status,
+                   inc.src_agent_id AS src_agent_id,
+                   src.hostname AS src_hostname,
+                   inc.dst_agent_id AS dst_agent_id,
+                   dst.hostname AS dst_hostname,
+                   inc.pivot_ip AS pivot_ip,
+                   inc.created_at AS created_at,
+                   inc.updated_at AS updated_at,
+                   sf.finding_id AS source_finding_id,
+                   sf.title AS source_finding_title,
+                   sf.severity AS source_finding_severity
+            """
+            result = session.run(base_query, {"incident_id": incident_id})
+            record = result.single()
+            if not record:
+                return None
+            data = dict(record)
+
+            # Source chain
+            sc_query = """
+            MATCH (inc:Incident {incident_id: $incident_id})-[:HAS_SOURCE_CHAIN]->(c:ChainNode)
+            RETURN c.entity_type AS entity_type, c.entity_id AS entity_id,
+                   c.entity_name AS entity_name, c.pid AS pid,
+                   c.timestamp AS timestamp, c.step_index AS step_index
+            ORDER BY c.step_index
+            """
+            sc_result = session.run(sc_query, {"incident_id": incident_id})
+            data["source_chain"] = [dict(r) for r in sc_result]
+
+            # Target chain
+            tc_query = """
+            MATCH (inc:Incident {incident_id: $incident_id})-[:HAS_TARGET_CHAIN]->(c:ChainNode)
+            RETURN c.entity_type AS entity_type, c.entity_id AS entity_id,
+                   c.entity_name AS entity_name, c.pid AS pid,
+                   c.timestamp AS timestamp, c.step_index AS step_index
+            ORDER BY c.step_index
+            """
+            tc_result = session.run(tc_query, {"incident_id": incident_id})
+            data["target_chain"] = [dict(r) for r in tc_result]
+
+            # Follow-on findings
+            fo_query = """
+            MATCH (inc:Incident {incident_id: $incident_id})-[:FOLLOW_ON]->(f:Finding)
+            RETURN f.finding_id AS finding_id, f.title AS title,
+                   f.severity AS severity, f.timestamp AS timestamp
+            ORDER BY f.timestamp DESC
+            LIMIT 100
+            """
+            fo_result = session.run(fo_query, {"incident_id": incident_id})
+            data["follow_on_findings"] = [dict(r) for r in fo_result]
+
+            return data
+
+    def get_surveillance_targets(self, agent_id: str) -> dict:
+        """Aggregate pivot IPs and compromised usernames from active incidents for an agent.
+
+        Returns {"ips": [...], "users": [...]} or empty dict if no active incidents.
+        """
+        query = """
+        MATCH (inc:Incident)
+        WHERE inc.status = 'active'
+          AND (inc.src_agent_id = $agent_id OR inc.dst_agent_id = $agent_id)
+        OPTIONAL MATCH (inc)-[:HAS_SOURCE_CHAIN]->(sc:ChainNode)
+        WHERE sc.entity_type = 'user'
+        OPTIONAL MATCH (inc)-[:HAS_TARGET_CHAIN]->(tc:ChainNode)
+        WHERE tc.entity_type = 'user'
+        WITH collect(DISTINCT inc.pivot_ip) AS ips,
+             collect(DISTINCT sc.entity_name) + collect(DISTINCT tc.entity_name) AS raw_users
+        WITH ips, [u IN raw_users WHERE u IS NOT NULL] AS users
+        RETURN ips, users
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"agent_id": agent_id})
+            record = result.single()
+            if not record:
+                return {}
+            ips = record["ips"] or []
+            users = list(set(record["users"] or []))
+            if not ips and not users:
+                return {}
+            return {"ips": ips, "users": users}
+
+    def get_incident_chain_usernames(self, incident_id: str) -> tuple[list[str], list[str]]:
+        """Get usernames from persisted source/target chains for an incident.
+
+        Returns (src_usernames, dst_usernames).
+        """
+        query = """
+        MATCH (inc:Incident {incident_id: $incident_id})
+        OPTIONAL MATCH (inc)-[:HAS_SOURCE_CHAIN]->(sc:ChainNode)
+        WHERE sc.entity_type = 'user' AND sc.entity_name IS NOT NULL
+        WITH inc, collect(DISTINCT sc.entity_name) AS src_users
+        OPTIONAL MATCH (inc)-[:HAS_TARGET_CHAIN]->(tc:ChainNode)
+        WHERE tc.entity_type = 'user' AND tc.entity_name IS NOT NULL
+        RETURN src_users, collect(DISTINCT tc.entity_name) AS dst_users
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"incident_id": incident_id})
+            record = result.single()
+            if not record:
+                return [], []
+            return list(record["src_users"] or []), list(record["dst_users"] or [])
+
+    def get_incident_chain_pids(self, incident_id: str) -> tuple[list[int], list[int]]:
+        """Get process PIDs from persisted source/target chains for an incident.
+
+        Lightweight alternative to get_incident_detail() — skips base info,
+        follow-ons, and full chain traversal.
+
+        Returns (src_pids, dst_pids).
+        """
+        query = """
+        MATCH (inc:Incident {incident_id: $incident_id})
+        OPTIONAL MATCH (inc)-[:HAS_SOURCE_CHAIN]->(sc:ChainNode)
+        WHERE sc.entity_type = 'process' AND sc.pid > 0
+        WITH inc, collect(DISTINCT sc.pid) AS src_pids
+        OPTIONAL MATCH (inc)-[:HAS_TARGET_CHAIN]->(tc:ChainNode)
+        WHERE tc.entity_type = 'process' AND tc.pid > 0
+        RETURN src_pids, collect(DISTINCT tc.pid) AS dst_pids
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"incident_id": incident_id})
+            record = result.single()
+            if not record:
+                return [], []
+            return list(record["src_pids"] or []), list(record["dst_pids"] or [])
 
     # ── Migration helpers ──
 

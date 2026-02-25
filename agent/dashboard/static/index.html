@@ -395,10 +395,11 @@ async function refreshOverview() {
     } else {
       const refreshAgo = iocStats.last_refresh ? fmtAgo(iocStats.last_refresh) : 'never';
       iocEl.innerHTML =
-        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:8px">' +
+        '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:8px">' +
         '<div><div style="font-size:20px;font-weight:600">' + fmtNum(iocStats.ip_count||0) + '</div><div style="color:var(--dim);font-size:11px">IPs</div></div>' +
         '<div><div style="font-size:20px;font-weight:600">' + fmtNum(iocStats.domain_count||0) + '</div><div style="color:var(--dim);font-size:11px">Domains</div></div>' +
         '<div><div style="font-size:20px;font-weight:600">' + fmtNum(iocStats.hash_count||0) + '</div><div style="color:var(--dim);font-size:11px">Hashes</div></div>' +
+        '<div><div style="font-size:20px;font-weight:600">' + fmtNum(iocStats.fleet_sigma_rules||0) + '</div><div style="color:var(--dim);font-size:11px">Sigma</div></div>' +
         '</div>' +
         '<div style="color:var(--dim);font-size:11px;margin-top:8px">Last refresh: ' + refreshAgo + '</div>';
     }
@@ -1170,6 +1171,7 @@ async function refreshSettings() {
     if (feeds.threatfox_domains) html += '<div class="settings-row"><span class="settings-key" style="padding-left:16px">ThreatFox</span><span class="settings-val" style="color:var(--dim)">' + fmtNum(feeds.threatfox_domains) + ' domains</span></div>';
     if (feeds.urlhaus) html += '<div class="settings-row"><span class="settings-key" style="padding-left:16px">URLhaus</span><span class="settings-val" style="color:var(--dim)">' + fmtNum(feeds.urlhaus) + ' malware domains</span></div>';
     html += '<div class="settings-row"><span class="settings-key">Hash signatures</span><span class="settings-val">' + fmtNum(iocStats.hash_count||0) + ' <span style="color:var(--dim);font-size:11px">(MalBazaar)</span></span></div>';
+    html += '<div class="settings-row"><span class="settings-key">Fleet Sigma rules</span><span class="settings-val">' + fmtNum(iocStats.fleet_sigma_rules||0) + ' <span style="color:var(--dim);font-size:11px">(synced from fleet server)</span></span></div>';
     html += '<div class="settings-row"><span class="settings-key">Last updated</span><span class="settings-val">' + esc(refreshTime) + (refreshAgo ? ' <span style="color:var(--dim);font-size:11px">(' + refreshAgo + ')</span>' : '') + '</span></div>';
     html += '<div class="settings-row"><span class="settings-key">Refresh interval</span><span class="settings-val">' + (data.ioc_feeds_refresh_hours || 4) + ' hours</span></div>';
     const exclPatterns = data.ioc_exclusion_patterns || [];

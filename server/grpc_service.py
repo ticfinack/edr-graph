@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import logging
+import uuid
 
 import grpc
 
@@ -137,6 +138,35 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
             len(request.findings),
             request.agent_id,
         )
+
+        # Inline lateral movement detection + follow-on tagging
+        for proto_finding in request.findings:
+            try:
+                fid = proto_finding.id
+                # Check for follow-on: link to active incidents targeting this agent
+                linked = self._neo4j.check_finding_for_follow_on(request.agent_id, fid)
+                if linked:
+                    logger.info("Finding %s linked as follow-on to incidents: %s", fid, linked)
+
+                # Check for new lateral movement
+                matches = self._neo4j.check_finding_for_lateral_movement(request.agent_id, fid)
+                for m in matches:
+                    if not self._neo4j.has_incident_for_finding(fid, m["pivot_ip"]):
+                        incident_id = str(uuid.uuid4())
+                        port = self._neo4j.extract_finding_port(fid)
+                        self._neo4j.create_incident(
+                            incident_id=incident_id,
+                            finding_id=fid,
+                            src_agent_id=request.agent_id,
+                            dst_agent_id=m["dst_agent_id"],
+                            pivot_ip=m["pivot_ip"],
+                            dst_port=port,
+                        )
+            except Exception:
+                logger.debug(
+                    "Inline detection failed for finding %s", proto_finding.id, exc_info=True,
+                )
+
         return fleet_pb2.SendFindingsResponse(
             accepted_count=accepted,
             message=f"accepted {accepted}/{len(request.findings)}",
@@ -158,6 +188,42 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
             message=f"accepted {accepted}/{len(request.events)}",
         )
 
+    def _ingest_surveillance_logs(self, query_meta: dict, result: dict) -> None:
+        """Parse surveillance query results into the persistent table."""
+        finding_id = query_meta.get("finding_id", "")
+        agent_id = query_meta.get("agent_id", "")
+
+        # Extract incident_id and side from finding_id like "inc-id:surv_dst"
+        incident_id = ""
+        side = ""
+        if ":surv_dst" in finding_id:
+            incident_id = finding_id.split(":surv_dst")[0]
+            side = "dst"
+        elif ":surv_src" in finding_id:
+            incident_id = finding_id.split(":surv_src")[0]
+            side = "src"
+
+        if not incident_id or not side:
+            return
+
+        records = result.get("records", []) if isinstance(result, dict) else []
+        if not records:
+            return
+
+        self._settings_db.upsert_surveillance_logs(incident_id, agent_id, side, records)
+
+        # Update pull state with max timestamp from ingested records
+        max_ts = max((r.get("timestamp", 0) for r in records), default=0)
+        if max_ts > 0:
+            self._settings_db.set_surveillance_pull_state(
+                incident_id, side, last_record_ts=max_ts,
+            )
+
+        logger.debug(
+            "Ingested %d surveillance records for %s side=%s",
+            len(records), incident_id, side,
+        )
+
     def Heartbeat(self, request, context):
         """Update agent heartbeat in Neo4j, including clock offset and IPs."""
         # Verify agent is registered before processing
@@ -166,6 +232,19 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
             agent_key = self._settings_db.get_agent_key(request.agent_id)
         if not agent_key:
             return fleet_pb2.HeartbeatResponse(acknowledged=False, message="unregistered")
+
+        # Receive federated query results from agent
+        if request.query_results_json and self._settings_db:
+            try:
+                results = json.loads(request.query_results_json)
+                for r in results:
+                    query_meta = self._settings_db.complete_xdr_query(
+                        r["query_id"], json.dumps(r.get("result", {}))
+                    )
+                    if query_meta and query_meta["query_type"] == "pull_surveillance_logs":
+                        self._ingest_surveillance_logs(query_meta, r.get("result", {}))
+            except (json.JSONDecodeError, KeyError, TypeError):
+                logger.debug("Bad query_results_json from %s", request.agent_id)
 
         try:
             ip_addresses = list(request.ip_addresses) if request.ip_addresses else None
@@ -178,11 +257,22 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
                 public_ip=public_ip,
             )
 
-            # Send agent config defaults, signed with per-agent derived HMAC key
+            # Send agent config defaults + pending queries, signed with per-agent derived HMAC key
             config_json = ""
             config_signature = ""
             if self._settings_db:
                 defaults = self._settings_db.resolve_agent_config(request.agent_id)
+                pending = self._settings_db.get_pending_queries_for_agent(request.agent_id)
+                if pending:
+                    defaults["pending_queries"] = pending
+                # Inject surveillance targets from active incidents
+                try:
+                    surv = self._neo4j.get_surveillance_targets(request.agent_id)
+                    if isinstance(surv, dict) and surv.get("ips"):
+                        defaults["active_surveillance"] = surv
+                except Exception:
+                    logger.debug("Surveillance target lookup failed for %s", request.agent_id, exc_info=True)
+
                 if defaults:
                     config_json = json.dumps(defaults)
                     signing_key = hmac.new(
