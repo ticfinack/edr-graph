@@ -248,6 +248,7 @@ class LedgerReader:
                 try:
                     data = json.loads(row[0])
                 except Exception:
+                    logger.debug("Failed to parse entities_json row", exc_info=True)
                     continue
 
                 # Deduplicate nodes by ID (last write wins for processes,
