@@ -127,7 +127,7 @@ class SendEventsResponse(_message.Message):
     def __init__(self, accepted_count: _Optional[int] = ..., message: _Optional[str] = ...) -> None: ...
 
 class HeartbeatRequest(_message.Message):
-    __slots__ = ("agent_id", "timestamp", "queue_depth", "findings_count", "status", "clock_offset_ms", "ip_addresses", "public_ip", "query_results_json")
+    __slots__ = ("agent_id", "timestamp", "queue_depth", "findings_count", "status", "clock_offset_ms", "ip_addresses", "public_ip", "query_results_json", "ioc_stats_json")
     AGENT_ID_FIELD_NUMBER: _ClassVar[int]
     TIMESTAMP_FIELD_NUMBER: _ClassVar[int]
     QUEUE_DEPTH_FIELD_NUMBER: _ClassVar[int]
@@ -137,6 +137,7 @@ class HeartbeatRequest(_message.Message):
     IP_ADDRESSES_FIELD_NUMBER: _ClassVar[int]
     PUBLIC_IP_FIELD_NUMBER: _ClassVar[int]
     QUERY_RESULTS_JSON_FIELD_NUMBER: _ClassVar[int]
+    IOC_STATS_JSON_FIELD_NUMBER: _ClassVar[int]
     agent_id: str
     timestamp: int
     queue_depth: int
@@ -146,7 +147,8 @@ class HeartbeatRequest(_message.Message):
     ip_addresses: _containers.RepeatedScalarFieldContainer[str]
     public_ip: str
     query_results_json: str
-    def __init__(self, agent_id: _Optional[str] = ..., timestamp: _Optional[int] = ..., queue_depth: _Optional[int] = ..., findings_count: _Optional[int] = ..., status: _Optional[str] = ..., clock_offset_ms: _Optional[int] = ..., ip_addresses: _Optional[_Iterable[str]] = ..., public_ip: _Optional[str] = ..., query_results_json: _Optional[str] = ...) -> None: ...
+    ioc_stats_json: str
+    def __init__(self, agent_id: _Optional[str] = ..., timestamp: _Optional[int] = ..., queue_depth: _Optional[int] = ..., findings_count: _Optional[int] = ..., status: _Optional[str] = ..., clock_offset_ms: _Optional[int] = ..., ip_addresses: _Optional[_Iterable[str]] = ..., public_ip: _Optional[str] = ..., query_results_json: _Optional[str] = ..., ioc_stats_json: _Optional[str] = ...) -> None: ...
 
 class HeartbeatResponse(_message.Message):
     __slots__ = ("acknowledged", "message", "config_json", "config_signature")

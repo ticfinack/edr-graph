@@ -42,6 +42,10 @@ _NORMALIZERS["auditd_syscall"] = normalize_process
 # eBPF sources
 _NORMALIZERS["ebpf_execve"] = normalize_process
 _NORMALIZERS["ebpf_network"] = normalize_network
+_NORMALIZERS["ebpf_file_create"] = normalize_file
+_NORMALIZERS["ebpf_file_modify"] = normalize_file
+_NORMALIZERS["ebpf_file_delete"] = normalize_file
+_NORMALIZERS["ebpf_dns"] = normalize_dns
 
 # Connection metadata (tcpdump SYN capture)
 _NORMALIZERS["connection_metadata"] = normalize_network

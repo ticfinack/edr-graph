@@ -106,6 +106,7 @@ message HeartbeatRequest {
   repeated string ip_addresses = 7;  // Current local IPs
   string public_ip = 8;              // Current public IP
   string query_results_json = 9;     // JSON array of completed federated query results
+  string ioc_stats_json = 10;        // JSON IOC feed stats from agent
 }
 
 message HeartbeatResponse {

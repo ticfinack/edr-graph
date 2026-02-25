@@ -51,3 +51,8 @@ class ServerSettings(BaseModel):
     settings_db_path: str = Field(
         default_factory=lambda: os.environ.get("SETTINGS_DB_PATH", "./settings.db")
     )
+
+    # Intel feed aggregator
+    intel_refresh_hours: float = Field(
+        default_factory=lambda: float(os.environ.get("INTEL_REFRESH_HOURS", "4"))
+    )

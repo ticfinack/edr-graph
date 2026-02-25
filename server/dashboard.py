@@ -7,10 +7,12 @@ SOC dashboard authentication, user management, and settings.
 
 from __future__ import annotations
 
+import json
 import secrets
 import time
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from server.auth import get_current_user
@@ -47,6 +49,32 @@ def set_settings(settings) -> None:
 def set_settings_db(db: SettingsDB) -> None:
     global _settings_db
     _settings_db = db
+
+
+_feed_manager = None
+
+
+def set_feed_manager(fm) -> None:
+    global _feed_manager
+    _feed_manager = fm
+
+
+def verify_agent_token(request: Request) -> str:
+    """FastAPI dependency: verify agent registration_key from Bearer token.
+
+    Returns the registration key on success. Raises 401/403 on failure.
+    Used for machine-to-machine endpoints (intel-bundle).
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    token = auth[7:]
+    if not _settings_db:
+        raise HTTPException(status_code=503, detail="Settings database unavailable")
+    valid, reason = _settings_db.check_key_status(token)
+    if not valid:
+        raise HTTPException(status_code=403, detail=reason)
+    return token
 
 
 # ── Auth models ──
@@ -630,6 +658,173 @@ def get_threat_intel_rules(user: dict = Depends(get_current_user)):
         "metadata": doc.get("metadata", {}),
         "rules": doc.get("rules", []),
     }
+
+
+# ── Global Custom Rules CRUD ──
+
+
+class GlobalRuleRequest(BaseModel):
+    action: str
+    stage: str
+    rule_type: str
+    pattern: str
+    chain_filter: str = ""
+    description: str = ""
+
+
+@app.get("/api/threat-intel/custom-rules")
+def list_custom_rules(user: dict = Depends(get_current_user)):
+    return _settings_db.list_global_custom_rules()
+
+
+@app.post("/api/threat-intel/custom-rules")
+def add_custom_rule(body: GlobalRuleRequest, user: dict = Depends(require_admin)):
+    try:
+        rule_id = _settings_db.add_global_custom_rule(
+            action=body.action,
+            stage=body.stage,
+            rule_type=body.rule_type,
+            pattern=body.pattern,
+            chain_filter=body.chain_filter,
+            description=body.description,
+            created_by=user.get("sub", ""),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"id": rule_id, "status": "created"}
+
+
+@app.delete("/api/threat-intel/custom-rules/{rule_id}")
+def delete_custom_rule(rule_id: int, user: dict = Depends(require_admin)):
+    ok = _settings_db.delete_global_custom_rule(rule_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    return {"status": "deleted"}
+
+
+# ── Global Intel Suppressions CRUD ──
+
+
+class SuppressionRequest(BaseModel):
+    indicator_type: str
+    pattern: str
+    reason: str = ""
+
+
+@app.get("/api/threat-intel/suppressions")
+def list_suppressions(user: dict = Depends(get_current_user)):
+    return _settings_db.list_global_intel_suppressions()
+
+
+@app.post("/api/threat-intel/suppressions")
+def add_suppression(body: SuppressionRequest, user: dict = Depends(require_admin)):
+    try:
+        row = _settings_db.add_global_intel_suppression(
+            indicator_type=body.indicator_type,
+            pattern=body.pattern,
+            reason=body.reason,
+            created_by=user.get("sub", ""),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception:
+        raise HTTPException(status_code=409, detail="Duplicate suppression") from None
+    return row
+
+
+@app.delete("/api/threat-intel/suppressions/{suppression_id}")
+def delete_suppression(suppression_id: int, user: dict = Depends(require_admin)):
+    ok = _settings_db.delete_global_intel_suppression(suppression_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Suppression not found")
+    return {"status": "deleted"}
+
+
+# ── Sigma Rule Toggle ──
+
+
+@app.get("/api/threat-intel/sigma/disabled")
+def list_disabled_sigma(user: dict = Depends(get_current_user)):
+    return _settings_db.list_disabled_sigma_rules()
+
+
+@app.post("/api/threat-intel/sigma/{rule_id:path}/toggle")
+def toggle_sigma_rule(rule_id: str, user: dict = Depends(require_admin)):
+    try:
+        now_disabled = _settings_db.toggle_sigma_rule(rule_id, disabled_by=user.get("sub", ""))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"rule_id": rule_id, "disabled": now_disabled}
+
+
+# ── Agent IOC Summary (from heartbeat data) ──
+
+
+@app.get("/api/threat-intel/agent-ioc-summary")
+def get_agent_ioc_summary(user: dict = Depends(get_current_user)):
+    agents = _neo4j.get_fleet_status()
+    summaries = []
+    for a in agents:
+        ioc_json = a.get("ioc_stats_json")
+        if ioc_json:
+            try:
+                stats = json.loads(ioc_json)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            summaries.append({
+                "agent_id": a["agent_id"],
+                "hostname": a["hostname"],
+                "status": a["status"],
+                **stats,
+            })
+    return summaries
+
+
+# ── Centralized Intel Distribution ──
+
+
+@app.get("/api/fleet/intel-bundle")
+def get_intel_bundle(reg_key: str = Depends(verify_agent_token)):
+    """Return aggregated IOC bundle as gzipped JSON.
+
+    Secured with agent registration key (not user JWT).
+    Returns 503 if the feed manager is still performing its initial download.
+    """
+    if _feed_manager is None:
+        raise HTTPException(status_code=503, detail="Intel feed manager not initialized")
+    bundle_bytes = _feed_manager.get_bundle_gzip()
+    if not bundle_bytes:
+        raise HTTPException(status_code=503, detail="Intel bundle compiling — try again shortly")
+    return Response(
+        content=bundle_bytes,
+        media_type="application/json",
+        headers={"Content-Encoding": "gzip"},
+    )
+
+
+@app.get("/api/threat-intel/feed-manager-stats")
+def get_feed_manager_stats(user: dict = Depends(get_current_user)):
+    """Get fleet feed manager statistics (upstream OSINT pull status)."""
+    if _feed_manager is None:
+        return {"status": "disabled", "ready": False}
+    return _feed_manager.get_stats()
+
+
+@app.get("/api/threat-intel/indicators")
+def get_threat_intel_indicators(
+    type: str = Query("ip", pattern="^(ip|domain|hash)$"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(100, ge=1, le=500),
+    q: str = Query("", max_length=200),
+    feed: str = Query(""),
+    user: dict = Depends(get_current_user),
+):
+    """Paginated, filterable indicator browser for the dashboard."""
+    if _feed_manager is None:
+        return {"items": [], "total": 0, "page": 1, "pages": 1}
+    return _feed_manager.get_paginated_indicators(
+        ioc_type=type, page=page, limit=limit, query=q, feed=feed,
+    )
 
 
 # ── Health check (no auth) ──

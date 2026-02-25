@@ -129,6 +129,35 @@ CREATE TABLE IF NOT EXISTS surveillance_pull_state (
     last_record_ts REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (incident_id, side)
 );
+
+CREATE TABLE IF NOT EXISTS global_custom_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    rule_type TEXT NOT NULL,
+    pattern TEXT NOT NULL,
+    chain_filter TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS global_intel_suppressions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    indicator_type TEXT NOT NULL,
+    pattern TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    UNIQUE(indicator_type, pattern)
+);
+
+CREATE TABLE IF NOT EXISTS disabled_sigma_rules (
+    rule_id TEXT PRIMARY KEY,
+    disabled_at INTEGER NOT NULL,
+    disabled_by TEXT NOT NULL DEFAULT ''
+);
 """
 
 _DEFAULT_SETTINGS: dict[str, str] = {
@@ -166,6 +195,8 @@ _VALID_AGENT_SETTINGS = {
 _VALID_RULE_ACTIONS = {"allow", "block"}
 _VALID_RULE_STAGES = {"pre_graph", "fast_path", "response"}
 _VALID_RULE_TYPES = {"process_name", "dst_ip", "dst_cidr", "domain", "file_path", "finding_title", "chain_pattern"}
+
+_VALID_SUPPRESSION_TYPES = {"ip", "domain", "hash"}
 
 _TAG_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,49}$")
 _TAG_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -619,8 +650,24 @@ class SettingsDB:
         return [dict(r) for r in rows]
 
     def resolve_agent_rules(self, agent_id: str) -> list[dict]:
-        """Resolve all rules for an agent: global rules + rules from all assigned tags."""
-        rules = list(self._global_rules)
+        """Resolve all rules for an agent: global rules + custom rules + tag rules."""
+        # Sigma rules, excluding any that are disabled
+        disabled = {r["rule_id"] for r in self.list_disabled_sigma_rules()}
+        rules = []
+        for r in self._global_rules:
+            rid = r.get("rule_type", "") + ":" + r.get("pattern", "")
+            if rid not in disabled:
+                rules.append(r)
+        # Add global custom rules (fleet-managed)
+        for r in self.list_global_custom_rules():
+            rules.append({
+                "action": r["action"],
+                "stage": r["stage"],
+                "rule_type": r["rule_type"],
+                "pattern": r["pattern"],
+                "chain_filter": r["chain_filter"],
+                "description": r["description"],
+            })
         rows = self._conn().execute(
             "SELECT tr.action, tr.stage, tr.rule_type, tr.pattern, tr.chain_filter, tr.description "
             "FROM agent_tags at "
@@ -648,6 +695,7 @@ class SettingsDB:
         for r in rows:
             base[r["setting_key"]] = r["setting_value"]
         base["rules"] = self.resolve_agent_rules(agent_id)
+        base["suppressions"] = self.list_global_intel_suppressions()
         return base
 
     # ── XDR Federated Queries ──
@@ -822,6 +870,126 @@ class SettingsDB:
         row = self._conn().execute(
             "SELECT 1 FROM xdr_queries WHERE finding_id = ? AND query_type = ? AND status = 'pending' LIMIT 1",
             (finding_id, query_type),
+        ).fetchone()
+        return row is not None
+
+    # ── Global Custom Rules ──
+
+    def list_global_custom_rules(self) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT id, action, stage, rule_type, pattern, chain_filter, description, "
+            "created_by, created_at, updated_at FROM global_custom_rules ORDER BY id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_global_custom_rule(
+        self,
+        action: str,
+        stage: str,
+        rule_type: str,
+        pattern: str,
+        chain_filter: str = "",
+        description: str = "",
+        created_by: str = "",
+    ) -> int:
+        if action not in _VALID_RULE_ACTIONS:
+            raise ValueError(f"Invalid action: {action!r}")
+        if stage not in _VALID_RULE_STAGES:
+            raise ValueError(f"Invalid stage: {stage!r}")
+        if rule_type not in _VALID_RULE_TYPES:
+            raise ValueError(f"Invalid rule_type: {rule_type!r}")
+        if not pattern:
+            raise ValueError("Pattern must not be empty")
+        conn = self._conn()
+        now = int(time.time())
+        cursor = conn.execute(
+            "INSERT INTO global_custom_rules "
+            "(action, stage, rule_type, pattern, chain_filter, description, created_by, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (action, stage, rule_type, pattern, chain_filter, description, created_by, now, now),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+    def delete_global_custom_rule(self, rule_id: int) -> bool:
+        conn = self._conn()
+        cursor = conn.execute("DELETE FROM global_custom_rules WHERE id = ?", (rule_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+    # ── Global Intel Suppressions ──
+
+    def list_global_intel_suppressions(self) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT id, indicator_type, pattern, reason, created_by, created_at "
+            "FROM global_intel_suppressions ORDER BY indicator_type, pattern"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_global_intel_suppression(
+        self,
+        indicator_type: str,
+        pattern: str,
+        reason: str = "",
+        created_by: str = "",
+    ) -> dict:
+        if indicator_type not in _VALID_SUPPRESSION_TYPES:
+            raise ValueError(f"Invalid indicator_type: {indicator_type!r}")
+        pattern = pattern.strip().lower()
+        if not pattern:
+            raise ValueError("Pattern must not be empty")
+        conn = self._conn()
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO global_intel_suppressions (indicator_type, pattern, reason, created_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (indicator_type, pattern, reason, created_by, now),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT id, indicator_type, pattern, reason, created_by, created_at "
+            "FROM global_intel_suppressions WHERE indicator_type = ? AND pattern = ?",
+            (indicator_type, pattern),
+        ).fetchone()
+        return dict(row)
+
+    def delete_global_intel_suppression(self, suppression_id: int) -> bool:
+        conn = self._conn()
+        cursor = conn.execute("DELETE FROM global_intel_suppressions WHERE id = ?", (suppression_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+    # ── Disabled Sigma Rules ──
+
+    def toggle_sigma_rule(self, rule_id: str, *, disabled_by: str = "") -> bool:
+        """Toggle a Sigma rule's disabled status. Returns True if now disabled."""
+        rule_id = rule_id.strip()
+        if not rule_id:
+            raise ValueError("rule_id is required")
+        conn = self._conn()
+        existing = conn.execute(
+            "SELECT 1 FROM disabled_sigma_rules WHERE rule_id = ?", (rule_id,)
+        ).fetchone()
+        if existing:
+            conn.execute("DELETE FROM disabled_sigma_rules WHERE rule_id = ?", (rule_id,))
+            conn.commit()
+            return False
+        conn.execute(
+            "INSERT INTO disabled_sigma_rules (rule_id, disabled_at, disabled_by) VALUES (?, ?, ?)",
+            (rule_id, int(time.time()), disabled_by),
+        )
+        conn.commit()
+        return True
+
+    def list_disabled_sigma_rules(self) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT rule_id, disabled_at, disabled_by FROM disabled_sigma_rules ORDER BY rule_id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def is_sigma_rule_disabled(self, rule_id: str) -> bool:
+        row = self._conn().execute(
+            "SELECT 1 FROM disabled_sigma_rules WHERE rule_id = ?", (rule_id,)
         ).fetchone()
         return row is not None
 

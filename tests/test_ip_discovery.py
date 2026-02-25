@@ -395,6 +395,7 @@ class TestGrpcServiceIpExtraction:
             clock_offset_ms=0,
             ip_addresses=["10.0.0.5"],
             public_ip="203.0.113.1",
+            ioc_stats_json=None,
         )
         sdb.close()
 
@@ -426,5 +427,6 @@ class TestGrpcServiceIpExtraction:
             clock_offset_ms=0,
             ip_addresses=None,
             public_ip=None,
+            ioc_stats_json=None,
         )
         sdb.close()

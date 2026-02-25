@@ -226,7 +226,18 @@ def processor_thread(
                     if ocsf is not None:
                         # Real-time IOC feed matching (instant, no LLM wait)
                         if ioc_db is not None:
-                            ioc_db.refresh_if_stale()
+                            _fleet_host = ""
+                            _fleet_http_port = 0
+                            _reg_key = ""
+                            if settings.fleet_enabled and settings.fleet_url:
+                                _fleet_host = settings.fleet_url.rsplit(":", 1)[0]
+                                _fleet_http_port = settings.fleet_http_port
+                                _reg_key = settings.fleet_registration_key
+                            ioc_db.refresh_if_stale(
+                                fleet_host=_fleet_host,
+                                fleet_http_port=_fleet_http_port,
+                                registration_key=_reg_key,
+                            )
                             ioc_matches = _check_ioc_matches(ioc_db, ocsf, event_id)
                             for finding in ioc_matches:
                                 queue.store_finding(finding)
@@ -1209,6 +1220,15 @@ def main() -> None:
 
             def _download_feeds_bg():
                 try:
+                    if settings.fleet_enabled and settings.fleet_url:
+                        fleet_host = settings.fleet_url.rsplit(":", 1)[0]
+                        if ioc_db.download_from_fleet(
+                            fleet_host,
+                            settings.fleet_http_port,
+                            settings.fleet_registration_key,
+                        ):
+                            return
+                        logger.info("Fleet fetch failed at startup, falling back to direct download")
                     ioc_db.download_feeds()
                 except Exception:
                     logger.warning("Failed to download IOC feeds", exc_info=True)
@@ -1333,6 +1353,10 @@ def main() -> None:
                 allowlist_cache=allowlist_cache,
             )
             _fleet_forwarder.register()
+
+            # Wire IOC database so heartbeats include feed stats
+            if ioc_db is not None:
+                _fleet_forwarder.set_ioc_db(ioc_db)
 
             # Wire federated query executor so the agent can answer
             # XDR queries from the fleet server against its local Kuzu DB

@@ -263,12 +263,14 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
         try:
             ip_addresses = list(request.ip_addresses) if request.ip_addresses else None
             public_ip = request.public_ip or None
+            ioc_stats_json = request.ioc_stats_json or None
             self._neo4j.update_heartbeat(
                 request.agent_id,
                 request.timestamp,
                 clock_offset_ms=request.clock_offset_ms,
                 ip_addresses=ip_addresses,
                 public_ip=public_ip,
+                ioc_stats_json=ioc_stats_json,
             )
 
             # Send agent config defaults + pending queries, signed with per-agent derived HMAC key

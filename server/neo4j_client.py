@@ -121,8 +121,9 @@ class Neo4jClient:
         clock_offset_ms: int = 0,
         ip_addresses: list[str] | None = None,
         public_ip: str | None = None,
+        ioc_stats_json: str | None = None,
     ) -> None:
-        """Update Host.last_seen, clock_offset_ms, and optionally IPs."""
+        """Update Host.last_seen, clock_offset_ms, and optionally IPs/IOC stats."""
         # Build SET clauses dynamically to avoid overwriting with None from old agents
         set_clauses = "SET h.last_seen = $timestamp, h.clock_offset_ms = $clock_offset_ms"
         params: dict = {
@@ -136,6 +137,9 @@ class Neo4jClient:
         if public_ip is not None:
             set_clauses += ", h.public_ip = $public_ip"
             params["public_ip"] = public_ip
+        if ioc_stats_json is not None:
+            set_clauses += ", h.ioc_stats_json = $ioc_stats_json"
+            params["ioc_stats_json"] = ioc_stats_json
 
         # Safety: set_clauses is built entirely from trusted literals above
         # (never from user input). All values are passed as $parameters.
@@ -818,6 +822,7 @@ class Neo4jClient:
                h.grpc_peer_ip AS grpc_peer_ip,
                h.last_seen AS last_seen,
                h.clock_offset_ms AS clock_offset_ms,
+               h.ioc_stats_json AS ioc_stats_json,
                count(f) AS finding_count
         ORDER BY h.last_seen DESC
         """
@@ -838,6 +843,7 @@ class Neo4jClient:
                         "grpc_peer_ip": record["grpc_peer_ip"] or "",
                         "last_seen": last_seen,
                         "clock_offset_ms": record["clock_offset_ms"],
+                        "ioc_stats_json": record["ioc_stats_json"],
                         "finding_count": record["finding_count"],
                         "status": "online" if (time.time() - last_seen) < 120 else "offline",
                     }

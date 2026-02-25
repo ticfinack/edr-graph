@@ -20,7 +20,9 @@ Hash feeds:
 from __future__ import annotations
 
 import csv
+import gzip
 import io
+import json
 import logging
 import re
 import shutil
@@ -127,6 +129,10 @@ class IocDatabase:
         self._feeds_done: int = 0  # Number of feeds completed so far
         self._feeds_total: int = 0  # Computed at download start
         self._feed_stats: dict[str, int] = {}
+        # Fleet-managed suppressions (false positive filter)
+        self._suppressed_ips: set[str] = set()
+        self._suppressed_domains: set[str] = set()
+        self._suppressed_hashes: set[str] = set()
         # User-configurable regex exclusions for domains/IPs
         self._exclusion_patterns: list[re.Pattern] = []
         for pat in exclusion_patterns or []:
@@ -138,6 +144,31 @@ class IocDatabase:
     def _is_excluded(self, value: str) -> bool:
         """Check if a value matches any user-configured exclusion pattern."""
         return any(p.search(value) for p in self._exclusion_patterns)
+
+    def set_suppressions(self, suppressions: list[dict]) -> None:
+        """Accept fleet-pushed suppression list. Thread-safe."""
+        ip_set: set[str] = set()
+        domain_set: set[str] = set()
+        hash_set: set[str] = set()
+        for s in suppressions:
+            t = s.get("indicator_type", "")
+            p = s.get("pattern", "").strip().lower()
+            if not p:
+                continue
+            if t == "ip":
+                ip_set.add(p)
+            elif t == "domain":
+                domain_set.add(p)
+            elif t == "hash":
+                hash_set.add(p)
+        with self._lock:
+            self._suppressed_ips = ip_set
+            self._suppressed_domains = domain_set
+            self._suppressed_hashes = hash_set
+        logger.info(
+            "Updated suppressions: %d IPs, %d domains, %d hashes",
+            len(ip_set), len(domain_set), len(hash_set),
+        )
 
     # -- Public API --------------------------------------------------------
 
@@ -186,6 +217,29 @@ class IocDatabase:
         # Hash feeds
         stats["malbazaar"] = _track("MalBazaar", self._download_malbazaar, hashes)
 
+        # Apply fleet-managed suppressions before loading into enforcement engine
+        with self._lock:
+            sup_ips = set(self._suppressed_ips)
+            sup_domains = set(self._suppressed_domains)
+            sup_hashes = set(self._suppressed_hashes)
+
+        suppressed_count = 0
+        for ip in sup_ips:
+            if ip in ips:
+                del ips[ip]
+                suppressed_count += 1
+        for domain in sup_domains:
+            if domain in domains:
+                del domains[domain]
+                suppressed_count += 1
+        for h in sup_hashes:
+            if h in hashes:
+                del hashes[h]
+                suppressed_count += 1
+
+        if suppressed_count:
+            logger.info("Suppressed %d IOC entries via fleet rules", suppressed_count)
+
         # Atomic swap under lock
         with self._lock:
             self._ips = ips
@@ -214,15 +268,167 @@ class IocDatabase:
             stats.get("malbazaar", 0),
         )
 
-    def refresh_if_stale(self) -> None:
-        """Refresh feeds if the refresh interval has elapsed."""
+    def refresh_if_stale(
+        self,
+        fleet_host: str = "",
+        fleet_http_port: int = 0,
+        registration_key: str = "",
+    ) -> None:
+        """Refresh feeds if the refresh interval has elapsed.
+
+        If fleet parameters are provided, attempts to fetch the pre-built
+        intel bundle from the fleet server first.  Falls back to direct
+        OSINT download on any failure (including HTTP 503 during fleet
+        server startup).
+        """
         with self._progress_lock:
             downloading = self._downloading
         if downloading:
             return
         if time.monotonic() - self._last_refresh > self._refresh_interval:
+            if fleet_host and fleet_http_port and registration_key:
+                logger.info("Refreshing IOC feeds from fleet server...")
+                if self.download_from_fleet(fleet_host, fleet_http_port, registration_key):
+                    return
+                logger.info("Fleet fetch failed, falling back to direct OSINT download")
             logger.info("Refreshing IOC feeds...")
             self.download_feeds()
+
+    def download_from_fleet(
+        self,
+        fleet_host: str,
+        fleet_http_port: int,
+        registration_key: str,
+    ) -> bool:
+        """Fetch the pre-built IOC bundle from the fleet server.
+
+        Returns True on success, False on any failure so the caller can
+        fall back to direct OSINT download.
+        """
+        url = f"http://{fleet_host}:{fleet_http_port}/api/fleet/intel-bundle"
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "edr-graph-agent/1.0",
+                    "Authorization": f"Bearer {registration_key}",
+                    "Accept-Encoding": "gzip",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                status = resp.getcode()
+                if status != 200:
+                    logger.warning("Fleet intel-bundle returned HTTP %d", status)
+                    return False
+                raw = resp.read()
+                encoding = resp.headers.get("Content-Encoding", "")
+                if encoding == "gzip":
+                    raw = gzip.decompress(raw)
+                bundle = json.loads(raw.decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 503:
+                logger.info(
+                    "Fleet intel compiling (503), falling back to direct download"
+                )
+            else:
+                logger.warning(
+                    "Failed to fetch intel bundle from fleet (%s): HTTP %d",
+                    url, e.code,
+                )
+            return False
+        except Exception:
+            logger.warning(
+                "Failed to fetch intel bundle from fleet (%s)", url, exc_info=True,
+            )
+            return False
+
+        if not isinstance(bundle, dict) or bundle.get("version") != 1:
+            logger.warning("Invalid intel bundle format from fleet")
+            return False
+
+        return self._load_bundle(bundle)
+
+    def _load_bundle(self, bundle: dict) -> bool:
+        """Parse a fleet intel bundle dict into internal lookup dicts.
+
+        Applies local exclusion patterns and fleet suppressions before
+        the atomic swap — identical filtering to ``download_feeds()``.
+        Returns True on success.
+        """
+        try:
+            ips: dict[str, IocMatch] = {}
+            for key, val in bundle.get("ips", {}).items():
+                ips[key] = IocMatch(
+                    feed_name=val["feed_name"],
+                    ioc_type=val["ioc_type"],
+                    ioc_value=val["ioc_value"],
+                    description=val["description"],
+                    confidence=val.get("confidence", "high"),
+                )
+
+            domains: dict[str, IocMatch] = {}
+            for key, val in bundle.get("domains", {}).items():
+                if not self._is_excluded(key):
+                    domains[key] = IocMatch(
+                        feed_name=val["feed_name"],
+                        ioc_type=val["ioc_type"],
+                        ioc_value=val["ioc_value"],
+                        description=val["description"],
+                        confidence=val.get("confidence", "high"),
+                    )
+
+            hashes: dict[str, IocMatch] = {}
+            for key, val in bundle.get("hashes", {}).items():
+                hashes[key] = IocMatch(
+                    feed_name=val["feed_name"],
+                    ioc_type=val["ioc_type"],
+                    ioc_value=val["ioc_value"],
+                    description=val["description"],
+                    confidence=val.get("confidence", "high"),
+                )
+
+            # Apply fleet-managed suppressions (same path as download_feeds)
+            with self._lock:
+                sup_ips = set(self._suppressed_ips)
+                sup_domains = set(self._suppressed_domains)
+                sup_hashes = set(self._suppressed_hashes)
+
+            suppressed_count = 0
+            for ip in sup_ips:
+                if ip in ips:
+                    del ips[ip]
+                    suppressed_count += 1
+            for domain in sup_domains:
+                if domain in domains:
+                    del domains[domain]
+                    suppressed_count += 1
+            for h in sup_hashes:
+                if h in hashes:
+                    del hashes[h]
+                    suppressed_count += 1
+
+            if suppressed_count:
+                logger.info("Suppressed %d IOC entries via fleet rules", suppressed_count)
+
+            stats = bundle.get("feed_stats", {})
+
+            # Atomic swap
+            with self._lock:
+                self._ips = ips
+                self._domains = domains
+                self._hashes = hashes
+                self._feed_stats = stats
+                self._last_refresh = time.monotonic()
+
+            logger.info(
+                "Loaded intel bundle from fleet: %d IPs, %d domains, %d hashes",
+                len(ips), len(domains), len(hashes),
+            )
+            return True
+
+        except Exception:
+            logger.warning("Failed to parse intel bundle from fleet", exc_info=True)
+            return False
 
     def check_ip(self, ip: str) -> IocMatch | None:
         """Check an IP against all feeds. Thread-safe."""
@@ -263,6 +469,9 @@ class IocDatabase:
                 "feeds": dict(self._feed_stats),
                 "exclusion_patterns": len(self._exclusion_patterns),
                 "downloading": downloading,
+                "suppressed_ips": len(self._suppressed_ips),
+                "suppressed_domains": len(self._suppressed_domains),
+                "suppressed_hashes": len(self._suppressed_hashes),
             }
             if downloading:
                 result["download_progress"] = progress

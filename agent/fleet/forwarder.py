@@ -7,6 +7,7 @@ and drains the queue when connectivity is restored.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import platform
@@ -242,6 +243,10 @@ class FleetForwarder:
         self._fast_blocklist = fast_blocklist
         self._allowlist_cache = allowlist_cache
 
+    def set_ioc_db(self, ioc_db) -> None:
+        """Store reference to IocDatabase for heartbeat stats + suppression delivery."""
+        self._ioc_db = ioc_db
+
     def set_query_executor(self, executor: callable) -> None:
         """Set callback for executing federated queries against local graph DB."""
         self._query_executor = executor
@@ -343,6 +348,11 @@ class FleetForwarder:
                 except Exception:
                     logger.debug("Federated query %s failed", q.get("query_id"), exc_info=True)
 
+        # Extract and distribute suppressions to IOC database
+        suppressions = overrides.pop("suppressions", [])
+        if isinstance(suppressions, list) and getattr(self, "_ioc_db", None):
+            self._ioc_db.set_suppressions(suppressions)
+
         # Extract and distribute rules before processing scalar overrides
         rules = overrides.pop("rules", [])
         if isinstance(rules, list):
@@ -371,6 +381,12 @@ class FleetForwarder:
             query_results_json = json.dumps(self._pending_results)
             self._pending_results.clear()
 
+        # Collect IOC feed stats for fleet server
+        ioc_stats_json = ""
+        if getattr(self, "_ioc_db", None) is not None:
+            with contextlib.suppress(Exception):
+                ioc_stats_json = json.dumps(self._ioc_db.stats())
+
         local_ips = get_local_ips()
         request = fleet_pb2.HeartbeatRequest(
             agent_id=self._agent_id,
@@ -382,6 +398,7 @@ class FleetForwarder:
             ip_addresses=local_ips,
             public_ip=self._public_ip_monitor.current_ip if self._public_ip_monitor else "",
             query_results_json=query_results_json,
+            ioc_stats_json=ioc_stats_json,
         )
         try:
             response = self._stub.Heartbeat(request, timeout=10)
