@@ -36,7 +36,7 @@ class TestIocSuppressions:
             {"indicator_type": "domain", "pattern": "  CDN.EXAMPLE.COM  "},
         ])
         # Should be stored as lowercase trimmed
-        assert "cdn.example.com" in ioc_db._suppressed_domains
+        assert ioc_db._suppressed_domains == {"cdn.example.com"}
 
     def test_set_suppressions_skips_empty_pattern(self, ioc_db):
         ioc_db.set_suppressions([
