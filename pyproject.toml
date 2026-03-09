@@ -100,6 +100,7 @@ skips = [
     "B104",  # bind to 0.0.0.0 — intentional for dashboard server
     "B108",  # hardcoded /tmp — EDR heartbeat files
     "B110",  # try-except-pass / contextlib.suppress — idiomatic Python
+    "B112",  # try-except-continue — skipping malformed data rows is intentional
     "B310",  # url open — IOC database updates
     "B324",  # weak hash — MD5/SHA1 used for JA3 fingerprinting, not security
     "B404",  # subprocess import — EDR agent legitimately needs subprocess
