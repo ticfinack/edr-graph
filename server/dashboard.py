@@ -52,11 +52,17 @@ def set_settings_db(db: SettingsDB) -> None:
 
 
 _feed_manager = None
+_diamond_investigator = None
 
 
 def set_feed_manager(fm) -> None:
     global _feed_manager
     _feed_manager = fm
+
+
+def set_diamond_investigator(di) -> None:
+    global _diamond_investigator
+    _diamond_investigator = di
 
 
 def verify_agent_token(request: Request) -> str:
@@ -234,10 +240,18 @@ def list_incidents(
 
 @app.get("/api/fleet/incidents/{incident_id}")
 def incident_detail(incident_id: str, user: dict = Depends(get_current_user)):
-    """Full incident detail: stitched chains + follow-on finding list."""
+    """Full incident detail: stitched chains + follow-on finding list + Diamond assessment."""
     detail = _neo4j.get_incident_detail(incident_id)
     if not detail:
         raise HTTPException(status_code=404, detail="Incident not found")
+    # Enrich with Diamond assessment from SQLite
+    assessment = _settings_db.get_latest_diamond_assessment(incident_id)
+    if assessment:
+        try:
+            detail["diamond_assessment"] = json.loads(assessment["assessment_json"])
+        except (json.JSONDecodeError, TypeError):
+            detail["diamond_assessment"] = None
+        detail["diamond_assessed_at"] = assessment["assessed_at"]
     return detail
 
 
@@ -346,6 +360,54 @@ def get_surveillance_logs(incident_id: str, user: dict = Depends(get_current_use
         "dst_status": _side_status(dst_logs, "dst"),
         "src_status": _side_status(src_logs, "src"),
     }
+
+
+@app.get("/api/fleet/incidents/{incident_id}/ocsf-evidence")
+def get_ocsf_evidence(
+    incident_id: str,
+    event_type: str | None = Query(default=None),
+    limit: int = Query(default=500, le=1000),
+    user: dict = Depends(get_current_user),
+):
+    """Return OCSF evidence for an incident, optionally filtered by event_type."""
+    evidence = _settings_db.get_ocsf_evidence(incident_id, limit=limit)
+    if event_type:
+        evidence = [e for e in evidence if e.get("event_type") == event_type]
+    return {"evidence": evidence, "total": len(evidence)}
+
+
+@app.get("/api/fleet/incidents/{incident_id}/diamond-assessment")
+def get_diamond_assessment(incident_id: str, user: dict = Depends(get_current_user)):
+    """Return the latest Diamond Model assessment or pending status."""
+    assessment = _settings_db.get_latest_diamond_assessment(incident_id)
+    if not assessment:
+        return {"status": "pending"}
+    try:
+        parsed = json.loads(assessment["assessment_json"])
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+    return {
+        "status": "completed",
+        "assessment": parsed,
+        "model_name": assessment["model_name"],
+        "assessed_at": assessment["assessed_at"],
+        "prompt_tokens": assessment["prompt_tokens"],
+        "completion_tokens": assessment["completion_tokens"],
+    }
+
+
+@app.post("/api/fleet/incidents/{incident_id}/reassess")
+def reassess_incident(incident_id: str, user: dict = Depends(require_admin)):
+    """Admin-triggered re-assessment of an incident's Diamond Model analysis."""
+    if _diamond_investigator is None:
+        raise HTTPException(status_code=503, detail="Diamond investigator not configured (no API key)")
+    detail = _neo4j.get_incident_detail(incident_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    result = _diamond_investigator.assess_incident(incident_id)
+    if result is None:
+        raise HTTPException(status_code=500, detail="Assessment failed")
+    return {"status": "completed", "assessment": result}
 
 
 @app.get("/api/fleet/cross-host/{ip}")

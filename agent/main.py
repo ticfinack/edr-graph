@@ -391,8 +391,25 @@ def analyzer_thread(
                     len(recent),
                 )
                 findings = analyzer.analyze_batch(novel_events)
+                stored = 0
                 for finding in findings:
+                    # Check response engine FIRST — if allowlisted (e.g. by
+                    # chain_pattern), suppress the finding entirely so it never
+                    # appears in the dashboard or triggers notifications.
+                    if response_engine:
+                        try:
+                            records = _trigger_response(response_engine, finding, novel_events, kuzu_db=kuzu_db, graph_conn=conn)
+                            if records and any(
+                                r.result_detail and "allowlisted" in r.result_detail
+                                for r in records
+                            ):
+                                logger.info("Finding %s suppressed by allowlist", finding.id)
+                                continue
+                        except Exception:
+                            logger.exception("Response engine failed for finding %s", finding.id)
+
                     queue.store_finding(finding)
+                    stored += 1
 
                     # Queue finding for fleet forwarding
                     if _fleet_forwarder is not None:
@@ -404,15 +421,8 @@ def analyzer_thread(
                     # Push finding to tray notification queue
                     _push_finding_notification(finding)
 
-                    # Trigger response engine for each finding
-                    if response_engine:
-                        try:
-                            _trigger_response(response_engine, finding, novel_events, kuzu_db=kuzu_db, graph_conn=conn)
-                        except Exception:
-                            logger.exception("Response engine failed for finding %s", finding.id)
-
-                if findings:
-                    logger.info("Stored %d findings from LLM", len(findings))
+                if stored:
+                    logger.info("Stored %d findings from LLM", stored)
             else:
                 logger.debug("No novel events in batch of %d", len(recent))
 
@@ -656,12 +666,15 @@ def _trigger_response(
     events: list,
     kuzu_db=None,
     graph_conn: kuzu.Connection | None = None,
-) -> None:
+) -> list:
     """Trigger the response engine for a finding.
 
     Extracts the target PID and process name from the finding's evidence events.
     When kuzu_db is provided, reconstructs a deterministic chain from the graph
     instead of relying on finding.chain (which may be LLM-derived and incomplete).
+
+    Returns the list of ResponseRecords so the caller can inspect outcomes
+    (e.g. to suppress allowlisted findings before storing them).
     """
     from agent.schema.ocsf_types import (
         DnsActivity,
@@ -734,6 +747,8 @@ def _trigger_response(
                 rec.result,
                 rec.result_detail,
             )
+
+    return records
 
 
 def _check_ioc_matches(ioc_db, ocsf, event_id: int) -> list:

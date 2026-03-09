@@ -28,6 +28,8 @@ INDEXES = [
     "CREATE INDEX registration_key_revoked IF NOT EXISTS FOR (k:RegistrationKey) ON (k.revoked)",
     "CREATE INDEX incident_status IF NOT EXISTS FOR (inc:Incident) ON (inc.status)",
     "CREATE INDEX incident_dst IF NOT EXISTS FOR (inc:Incident) ON (inc.dst_agent_id)",
+    "CREATE INDEX incident_created_at IF NOT EXISTS FOR (inc:Incident) ON (inc.created_at)",
+    "CREATE INDEX incident_src IF NOT EXISTS FOR (inc:Incident) ON (inc.src_agent_id)",
 ]
 
 INIT_QUERIES = CONSTRAINTS + INDEXES

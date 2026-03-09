@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import socket
 import time
 from typing import Generator
 
@@ -13,6 +14,100 @@ from agent import metrics
 from agent.graph.pid_index import get_pid_index
 
 logger = logging.getLogger(__name__)
+
+# ── Read-only ancestry fallbacks (ledger + live OS) ──────────────────────
+
+
+def _query_process_from_ledger(pid: int, event_ts: float | None = None) -> dict | None:
+    """Fallback: look up a process by PID in the forensic ledger.
+
+    Queries for the most recent record matching *pid* (any event type).
+    When *event_ts* is provided, only considers records at or before that time.
+    Returns a dict matching the Kuzu output schema, or None.
+    """
+    try:
+        from agent.main import _ledger_writer
+        if _ledger_writer is None:
+            return None
+        from agent.ledger.reader import LedgerReader
+        reader = LedgerReader(_ledger_writer._data_dir)
+        rows = reader.query_by_pid(pid, limit=1)
+        if not rows:
+            return None
+        r = rows[0]
+        # Temporal filter: skip if the ledger row is after event_ts
+        if event_ts is not None and r.ts > event_ts:
+            return None
+        hostname = r.hostname or socket.gethostname()
+        return {
+            "id": f"{hostname}:{pid}:{int(r.ts)}",
+            "name": r.process_name or "",
+            "pid": pid,
+            "cmd_line": "",
+            "exe_path": "",
+            "hostname": hostname,
+            "parent_pid": r.parent_pid,
+            "bundle_id": "",
+            "code_signed": None,
+            "signing_authority": "",
+            "_fallback": "ledger",
+        }
+    except Exception:
+        logger.debug("Ledger fallback failed for pid %d", pid, exc_info=True)
+        return None
+
+
+def _query_process_from_os(pid: int, event_ts: float | None = None) -> dict | None:
+    """Fallback: look up a live process by PID via psutil.
+
+    When *event_ts* is provided, rejects the process if its create_time
+    is after event_ts (wrong PID incarnation).
+    Returns a dict matching the Kuzu output schema, or None if the process
+    is dead or inaccessible.
+    """
+    try:
+        import psutil
+        p = psutil.Process(pid)
+        name = p.name()
+        cmd_line = ""
+        with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
+            cmd_line = " ".join(p.cmdline())
+        exe_path = ""
+        with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
+            exe_path = p.exe() or ""
+        ppid = 0
+        with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
+            ppid = p.ppid()
+        uid = 0
+        username = ""
+        with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
+            uid = p.uids().real
+        with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
+            username = p.username() or ""
+        create_time = 0
+        with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
+            create_time = int(p.create_time())
+        # Temporal filter: reject if this incarnation started after event_ts
+        if event_ts is not None and create_time > event_ts:
+            return None
+        hostname = socket.gethostname()
+        return {
+            "id": f"{hostname}:{pid}:{create_time}",
+            "name": name,
+            "pid": pid,
+            "cmd_line": cmd_line,
+            "exe_path": exe_path,
+            "hostname": hostname,
+            "parent_pid": ppid,
+            "bundle_id": "",
+            "code_signed": None,
+            "signing_authority": "",
+            "_fallback": "os",
+            "_username": username,
+            "_uid": uid,
+        }
+    except Exception:
+        return None
 
 # ── PID-index-aware query helpers ─────────────────────────────────────────
 
@@ -48,18 +143,53 @@ def _rows_for_pid(
             yield result.get_next()
 
 
-def _query_process_fields(conn: kuzu.Connection, pid: int) -> dict | None:
+def _query_process_fields(conn: kuzu.Connection, pid: int, event_ts: float | None = None) -> dict | None:
     """Fetch full fields for a process by PID.
 
     Uses the PID index for O(1) primary-key lookup when available.
+    When *event_ts* is provided, selects the PID incarnation active at that
+    time (largest create_time <= event_ts).  Falls back to newest-first
+    iteration when event_ts is None (backward compat).
     Evicts stale pointers when an indexed node_id no longer exists in Kuzu.
     """
     _FIELDS = (
         "p.id, p.name, p.pid, p.cmd_line, p.exe_path, p.hostname, "
-        "p.parent_pid, p.bundle_id, p.code_signed, p.signing_authority"
+        "p.parent_pid, p.bundle_id, p.code_signed, p.signing_authority, p.start_time"
     )
+
+    def _row_to_dict(row):
+        return {
+            "id": row[0],
+            "name": row[1],
+            "pid": row[2],
+            "cmd_line": row[3],
+            "exe_path": row[4],
+            "hostname": row[5],
+            "parent_pid": row[6],
+            "bundle_id": row[7],
+            "code_signed": row[8],
+            "signing_authority": row[9],
+            "start_time": row[10],
+        }
+
     index = get_pid_index()
     if index.is_built:
+        # Temporal lookup: single node_id when event_ts is provided
+        if event_ts is not None:
+            nid = index.get_node_id_at_time(pid, event_ts)
+            if nid is not None:
+                result = conn.execute(
+                    f"MATCH (p:Process {{id: $id}}) RETURN {_FIELDS}",
+                    {"id": nid},
+                )
+                if result.has_next():
+                    return _row_to_dict(result.get_next())
+                else:
+                    index.remove_nodes([nid])
+            # Fall through to ledger/OS fallback (handled by caller)
+            return None
+
+        # Non-temporal: iterate newest-first
         node_ids = index.get_node_ids(pid)
         stale: list[str] = []
         for nid in node_ids:
@@ -68,94 +198,106 @@ def _query_process_fields(conn: kuzu.Connection, pid: int) -> dict | None:
                 {"id": nid},
             )
             if result.has_next():
-                row = result.get_next()
-                # Evict any stale entries found before this hit
                 if stale:
                     index.remove_nodes(stale)
-                return {
-                    "id": row[0],
-                    "name": row[1],
-                    "pid": row[2],
-                    "cmd_line": row[3],
-                    "exe_path": row[4],
-                    "hostname": row[5],
-                    "parent_pid": row[6],
-                    "bundle_id": row[7],
-                    "code_signed": row[8],
-                    "signing_authority": row[9],
-                }
+                return _row_to_dict(result.get_next())
             else:
                 stale.append(nid)
-        # All entries were stale
         if stale:
             index.remove_nodes(stale)
         return None
     else:
         # Fallback: full scan
-        result = conn.execute(
-            f"MATCH (p:Process {{pid: $pid}}) RETURN {_FIELDS}",
-            {"pid": pid},
-        )
+        if event_ts is not None:
+            result = conn.execute(
+                f"MATCH (p:Process {{pid: $pid}}) RETURN {_FIELDS} "
+                "ORDER BY p.start_time DESC LIMIT 1",
+                {"pid": pid},
+            )
+        else:
+            result = conn.execute(
+                f"MATCH (p:Process {{pid: $pid}}) RETURN {_FIELDS}",
+                {"pid": pid},
+            )
         if result.has_next():
-            row = result.get_next()
-            return {
-                "id": row[0],
-                "name": row[1],
-                "pid": row[2],
-                "cmd_line": row[3],
-                "exe_path": row[4],
-                "hostname": row[5],
-                "parent_pid": row[6],
-                "bundle_id": row[7],
-                "code_signed": row[8],
-                "signing_authority": row[9],
-            }
+            return _row_to_dict(result.get_next())
         return None
 
 
-def get_process_chain(conn: kuzu.Connection, pid: int) -> list[dict]:
+def get_process_chain(conn: kuzu.Connection, pid: int, event_ts: float | None = None) -> list[dict]:
     """Walk parent_pid upward iteratively to build the full ancestor chain.
 
     Returns list from root ancestor down to the given PID (max 20 hops).
-    Prepends User from SPAWNED edge if found on the root process.
+    Stops at PPID=1 (init/systemd) to avoid walking into system roots.
+    Queries SPAWNED edges bottom-up to find the most relevant user.
+
+    When *event_ts* is provided, all process lookups are temporally bounded
+    to the PID incarnation active at that time.
     """
     try:
-        current = _query_process_fields(conn, pid)
+        current = _query_process_fields(conn, pid, event_ts)
+        if current is None:
+            current = _query_process_from_ledger(pid, event_ts)
+        if current is None:
+            current = _query_process_from_os(pid, event_ts)
         if current is None:
             return []
 
         chain = [current]
         visited = {pid}
 
-        # Walk upward via parent_pid
+        # Walk upward via parent_pid, with ledger + OS fallbacks
         for _ in range(20):
             ppid = current.get("parent_pid")
-            if not ppid or ppid == 0 or ppid in visited:
+            if not ppid or ppid in (0, 1) or ppid in visited:
                 break
             visited.add(ppid)
-            parent = _query_process_fields(conn, ppid)
+            parent = _query_process_fields(conn, ppid, event_ts)
+            if parent is None:
+                parent = _query_process_from_ledger(ppid, event_ts)
+            if parent is None:
+                parent = _query_process_from_os(ppid, event_ts)
             if parent is None:
                 break
             chain.insert(0, parent)
             current = parent
 
-        # Prepend User from SPAWNED edge on the root process
-        root_id = chain[0].get("id", "")
-        if root_id:
+        # Query SPAWNED edges bottom-up (leaf -> root).
+        # The deepest match is the most relevant user (e.g., "jsmith" on their
+        # login shell, not "root" on sshd).
+        found_user = False
+        for proc_dict in reversed(chain):
+            proc_id = proc_dict.get("id", "")
+            if not proc_id:
+                continue
             user_result = conn.execute(
                 "MATCH (u:User)-[:SPAWNED]->(p:Process {id: $id}) RETURN u.id, u.name",
-                {"id": root_id},
+                {"id": proc_id},
             )
             if user_result.has_next():
                 user_row = user_result.get_next()
-                chain.insert(
-                    0,
-                    {
-                        "type": "user",
-                        "id": user_row[0],
-                        "name": user_row[1],
-                    },
-                )
+                chain.insert(0, {"type": "user", "id": user_row[0], "name": user_row[1]})
+                found_user = True
+                break
+
+        # Fallback: if no SPAWNED edge was found (common for daemons started
+        # before the agent), check OS-fallback metadata on chain members, then
+        # try psutil on the target PID as a last resort.
+        if not found_user:
+            for proc_dict in reversed(chain):
+                uname = proc_dict.get("_username", "")
+                if uname:
+                    chain.insert(0, {"type": "user", "id": uname, "name": uname})
+                    found_user = True
+                    break
+        if not found_user:
+            try:
+                import psutil
+                uname = psutil.Process(pid).username()
+                if uname:
+                    chain.insert(0, {"type": "user", "id": uname, "name": uname})
+            except Exception:
+                pass
 
         return chain
     except Exception:
@@ -189,6 +331,7 @@ def graph_chain_to_chainsteps(graph_chain: list[dict]) -> list:
                     entity_id=entry.get("id", ""),
                     entity_name=entry.get("name", ""),
                     pid=entry.get("pid"),
+                    timestamp=entry.get("start_time"),
                 )
             )
     return steps
@@ -346,17 +489,22 @@ def _get_pid_files(conn: kuzu.Connection, pid: int) -> list[dict]:
     return items
 
 
-def get_process_tree(conn: kuzu.Connection, pid: int) -> dict | None:
+def get_process_tree(conn: kuzu.Connection, pid: int, event_ts: float | None = None) -> dict | None:
     """Build a full process tree: target + ancestors + descendants.
 
     BFS descendants (max depth 5). For each process, attaches network and file activity.
+    When *event_ts* is provided, ancestor lookups are temporally bounded.
     """
     try:
-        target = _query_process_fields(conn, pid)
+        target = _query_process_fields(conn, pid, event_ts)
+        if target is None:
+            target = _query_process_from_ledger(pid, event_ts)
+        if target is None:
+            target = _query_process_from_os(pid, event_ts)
         if target is None:
             return None
 
-        # Ancestors
+        # Ancestors (with ledger + OS fallbacks for long-lived parents)
         ancestors = []
         visited = {pid}
         current = target
@@ -365,7 +513,11 @@ def get_process_tree(conn: kuzu.Connection, pid: int) -> dict | None:
             if not ppid or ppid == 0 or ppid in visited:
                 break
             visited.add(ppid)
-            parent = _query_process_fields(conn, ppid)
+            parent = _query_process_fields(conn, ppid, event_ts)
+            if parent is None:
+                parent = _query_process_from_ledger(ppid, event_ts)
+            if parent is None:
+                parent = _query_process_from_os(ppid, event_ts)
             if parent is None:
                 break
             ancestors.insert(0, parent)

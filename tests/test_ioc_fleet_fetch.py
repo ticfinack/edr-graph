@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.intel.ioc_database import IocDatabase, IocMatch
+from agent.intel.ioc_database import IocDatabase
 
 
 @pytest.fixture

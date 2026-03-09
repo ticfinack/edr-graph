@@ -521,7 +521,7 @@ def backfill_parent_pids(db: kuzu.Database) -> int:
     hostname = socket.gethostname()
     updated = 0
 
-    # Collect PIDs already in the graph
+    # Collect PIDs already in the graph (streaming, not fetchall)
     existing_pids: set[int] = set()
     try:
         r = conn.execute("MATCH (p:Process) RETURN p.pid")
@@ -530,11 +530,12 @@ def backfill_parent_pids(db: kuzu.Database) -> int:
     except Exception:
         pass
 
-    # Phase 1: Fix processes with parent_pid=0
+    # Phase 1: Fix processes with parent_pid=0 (stream into list, capped at 10K)
+    _MAX_BACKFILL = 10000
     try:
         result = conn.execute("MATCH (p:Process) WHERE p.parent_pid = 0 AND p.pid > 0 RETURN p.id, p.pid")
         rows = []
-        while result.has_next():
+        while result.has_next() and len(rows) < _MAX_BACKFILL:
             rows.append(result.get_next())
     except Exception:
         logger.debug("Failed to query processes for backfill", exc_info=True)

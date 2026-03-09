@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 
-from server.neo4j_client import Neo4jClient, _build_chain_from_xdr_records
+from server.neo4j_client import Neo4jClient
 from server.settings_db import SettingsDB
 
 logger = logging.getLogger("server.xdr_orchestrator")
@@ -34,12 +34,14 @@ class XdrOrchestrator:
         poll_interval: int = 15,
         query_timeout: int = 300,
         auto_close_hours: int = 48,
+        diamond_investigator=None,
     ) -> None:
         self._neo4j = neo4j
         self._settings_db = settings_db
         self._poll_interval = poll_interval
         self._query_timeout = query_timeout
         self._auto_close_hours = auto_close_hours
+        self._diamond_investigator = diamond_investigator
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="xdr-orchestrator",
@@ -109,11 +111,32 @@ class XdrOrchestrator:
                 json.dumps({"dst_ips": [pivot_ip], "target_port": port}),
             )
 
+            # Enqueue OCSF evidence pulls on both agents
+            self._settings_db.enqueue_xdr_query(
+                str(uuid.uuid4()),
+                dst_agent_id,
+                f"{incident_id}:ocsf_dst",
+                "pull_ocsf_ledger",
+                json.dumps({"anchor_pids": [], "ips": src_ips, "usernames": [], "limit": 300}),
+            )
+            self._settings_db.enqueue_xdr_query(
+                str(uuid.uuid4()),
+                src_agent_id,
+                f"{incident_id}:ocsf_src",
+                "pull_ocsf_ledger",
+                json.dumps({"anchor_pids": [], "ips": [pivot_ip] if pivot_ip else [], "usernames": [], "limit": 300}),
+            )
+
             self._neo4j.update_incident_status(incident_id, "sweeping")
             logger.info("Incident %s: detected → sweeping", incident_id)
 
     def _process_sweeping(self) -> None:
-        """sweeping → active: check for completed XDR queries, build chains."""
+        """sweeping → active: check for completed XDR queries or timeout.
+
+        Per-finding chains (from Finding HAS_CHAIN) are the authoritative
+        chain data — incident-level chains are not synthesized here because
+        the flat surveillance records lack process-tree structure.
+        """
         incidents = self._neo4j.get_incidents_by_status("sweeping")
         now = time.time()
         for inc in incidents:
@@ -136,43 +159,17 @@ class XdrOrchestrator:
             )
 
             if (victim_done and source_done) or timed_out:
-                source_chain: list[dict] = []
-                target_chain: list[dict] = []
-
-                if victim_done:
-                    try:
-                        data = json.loads(victim_result["result_json"])
-                        records = data.get("records", [])
-                        if records:
-                            target_chain = _build_chain_from_xdr_records(
-                                records, reverse=True,
-                            )
-                    except (json.JSONDecodeError, KeyError, TypeError):
-                        pass
-
-                if source_done:
-                    try:
-                        data = json.loads(source_result["result_json"])
-                        records = data.get("records", [])
-                        if records:
-                            source_chain = _build_chain_from_xdr_records(records)
-                    except (json.JSONDecodeError, KeyError, TypeError):
-                        pass
-
-                if source_chain or target_chain:
-                    self._neo4j.persist_incident_chains(
-                        incident_id, source_chain, target_chain,
-                    )
-
                 self._neo4j.update_incident_status(incident_id, "active")
                 logger.info(
-                    "Incident %s: sweeping → active (src_chain=%d, tgt_chain=%d%s)",
-                    incident_id, len(source_chain), len(target_chain),
+                    "Incident %s: sweeping → active (victim=%s, source=%s%s)",
+                    incident_id,
+                    "done" if victim_done else "pending",
+                    "done" if source_done else "pending",
                     ", timed_out" if timed_out else "",
                 )
 
     def _process_active(self) -> None:
-        """active: auto-close if stale; enqueue surveillance pulls every 60s."""
+        """active: auto-close if stale; backfill chains; enqueue surveillance pulls."""
         incidents = self._neo4j.get_incidents_by_status("active")
         now = time.time()
         now_int = int(now)
@@ -187,12 +184,14 @@ class XdrOrchestrator:
                 logger.info("Incident %s: active → closed (auto-close TTL)", incident_id)
                 continue
 
-            # 2. Autonomous surveillance pulls
             dst_agent = inc.get("dst_agent_id", "")
             src_agent = inc.get("src_agent_id", "")
             pivot_ip = inc.get("pivot_ip", "")
 
-            # Check if any side needs a pull before fetching shared data
+            # 2. Incident-level chain PIDs (from per-finding chains linked to this incident)
+            src_pids, dst_pids = self._neo4j.get_incident_chain_pids(incident_id)
+
+            # 3. Autonomous surveillance pulls
             sides = []
             if dst_agent:
                 dst_state = self._settings_db.get_surveillance_pull_state(incident_id, "dst")
@@ -203,46 +202,52 @@ class XdrOrchestrator:
                 if (now_int - src_state["last_enqueue_at"]) >= _SURV_PULL_INTERVAL:
                     sides.append(("src", src_agent, src_state))
 
-            if not sides:
-                continue
+            if sides:
+                src_ips = self._neo4j.get_incident_src_ips(incident_id)
+                src_users, dst_users = self._neo4j.get_incident_chain_usernames(incident_id)
 
-            # Fetch shared data once
-            src_ips = self._neo4j.get_incident_src_ips(incident_id)
-            src_pids, dst_pids = self._neo4j.get_incident_chain_pids(incident_id)
-            src_users, dst_users = self._neo4j.get_incident_chain_usernames(incident_id)
+                for side, agent_id, state in sides:
+                    finding_key = f"{incident_id}:surv_{side}"
 
-            for side, agent_id, state in sides:
-                finding_key = f"{incident_id}:surv_{side}"
+                    if self._settings_db.has_pending_xdr_query(finding_key, "pull_surveillance_logs"):
+                        continue
 
-                # Skip if there's already a pending query for this side
-                if self._settings_db.has_pending_xdr_query(finding_key, "pull_surveillance_logs"):
-                    continue
+                    if side == "dst":
+                        ips = src_ips
+                        anchor_pids = dst_pids
+                        usernames = dst_users
+                    else:
+                        ips = [pivot_ip] if pivot_ip else []
+                        anchor_pids = src_pids
+                        usernames = src_users
 
-                # Build params based on side
-                if side == "dst":
-                    ips = src_ips
-                    anchor_pids = dst_pids
-                    usernames = dst_users
-                else:
-                    ips = [pivot_ip] if pivot_ip else []
-                    anchor_pids = src_pids
-                    usernames = src_users
+                    if not ips and not anchor_pids and not usernames:
+                        continue
 
-                # Skip if no filter criteria at all
-                if not ips and not anchor_pids and not usernames:
-                    continue
+                    params: dict = {"ips": ips, "anchor_pids": anchor_pids, "usernames": usernames, "limit": 200}
+                    if state["last_record_ts"] > 0:
+                        params["since"] = state["last_record_ts"]
 
-                params: dict = {"ips": ips, "anchor_pids": anchor_pids, "usernames": usernames, "limit": 200}
-                if state["last_record_ts"] > 0:
-                    params["since"] = state["last_record_ts"]
+                    self._settings_db.enqueue_xdr_query(
+                        str(uuid.uuid4()), agent_id, finding_key,
+                        "pull_surveillance_logs", json.dumps(params),
+                    )
+                    self._settings_db.set_surveillance_pull_state(
+                        incident_id, side, last_enqueue_at=now_int,
+                    )
+                    logger.debug(
+                        "Incident %s: enqueued surv pull %s on %s", incident_id, side, agent_id,
+                    )
 
-                self._settings_db.enqueue_xdr_query(
-                    str(uuid.uuid4()), agent_id, finding_key,
-                    "pull_surveillance_logs", json.dumps(params),
-                )
-                self._settings_db.set_surveillance_pull_state(
-                    incident_id, side, last_enqueue_at=now_int,
-                )
-                logger.debug(
-                    "Incident %s: enqueued surv pull %s on %s", incident_id, side, agent_id,
-                )
+            # 4. Diamond Model assessment trigger
+            if self._diamond_investigator:
+                try:
+                    evidence = self._settings_db.get_ocsf_evidence(incident_id)
+                    last = self._settings_db.get_latest_diamond_assessment(incident_id)
+                    if evidence and (
+                        not last
+                        or len(evidence) > json.loads(last["assessment_json"]).get("evidence_count", 0)
+                    ):
+                        self._diamond_investigator.assess_incident(incident_id)
+                except Exception:
+                    logger.debug("Diamond assessment failed for %s", incident_id, exc_info=True)

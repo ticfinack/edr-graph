@@ -35,7 +35,7 @@ from agent.fleet.tls import load_mtls_server_credentials
 from server.auth import hash_password, set_jwt_secret
 from server.config import ServerSettings
 from server.dashboard import app as dashboard_app
-from server.dashboard import set_feed_manager, set_neo4j, set_settings, set_settings_db
+from server.dashboard import set_diamond_investigator, set_feed_manager, set_neo4j, set_settings, set_settings_db
 from server.grpc_service import FleetServicer
 from server.intel.feed_manager import FeedManager
 from server.neo4j_client import Neo4jClient
@@ -208,6 +208,23 @@ def main() -> None:
     server.start()
     logger.info("gRPC server started")
 
+    # ── Diamond Model Investigator (optional, requires API key) ──
+    diamond_investigator = None
+    if settings.deepinfra_api_key:
+        from server.analyzer.diamond_investigator import DiamondInvestigator
+
+        diamond_investigator = DiamondInvestigator(
+            settings_db=settings_db,
+            neo4j_client=neo4j_client,
+            api_key=settings.deepinfra_api_key,
+            base_url=settings.deepinfra_base_url,
+            model=settings.deepinfra_model,
+        )
+        set_diamond_investigator(diamond_investigator)
+        logger.info("Diamond Model Investigator enabled (model=%s)", settings.deepinfra_model)
+    else:
+        logger.info("Diamond Model Investigator disabled (no DEEPINFRA_API_KEY)")
+
     # ── XDR Orchestrator ──
     xdr_orchestrator = XdrOrchestrator(
         neo4j_client,
@@ -215,6 +232,7 @@ def main() -> None:
         poll_interval=settings.xdr_poll_interval,
         query_timeout=settings.xdr_query_timeout,
         auto_close_hours=settings.incident_auto_close_hours,
+        diamond_investigator=diamond_investigator,
     )
     xdr_orchestrator.start()
 

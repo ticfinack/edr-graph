@@ -317,6 +317,23 @@ was found in a threat intelligence feed. Provide additional behavioral context:
 Do NOT duplicate the IOC feed finding — instead reference it and add behavioral analysis."""
 
 _OUTPUT_FORMAT_SECTION = """\
+## CAUSAL ISOLATION — MANDATORY
+
+If you detect multiple suspicious activities that do NOT share a direct causal \
+process chain (e.g., an SSH login on PID 35583 and a totally separate WebKit \
+HTTPS connection on PID 4807), you MUST separate them into multiple, distinct \
+SecurityFinding objects in your JSON array. Do NOT merge causally unrelated \
+events into a single finding.
+
+Rules:
+1. Each finding's chain MUST represent a single, causally connected sequence: \
+user → parent process → child process → network/file IOC. Every step must be \
+a direct ancestor, descendant, or activity of the same process tree.
+2. Two processes that share no parent-child relationship belong in SEPARATE findings.
+3. If a batch contains 3 unrelated suspicious activities, return 3 separate findings.
+4. The "affected_pids" array in each finding must ONLY contain PIDs from that \
+finding's causal chain — never PIDs from a different, unrelated activity.
+
 ## ANALYSIS INSTRUCTIONS
 
 For each batch of events, check:

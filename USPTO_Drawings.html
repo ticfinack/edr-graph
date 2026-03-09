@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>USPTO Drawings -- Chain-Aware Ancestry Enforcement Engine</title>
+  <style>
+    /* ── Base Styles ── */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: "Times New Roman", Times, serif;
+      background: #fff;
+      color: #000;
+      padding: 0.75in;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 24pt;
+      font-weight: bold;
+      margin-bottom: 0.5in;
+      letter-spacing: 0.05em;
+    }
+
+    .figure-container {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .figure-container .mermaid {
+      width: 100%;
+      max-width: 7in;
+    }
+
+    .figure-container .mermaid svg {
+      width: 100% !important;
+      height: auto !important;
+    }
+
+    .page-break {
+      page-break-after: always;
+      break-after: page;
+      height: 0;
+    }
+
+    .sheet-label {
+      text-align: center;
+      font-size: 10pt;
+      color: #666;
+      margin-top: 0.25in;
+      font-style: italic;
+    }
+
+    /* ── Print Optimization ── */
+    @media print {
+      body {
+        background: #fff;
+        color: #000;
+        padding: 0.5in;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      .page-break {
+        page-break-after: always;
+        break-after: page;
+      }
+
+      .sheet-label { color: #000; }
+
+      /* Force monochrome rendering */
+      .mermaid svg text { fill: #000 !important; }
+      .mermaid svg .node rect,
+      .mermaid svg .node polygon,
+      .mermaid svg .node circle { stroke: #000 !important; fill: #fff !important; }
+      .mermaid svg .edgePath .path { stroke: #000 !important; }
+      .mermaid svg .edgeLabel { background-color: #fff !important; }
+      .mermaid svg .label { color: #000 !important; }
+      .mermaid svg marker path { fill: #000 !important; }
+    }
+
+    @page {
+      size: letter;
+      margin: 0.75in;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- FIG. 1                                              -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <div class="figure-container">
+    <h1>FIG. 1</h1>
+    <div class="mermaid">
+flowchart TD
+    A["Operating System Telemetry Event"] --> B["Entity Extraction&lt;br/&gt;(Process, IP, Domain, File)"]
+    B --> C{"Stage 1:&lt;br/&gt;Pre-Graph Allowlist Filter&lt;br/&gt;(flat attributes only)"}
+    C -- "Match: Known-Good" --> D["Drop Event&lt;br/&gt;(No Graph Write)"]
+    C -- "No Match" --> E{"Stage 2: FastBlocklist.evaluate()&lt;br/&gt;Has Rules?"}
+    E -- "No Rules Loaded" --> K["Write to Graph Database"]
+    E -- "Rules Loaded" --> F{"TIER 1: Fast-Path Buckets&lt;br/&gt;(Unscoped Rules)"}
+
+    F --> F1["1. IP Hash Set Lookup (O(1))"]
+    F1 -- "Miss" --> F2["2. CIDR Prefix Scan"]
+    F2 -- "Miss" --> F3["3. Domain Hash Set Lookup (O(1))"]
+    F3 -- "Miss" --> F4["4. Process Name Glob Match"]
+    F4 -- "Miss" --> F5["5. File Path Glob Match"]
+    F5 -- "Miss" --> F6["6. Chain Pattern Recursive Match"]
+    F6 -- "Miss" --> G{"TIER 2: Scoped Rules&lt;br/&gt;(Rules with chain_filter)"}
+
+    F1 -- "HIT" --> H["Synthesize SecurityFinding&lt;br/&gt;(severity: critical)"]
+    F2 -- "HIT" --> H
+    F3 -- "HIT" --> H
+    F4 -- "HIT" --> H
+    F5 -- "HIT" --> H
+    F6 -- "HIT" --> H
+
+    G --> G1["Reconstruct Process Ancestry&lt;br/&gt;via _build_chain_from_caches()"]
+    G1 --> G2{"For Each Scoped Rule:&lt;br/&gt;chain_filter matches?&lt;br/&gt;AND&lt;br/&gt;rule pattern matches?"}
+    G2 -- "BOTH Match" --> H
+    G2 -- "No Match (all rules)" --> K
+
+    H --> I["Trigger Immediate Response Action&lt;br/&gt;(Process Kill / Network Isolation)"]
+    I --> J["Skip Graph Write &amp;&lt;br/&gt;LLM Analysis"]
+
+    K --> L["LLM-Based Analysis"]
+    L --> M{"Stage 3: Response Engine&lt;br/&gt;(Full Graph Context)"}
+    M -- "Blocklist Match" --> N["Execute Response Action"]
+    M -- "Allowlist Match" --> O["Suppress Response (Log Only)"]
+    M -- "No Rule Match" --> P["Apply Default Policy"]
+    </div>
+    <p class="sheet-label">Sheet 1 of 2</p>
+  </div>
+
+  <div class="page-break"></div>
+
+  <!-- ════════════════════════════════════════════════════ -->
+  <!-- FIG. 2                                              -->
+  <!-- ════════════════════════════════════════════════════ -->
+  <div class="figure-container">
+    <h1>FIG. 2</h1>
+    <div class="mermaid">
+flowchart TD
+    START["Input: Current Process PID + Name"] --> A{"Is PidIndex&lt;br/&gt;bootstrapped?"}
+    A -- "Yes" --> B["Set primary source = PidIndex"]
+    A -- "No" --> C["Set primary source = Entity Extractor Caches"]
+    B --> D["Initialize: seen = {}, current = PID, ancestors = []"]
+    C --> D
+
+    D --> E{"current &gt; 0&lt;br/&gt;AND&lt;br/&gt;current not in seen?"}
+    E -- "No" --> L["Build Final Chain"]
+    E -- "Yes" --> F["Add current to seen set&lt;br/&gt;(cycle detection)"]
+    F --> G["Lookup parent PID:&lt;br/&gt;1. Try PidIndex.get_parent_pid()&lt;br/&gt;2. Fallback: _ppid_cache.get()"]
+    G --> H{"Parent found&lt;br/&gt;AND parent &gt; 0?"}
+    H -- "No" --> L
+    H -- "Yes" --> I["Lookup parent name:&lt;br/&gt;1. Try PidIndex.get_name()&lt;br/&gt;2. Fallback: _name_cache.get()"]
+    I --> J["Append parent name to ancestors"]
+    J --> K["Set current = parent PID"]
+    K --> E
+
+    L --> L1["chain = []"]
+    L1 --> L2{"Username known&lt;br/&gt;for original PID?"}
+    L2 -- "Yes" --> L3["Prepend 'USER:username' to chain"]
+    L2 -- "No" --> L4["Skip user prefix"]
+    L3 --> L5["Append reversed ancestors to chain"]
+    L4 --> L5
+    L5 --> L6["Append current process name to chain"]
+
+    L6 --> M["Result: e.g., [USER:alice, launchd, Terminal, bash, ncat]"]
+    M --> N["Pass chain to _match_chain_pattern()"]
+
+    N --> O["For each starting position&lt;br/&gt;in chain (start-unanchored):"]
+    O --> P{"Call _match_chain_recursive()&lt;br/&gt;with chain position and&lt;br/&gt;pattern position"}
+
+    P --> Q{"Pattern exhausted?"}
+    Q -- "Yes" --> R{"Chain also&lt;br/&gt;exhausted?"}
+    R -- "Yes" --> MATCH["MATCH: Return True"]
+    R -- "No" --> FAIL["Try next start position"]
+
+    Q -- "No, token is **" --> S["Try consuming 0, 1, 2, ..., N&lt;br/&gt;chain elements (backtracking)"]
+    S --> P
+
+    Q -- "No, token is *" --> T{"Chain element&lt;br/&gt;available?"}
+    T -- "Yes" --> U["Consume one element,&lt;br/&gt;advance pattern"]
+    U --> P
+    T -- "No" --> FAIL
+
+    Q -- "No, named token" --> V{"Chain element matches&lt;br/&gt;token via fnmatch&lt;br/&gt;(case-insensitive)?"}
+    V -- "Yes" --> W["Consume element,&lt;br/&gt;advance pattern"]
+    W --> P
+    V -- "No" --> FAIL
+
+    FAIL --> X{"More start&lt;br/&gt;positions?"}
+    X -- "Yes" --> O
+    X -- "No" --> NOMATCH["NO MATCH: Return False"]
+    </div>
+    <p class="sheet-label">Sheet 2 of 2</p>
+  </div>
+
+  <!-- ── Mermaid.js CDN ── -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'neutral',
+      themeVariables: {
+        /* High-contrast monochrome for patent drawings */
+        primaryColor: '#ffffff',
+        primaryBorderColor: '#000000',
+        primaryTextColor: '#000000',
+        secondaryColor: '#ffffff',
+        secondaryBorderColor: '#000000',
+        secondaryTextColor: '#000000',
+        tertiaryColor: '#ffffff',
+        tertiaryBorderColor: '#000000',
+        tertiaryTextColor: '#000000',
+        lineColor: '#000000',
+        textColor: '#000000',
+        mainBkg: '#ffffff',
+        nodeBorder: '#000000',
+        clusterBkg: '#ffffff',
+        clusterBorder: '#000000',
+        titleColor: '#000000',
+        edgeLabelBackground: '#ffffff',
+        nodeTextColor: '#000000'
+      },
+      flowchart: {
+        htmlLabels: true,
+        curve: 'basis',
+        padding: 15,
+        nodeSpacing: 30,
+        rankSpacing: 40
+      },
+      securityLevel: 'loose'
+    });
+  </script>
+
+</body>
+</html>

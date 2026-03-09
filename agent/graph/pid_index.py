@@ -126,6 +126,25 @@ class PidIndex:
         except (IndexError, ValueError):
             return 0.0
 
+    def get_node_id_at_time(self, pid: int, event_ts: float) -> str | None:
+        """Get the node ID for the PID instance active at event_ts.
+
+        Picks the node whose create_time is the largest value <= event_ts
+        (most recent incarnation before the event occurred).
+        """
+        with self._lock:
+            ids = self._pid_to_ids.get(pid, [])
+            if not ids:
+                return None
+            best = None
+            best_epoch = 0.0
+            for nid in ids:
+                epoch = self._extract_epoch(nid)
+                if epoch <= event_ts and epoch > best_epoch:
+                    best = nid
+                    best_epoch = epoch
+            return best  # None if all incarnations are newer than event_ts
+
     def get_node_ids(self, pid: int) -> list[str]:
         """Get all node IDs for a PID, sorted newest-first by epoch."""
         with self._lock:
@@ -179,7 +198,7 @@ class PidIndex:
 
         try:
             now = _time.time()
-            start = now - (24 * 3600)  # Last 24h
+            start = now - (2 * 3600)  # Last 2h (was 24h — caused OOM on large ledgers)
             for entities in ledger_reader.iter_entities(start, now):
                 for proc in entities.processes:
                     if proc.pid is None:

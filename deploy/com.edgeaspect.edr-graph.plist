@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.edgeaspect.edr-graph</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/edr-graph/.venv/bin/python3</string>
+        <string>-m</string>
+        <string>agent.main</string>
+        <string>--config</string>
+        <string>/etc/edr-graph/config.yaml</string>
+        <string>--no-tray</string>
+        <string>--log-format</string>
+        <string>json</string>
+    </array>
+
+    <key>UserName</key>
+    <string>root</string>
+
+    <key>WorkingDirectory</key>
+    <string>/opt/edr-graph</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>Nice</key>
+    <integer>-5</integer>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/edr-graph/agent.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/edr-graph/agent.err</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>EDR_DATA_DIR</key>
+        <string>/var/lib/edr-graph</string>
+        <key>EDR_QUARANTINE_DIR</key>
+        <string>/var/edr-graph/quarantine</string>
+        <key>DEEPINFRA_API_KEY</key>
+        <string>__DEEPINFRA_API_KEY__</string>
+    </dict>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
+</dict>
+</plist>

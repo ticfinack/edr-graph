@@ -139,7 +139,7 @@ class WarmGraph:
             for table in node_tables:
                 csv_path = csv_files.get(table)
                 if csv_path:
-                    conn.execute(f"COPY {table} FROM '{csv_path}' (HEADER=true)")
+                    conn.execute(f"COPY {table} FROM '{csv_path}' (HEADER=true, DELIM=',', QUOTE='\"', ESCAPE='\"')")
                     loaded += 1
 
             # Edges (order doesn't matter, nodes already loaded)
@@ -152,7 +152,7 @@ class WarmGraph:
                 csv_path = csv_files.get(table)
                 if csv_path:
                     try:
-                        conn.execute(f"COPY {table} FROM '{csv_path}' (HEADER=true)")
+                        conn.execute(f"COPY {table} FROM '{csv_path}' (HEADER=true, DELIM=',', QUOTE='\"', ESCAPE='\"')")
                         loaded += 1
                     except Exception:
                         logger.debug("COPY FROM failed for %s", table, exc_info=True)

@@ -153,19 +153,39 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
             request.agent_id,
         )
 
-        # Inline lateral movement detection + follow-on tagging
+        # Inline lateral movement detection + follow-on tagging + campaign grouping
+        # Only medium+ findings participate in incident creation / campaign grouping
+        # to avoid polluting incidents with info/low noise.
+        _INCIDENT_SEVERITIES = {"medium", "high", "critical"}
         for proto_finding in request.findings:
             try:
                 fid = proto_finding.id
-                # Check for follow-on: link to active incidents targeting this agent
+                sev = (proto_finding.severity or "").lower()
+
+                # 1. Follow-on check: link to active incidents targeting this agent
+                # (severity filter is enforced in the Cypher query)
                 linked = self._neo4j.check_finding_for_follow_on(request.agent_id, fid)
                 if linked:
                     logger.info("Finding %s linked as follow-on to incidents: %s", fid, linked)
 
-                # Check for new lateral movement
+                # Skip campaign grouping / incident creation for low-signal findings
+                if sev not in _INCIDENT_SEVERITIES:
+                    continue
+
+                # 2. Lateral movement check with campaign grouping
                 matches = self._neo4j.check_finding_for_lateral_movement(request.agent_id, fid)
                 for m in matches:
-                    if not self._neo4j.has_incident_for_finding(fid, m["pivot_ip"]):
+                    existing = self._neo4j.find_active_campaign(
+                        agent_ids=[request.agent_id, m["dst_agent_id"]],
+                        ips=[m["pivot_ip"]],
+                        window_hours=12,
+                    )
+                    if existing:
+                        self._neo4j.append_finding_to_incident(
+                            existing, fid, request.agent_id, m["dst_agent_id"], m["pivot_ip"],
+                        )
+                        logger.info("Finding %s appended to campaign %s", fid, existing)
+                    elif not self._neo4j.has_incident_for_finding(fid, m["pivot_ip"]):
                         incident_id = str(uuid.uuid4())
                         port = self._neo4j.extract_finding_port(fid)
                         self._neo4j.create_incident(
@@ -176,6 +196,43 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
                             pivot_ip=m["pivot_ip"],
                             dst_port=port,
                         )
+
+                # 3. Vertical movement check (privilege escalation on same host)
+                if not matches:
+                    vert = self._neo4j.check_finding_for_vertical_movement(request.agent_id, fid)
+                    for v in vert:
+                        existing = self._neo4j.find_active_campaign(
+                            agent_ids=[request.agent_id],
+                            ips=[],
+                            window_hours=12,
+                        )
+                        if existing:
+                            self._neo4j.append_finding_to_incident(
+                                existing, fid, request.agent_id, request.agent_id, "",
+                            )
+                            logger.info("Vertical finding %s appended to campaign %s", fid, existing)
+                        else:
+                            incident_id = str(uuid.uuid4())
+                            self._neo4j.create_incident(
+                                incident_id=incident_id,
+                                finding_id=fid,
+                                src_agent_id=request.agent_id,
+                                dst_agent_id=request.agent_id,
+                                pivot_ip="",
+                            )
+                            # Override incident_type for vertical movement
+                            self._neo4j.update_incident_status(incident_id, "detected")
+                            with self._neo4j._driver.session() as session:
+                                session.run(
+                                    "MATCH (inc:Incident {incident_id: $iid}) "
+                                    "SET inc.incident_type = 'vertical_movement'",
+                                    {"iid": incident_id},
+                                )
+                            logger.info(
+                                "Created vertical movement incident %s for %s (%s → %s)",
+                                incident_id, fid, v.get("original_user"), v.get("escalated_user"),
+                            )
+                        break  # One vertical incident per finding is enough
             except Exception:
                 logger.debug(
                     "Inline detection failed for finding %s", proto_finding.id, exc_info=True,
@@ -238,6 +295,31 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
             len(records), incident_id, side,
         )
 
+    def _ingest_ocsf_evidence(self, query_meta: dict, result: dict) -> None:
+        """Parse OCSF ledger query results into the persistent evidence table."""
+        finding_id = query_meta.get("finding_id", "")
+        agent_id = query_meta.get("agent_id", "")
+
+        # Extract incident_id from finding_id like "inc-id:ocsf_dst"
+        incident_id = ""
+        if ":ocsf_dst" in finding_id:
+            incident_id = finding_id.split(":ocsf_dst")[0]
+        elif ":ocsf_src" in finding_id:
+            incident_id = finding_id.split(":ocsf_src")[0]
+
+        if not incident_id:
+            return
+
+        records = result.get("records", []) if isinstance(result, dict) else []
+        if not records:
+            return
+
+        inserted = self._settings_db.upsert_ocsf_evidence(incident_id, agent_id, records)
+        logger.debug(
+            "Ingested %d OCSF evidence records for %s (new=%d)",
+            len(records), incident_id, inserted,
+        )
+
     def Heartbeat(self, request, context):
         """Update agent heartbeat in Neo4j, including clock offset and IPs."""
         # Verify agent is registered before processing
@@ -257,6 +339,8 @@ class FleetServicer(fleet_pb2_grpc.FleetServiceServicer):
                     )
                     if query_meta and query_meta["query_type"] == "pull_surveillance_logs":
                         self._ingest_surveillance_logs(query_meta, r.get("result", {}))
+                    elif query_meta and query_meta["query_type"] == "pull_ocsf_ledger":
+                        self._ingest_ocsf_evidence(query_meta, r.get("result", {}))
             except (json.JSONDecodeError, KeyError, TypeError):
                 logger.debug("Bad query_results_json from %s", request.agent_id)
 

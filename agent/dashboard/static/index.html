@@ -747,7 +747,9 @@ function renderChain(area, data) {
       const cmd = p.cmd_line ? ' <span class="mono" style="color:var(--dim);font-size:11px">' + esc(p.cmd_line.substring(0,80)) + '</span>' : '';
       return '<span style="padding:2px 8px;background:var(--bg);border-radius:4px;margin:2px;display:inline-flex;align-items:center;gap:4px">' + esc(name) + '<span class="mono" style="color:var(--dim);font-size:11px">' + pid + '</span>' + signBadge(p) + cmd + '</span>';
     }).join(' &rarr; ');
-    parts.push({title:'Process Chain', content: chainHtml});
+    const chainPattern = buildFullChainPattern(data.process_chain);
+    const allowBtn = '<div style="margin-top:8px"><button class="btn" style="font-size:11px;padding:3px 10px;background:rgba(34,197,94,0.15);color:var(--low);border-color:var(--low)" onclick="showAllowChainForm()">Allow Chain</button></div>';
+    parts.push({title:'Process Chain', content: chainHtml + allowBtn + '<div id="chain-allow-slot"></div>'});
   }
   // Child processes
   if ((data.child_processes||[]).length > 0) {
@@ -1338,6 +1340,14 @@ async function panicRestore() {
 }
 
 // ── Allow/Block from finding detail ────────────────────────────
+function buildFullChainPattern(chain) {
+  if (!chain || chain.length === 0) return '';
+  return chain
+    .map(p => p.type === 'user' ? 'USER:' + p.name : (p.name || '?'))
+    .filter(n => n && n !== '?')
+    .join(' > ');
+}
+
 function buildSuggestedChainPattern(chain) {
   // Prefer the graph-derived process chain (full ancestry from the graph DB)
   // over the finding's sparse chain which often has minimal/unknown entries
@@ -1484,6 +1494,48 @@ async function submitAbRules(endpoint) {
     } else {
       formEl.innerHTML = '<div style="color:var(--high);padding:8px">' + ok + ' added, ' + fail + ' failed. ' + esc(lastErr) + '</div>';
     }
+  }
+}
+
+// ── Allow chain pattern from process chain card ────────────────
+function showAllowChainForm() {
+  const slot = document.getElementById('chain-allow-slot');
+  if (!slot) return;
+  const existing = document.getElementById('chain-allow-form');
+  if (existing) { existing.remove(); return; }
+
+  const chain = window._graphProcessChain || [];
+  const pattern = buildFullChainPattern(chain);
+
+  let html = '<div id="chain-allow-form" class="card" style="margin-top:10px;padding:14px;border-color:var(--low)">';
+  html += '<h4 style="margin-bottom:8px;color:var(--low)">Allow Chain Pattern</h4>';
+  html += '<label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Chain pattern <span style="font-size:11px">(edit to adjust scope — use ** for wildcards)</span></label>';
+  html += '<input type="text" id="allow-chain-pattern" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 10px;color:var(--text);font-family:monospace;font-size:13px" value="' + esc(pattern) + '">';
+  html += '<div style="margin-top:8px;display:flex;gap:8px;align-items:center">';
+  html += '<input type="text" id="allow-chain-desc" placeholder="Description..." style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 10px;color:var(--text);font-size:13px" value="Allow chain: ' + esc(pattern) + '">';
+  html += '<button class="btn btn-primary" onclick="submitAllowChain()">Allow</button>';
+  html += '<button class="btn" onclick="document.getElementById(\'chain-allow-form\').remove()">Cancel</button>';
+  html += '</div></div>';
+  slot.innerHTML = html;
+  document.getElementById('chain-allow-form').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+async function submitAllowChain() {
+  const pattern = (document.getElementById('allow-chain-pattern') || {}).value || '';
+  const desc = (document.getElementById('allow-chain-desc') || {}).value || '';
+  if (!pattern.trim()) { alert('Chain pattern cannot be empty.'); return; }
+  const body = {rule_type: 'chain_pattern', pattern: pattern.trim(), description: desc};
+  try {
+    const resp = await fetch(API + '/api/response/allowlist', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const form = document.getElementById('chain-allow-form');
+    if (resp.ok) {
+      form.innerHTML = '<div style="color:var(--low);padding:8px">Chain pattern allowlisted.</div>';
+    } else {
+      const err = await resp.json().catch(() => ({}));
+      form.innerHTML = '<div style="color:var(--high);padding:8px">Failed: ' + esc(err.detail || 'Unknown error') + '</div>';
+    }
+  } catch(e) {
+    alert('Network error: ' + e.message);
   }
 }
 
