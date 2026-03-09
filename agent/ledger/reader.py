@@ -555,10 +555,7 @@ def _write_edge_csv(
                 if k in (from_key, to_key):
                     continue
                 val = e.get(k, "")
-                if k == "timestamp":
-                    val = _fmt_ts(val)
-                else:
-                    val = _san(val) if val is not None else ""
+                val = _fmt_ts(val) if k == "timestamp" else _san(val) if val is not None else ""
                 row.append(val)
             w.writerow(row)
 

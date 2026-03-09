@@ -149,11 +149,7 @@ def _build_chain_from_ocsf_evidence(
 
     for evt in target_events:
         etype = evt.get("_event_type", "")
-        src_ip = ""
-        try:
-            src_ip = evt.get("src_endpoint", {}).get("ip", "")
-        except AttributeError:
-            pass
+        src_ip = (evt.get("src_endpoint") or {}).get("ip", "")
 
         if src_ip not in pivot_set:
             continue
@@ -163,10 +159,7 @@ def _build_chain_from_ocsf_evidence(
 
         auth_username = ""
         if etype in ("Authentication", "authentication"):
-            try:
-                auth_username = evt.get("user", {}).get("name", "")
-            except AttributeError:
-                pass
+            auth_username = (evt.get("user") or {}).get("name", "")
             if auth_username and not anchor_user:
                 anchor_user = auth_username
 
@@ -194,8 +187,7 @@ def _build_chain_from_ocsf_evidence(
     for evt in target_events:
         proc = evt.get("process") or {}
         pid = proc.get("pid")
-        if pid and isinstance(pid, int) and pid in anchor_pids:
-            if pid not in proc_map:
+        if pid and isinstance(pid, int) and pid in anchor_pids and pid not in proc_map:
                 proc_map[pid] = {
                     "pid": pid,
                     "name": proc.get("name", ""),

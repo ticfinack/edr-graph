@@ -506,7 +506,7 @@ class TestGlobalIntelSuppressions:
 
     def test_uniqueness_constraint(self, db):
         db.add_global_intel_suppression(indicator_type="ip", pattern="1.1.1.1")
-        with pytest.raises(Exception):
+        with pytest.raises(sqlite3.IntegrityError):
             db.add_global_intel_suppression(indicator_type="ip", pattern="1.1.1.1")
 
     def test_invalid_type(self, db):
