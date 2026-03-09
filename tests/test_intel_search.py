@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,7 +11,6 @@ from server.auth import create_token, hash_password, set_jwt_secret
 from server.dashboard import app, set_feed_manager, set_neo4j, set_settings, set_settings_db
 from server.intel.feed_manager import FeedManager
 from server.settings_db import SettingsDB
-
 
 # ── FeedManager.get_paginated_indicators() unit tests ──
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -82,6 +83,7 @@ def start_health_server(
     _HealthHandler._queue_getter = staticmethod(queue_depth_fn) if queue_depth_fn else None
 
     server = HTTPServer(("127.0.0.1", port), _HealthHandler)
+    server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="health")
     thread.start()
     logger.info("Health/metrics server started on http://127.0.0.1:%d", port)

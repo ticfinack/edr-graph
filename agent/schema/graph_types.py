@@ -97,3 +97,5 @@ class SecurityFinding(BaseModel):
     chain: list[ChainStep]
     affected_pids: list[int] = []
     iocs: dict = {}  # {"domains": [], "ips": [], "files": [], "urls": []}
+    trigger_pid: int | None = None
+    trigger_timestamp: datetime | None = None

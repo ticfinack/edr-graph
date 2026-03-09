@@ -100,6 +100,7 @@ class TestChainEnrichment:
         analyzer._settings = MagicMock()
         analyzer._queue = None
         analyzer._ioc_db = None
+        analyzer._ledger_reader = None
         analyzer._client = None
         analyzer._tools = []
         analyzer._graph_conn = None

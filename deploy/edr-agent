@@ -1,0 +1,290 @@
+#!/usr/bin/env bash
+# edr-agent — management CLI for the EDR Graph Agent on macOS
+#
+# Usage:
+#   sudo edr-agent {start|stop|restart|status|logs|errors|health}
+#
+# The agent daemon runs as root (LaunchDaemon) for eBPF/tcpdump access.
+# The tray icon runs as the logged-in user (LaunchAgent) for GUI access.
+# Both are managed together by this CLI.
+#
+# Installed to /usr/local/bin/edr-agent by install_macos.sh
+
+set -euo pipefail
+
+PLIST_NAME="com.edgeaspect.edr-graph"
+PLIST_DEST="/Library/LaunchDaemons/${PLIST_NAME}.plist"
+TRAY_PLIST_NAME="com.edgeaspect.edr-graph-tray"
+TRAY_PLIST_SRC="/opt/edr-graph/deploy/${TRAY_PLIST_NAME}.plist"
+LOG_DIR="/var/log/edr-graph"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+require_root() {
+    if [[ $EUID -ne 0 ]]; then
+        echo -e "${RED}Error:${NC} This command requires root. Use: sudo edr-agent $1"
+        exit 1
+    fi
+}
+
+# --- Daemon helpers ---
+
+is_loaded() {
+    launchctl print "system/${PLIST_NAME}" &>/dev/null
+}
+
+get_pid() {
+    launchctl list "$PLIST_NAME" 2>/dev/null | awk '/PID/ {print $NF; exit}'
+}
+
+# --- Tray helpers ---
+
+_get_console_user() {
+    # Get the currently logged-in GUI user (not root)
+    /usr/sbin/scutil <<< "show State:/Users/ConsoleUser" 2>/dev/null \
+        | awk '/Name :/ && !/loginwindow/ {print $3}'
+}
+
+_get_console_uid() {
+    local user
+    user=$(_get_console_user)
+    [[ -z "$user" ]] && return 1
+    id -u "$user" 2>/dev/null
+}
+
+_tray_plist_dest() {
+    local user
+    user=$(_get_console_user)
+    [[ -z "$user" ]] && return 1
+    local home
+    home=$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+    [[ -z "$home" ]] && return 1
+    echo "$home/Library/LaunchAgents/${TRAY_PLIST_NAME}.plist"
+}
+
+_install_tray_plist() {
+    local dest
+    dest=$(_tray_plist_dest) || return 1
+    local user
+    user=$(_get_console_user)
+    local dir
+    dir=$(dirname "$dest")
+    mkdir -p "$dir"
+
+    # The source plist has __TRAY_PYTHON__ and __TRAY_SCRIPT__ placeholders.
+    # Substitute with the standard install paths.
+    local tray_python="/opt/edr-graph-tray/bin/python3"
+    local tray_script="/opt/edr-graph/agent/tray/tray_helper.py"
+
+    if [[ ! -x "$tray_python" ]]; then
+        echo -e "${YELLOW}Tray venv not found at $tray_python${NC}"
+        echo "Re-run the installer: sudo bash /opt/edr-graph/deploy/install_macos.sh --upgrade"
+        return 1
+    fi
+
+    sed -e "s|__TRAY_PYTHON__|${tray_python}|g" \
+        -e "s|__TRAY_SCRIPT__|${tray_script}|g" \
+        "$TRAY_PLIST_SRC" > "$dest"
+    chown "$user" "$dest"
+    chmod 644 "$dest"
+}
+
+_start_tray() {
+    local uid
+    uid=$(_get_console_uid) || return 0
+    local dest
+    dest=$(_tray_plist_dest) || return 0
+
+    # Install plist if not present
+    if [[ ! -f "$dest" ]]; then
+        _install_tray_plist || return 0
+    fi
+
+    # Check if already running
+    if launchctl print "gui/${uid}/${TRAY_PLIST_NAME}" &>/dev/null 2>&1; then
+        return 0
+    fi
+
+    launchctl bootstrap "gui/${uid}" "$dest" 2>/dev/null || true
+}
+
+_stop_tray() {
+    local uid
+    uid=$(_get_console_uid) || return 0
+
+    if launchctl print "gui/${uid}/${TRAY_PLIST_NAME}" &>/dev/null 2>&1; then
+        launchctl bootout "gui/${uid}/${TRAY_PLIST_NAME}" 2>/dev/null || true
+    fi
+}
+
+_restart_tray() {
+    local uid
+    uid=$(_get_console_uid) || return 0
+    local dest
+    dest=$(_tray_plist_dest) || return 0
+
+    if [[ ! -f "$dest" ]]; then
+        _install_tray_plist || return 0
+    fi
+
+    if launchctl print "gui/${uid}/${TRAY_PLIST_NAME}" &>/dev/null 2>&1; then
+        launchctl kickstart -k "gui/${uid}/${TRAY_PLIST_NAME}" 2>/dev/null || true
+    else
+        launchctl bootstrap "gui/${uid}" "$dest" 2>/dev/null || true
+    fi
+}
+
+_tray_status() {
+    local uid
+    uid=$(_get_console_uid) 2>/dev/null
+    if [[ -z "$uid" ]]; then
+        echo -e "${YELLOW}Tray:${NC} No GUI session"
+        return
+    fi
+
+    if launchctl print "gui/${uid}/${TRAY_PLIST_NAME}" &>/dev/null 2>&1; then
+        echo -e "${GREEN}Tray:${NC} Running"
+    else
+        echo -e "${YELLOW}Tray:${NC} Not running"
+    fi
+}
+
+# --- Commands ---
+
+cmd_start() {
+    require_root "start"
+    if is_loaded; then
+        local pid
+        pid=$(get_pid)
+        if [[ -n "$pid" && "$pid" != "-" && "$pid" != "0" ]]; then
+            echo -e "${YELLOW}Agent already running${NC} (PID $pid)"
+            _start_tray
+            exit 0
+        fi
+        launchctl kickstart "system/${PLIST_NAME}"
+    else
+        if [[ ! -f "$PLIST_DEST" ]]; then
+            echo -e "${RED}Error:${NC} Plist not found at $PLIST_DEST"
+            echo "Run the installer first: sudo bash deploy/install_macos.sh"
+            exit 1
+        fi
+        launchctl bootstrap system "$PLIST_DEST"
+    fi
+    sleep 2
+    local pid
+    pid=$(get_pid)
+    if [[ -n "$pid" && "$pid" != "-" && "$pid" != "0" ]]; then
+        echo -e "${GREEN}Agent started${NC} (PID $pid)"
+        _start_tray && echo -e "${GREEN}Tray icon started${NC}" || true
+    else
+        echo -e "${RED}Agent failed to start${NC} — check: sudo edr-agent errors"
+        exit 1
+    fi
+}
+
+cmd_stop() {
+    require_root "stop"
+    _stop_tray && echo -e "${GREEN}Tray icon stopped${NC}" || true
+    if ! is_loaded; then
+        echo "Agent is not running"
+        exit 0
+    fi
+    launchctl bootout "system/${PLIST_NAME}" 2>/dev/null || true
+    echo -e "${GREEN}Agent stopped${NC}"
+}
+
+cmd_restart() {
+    require_root "restart"
+    if is_loaded; then
+        echo "Restarting agent..."
+        launchctl kickstart -k "system/${PLIST_NAME}"
+        sleep 2
+        local pid
+        pid=$(get_pid)
+        if [[ -n "$pid" && "$pid" != "-" && "$pid" != "0" ]]; then
+            echo -e "${GREEN}Agent restarted${NC} (PID $pid)"
+            _restart_tray && echo -e "${GREEN}Tray icon restarted${NC}" || true
+        else
+            echo -e "${RED}Agent failed to restart${NC} — check: sudo edr-agent errors"
+            exit 1
+        fi
+    else
+        echo "Agent not loaded — starting..."
+        cmd_start
+    fi
+}
+
+cmd_status() {
+    if ! is_loaded; then
+        echo -e "${RED}Agent is not loaded${NC}"
+        _tray_status
+        exit 1
+    fi
+
+    local pid
+    pid=$(get_pid)
+    if [[ -n "$pid" && "$pid" != "-" && "$pid" != "0" ]]; then
+        echo -e "${GREEN}Agent is running${NC} (PID $pid)"
+    else
+        echo -e "${YELLOW}Agent is loaded but not running${NC}"
+    fi
+
+    _tray_status
+
+    local health
+    if health=$(curl -sf --max-time 3 http://127.0.0.1:9100/health 2>/dev/null); then
+        echo -e "${GREEN}Health:${NC} $health"
+    else
+        echo -e "${YELLOW}Health endpoint not responding${NC}"
+    fi
+}
+
+cmd_logs() {
+    tail -f "$LOG_DIR/agent.log"
+}
+
+cmd_errors() {
+    tail -f "$LOG_DIR/agent.err"
+}
+
+cmd_health() {
+    local health
+    if health=$(curl -sf --max-time 5 http://127.0.0.1:9100/health 2>/dev/null); then
+        echo "$health"
+    else
+        echo -e "${RED}Health endpoint not responding${NC}"
+        exit 1
+    fi
+}
+
+cmd_help() {
+    echo "Usage: sudo edr-agent {start|stop|restart|status|logs|errors|health}"
+    echo ""
+    echo "Commands:"
+    echo "  start     Start the agent daemon and tray icon"
+    echo "  stop      Stop the agent daemon and tray icon"
+    echo "  restart   Restart the agent daemon and tray icon"
+    echo "  status    Show running state, tray status, and health"
+    echo "  logs      Tail the agent log (stdout)"
+    echo "  errors    Tail the agent error log (stderr)"
+    echo "  health    Print health endpoint JSON"
+}
+
+case "${1:-help}" in
+    start)   cmd_start ;;
+    stop)    cmd_stop ;;
+    restart) cmd_restart ;;
+    status)  cmd_status ;;
+    logs)    cmd_logs ;;
+    errors)  cmd_errors ;;
+    health)  cmd_health ;;
+    -h|--help|help) cmd_help ;;
+    *)
+        echo -e "${RED}Unknown command:${NC} $1"
+        cmd_help
+        exit 1
+        ;;
+esac

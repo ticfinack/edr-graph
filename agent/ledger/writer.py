@@ -71,6 +71,7 @@ class LedgerWriter:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=OFF")
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA cache_size=-8000")  # 8 MB page cache limit
         conn.executescript(_SCHEMA)
         conn.close()
 
@@ -151,6 +152,7 @@ class LedgerWriter:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=OFF")
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA cache_size=-8000")  # 8 MB page cache limit
         last_prune = time.monotonic()
         try:
             while not self._stop.is_set():

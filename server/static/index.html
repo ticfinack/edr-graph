@@ -126,6 +126,8 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
 .vtree-step .step-type{color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px}
 .vtree-step .step-name{font-weight:500;font-size:13px;word-break:break-all}
 .vtree-step .step-pid{color:var(--dim);font-size:11px;margin-top:2px}
+.vtree-step .step-cmd{color:var(--dim);font-size:11px;margin-top:2px;font-family:var(--mono);word-break:break-all}
+.vtree-step .step-user{color:var(--medium);font-size:11px;margin-left:6px;font-weight:normal}
 .vtree-step.type-ip{border-color:var(--accent)}
 .vtree-step.type-process{border-color:#818cf8}
 .vtree-step.type-user{border-color:var(--medium)}
@@ -138,6 +140,35 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
 .vtree-command .cmd-label{color:var(--high);font-size:10px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px;font-weight:600}
 .vtree-command .cmd-line{font-family:"SF Mono",Menlo,Monaco,monospace;font-size:11px;word-break:break-all;color:var(--text);line-height:1.4}
 .vtree-command .cmd-meta{color:var(--dim);font-size:10px;margin-top:3px}
+
+/* Diamond Model assessment */
+.diamond-panel{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px}
+.diamond-verdict{display:inline-block;padding:4px 12px;border-radius:12px;font-weight:600;font-size:13px;text-transform:uppercase}
+.diamond-verdict-malicious{background:rgba(239,68,68,0.15);color:var(--critical);border:1px solid var(--critical)}
+.diamond-verdict-suspicious{background:rgba(249,115,22,0.15);color:var(--high);border:1px solid var(--high)}
+.diamond-verdict-benign{background:rgba(34,197,94,0.15);color:var(--low);border:1px solid var(--low)}
+.diamond-verdict-inconclusive{background:rgba(148,163,184,0.15);color:var(--dim);border:1px solid var(--dim)}
+.diamond-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.diamond-pillar-card{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px}
+.diamond-pillar-card h5{font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:var(--accent);margin-bottom:6px}
+.diamond-pillar-card p{font-size:12px;line-height:1.5;color:var(--text);margin-bottom:4px}
+.diamond-pillar-card .pill-list{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.diamond-pillar-card .pill{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:2px 8px;font-size:10px}
+
+/* OCSF evidence viewer */
+.ocsf-tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:12px}
+.ocsf-tab{padding:8px 16px;font-size:12px;cursor:pointer;color:var(--dim);border-bottom:2px solid transparent;transition:all 0.15s}
+.ocsf-tab:hover{color:var(--text)}
+.ocsf-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.ocsf-tab .tab-count{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:1px 5px;font-size:10px;margin-left:4px}
+.ocsf-event-row{cursor:pointer}
+.ocsf-event-row:hover{background:rgba(59,130,246,0.05)}
+.ocsf-event-detail{display:none;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px;margin:4px 0 8px;font-family:"SF Mono",Menlo,Monaco,monospace;font-size:11px;max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+
+/* Campaign scope */
+.campaign-timeline{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+.campaign-finding-row{display:flex;align-items:center;gap:12px;padding:6px 8px;border-radius:4px;font-size:12px}
+.campaign-finding-row:hover{background:rgba(59,130,246,0.05)}
 
 /* Empty state */
 .empty-state{text-align:center;padding:60px 20px;color:var(--dim)}
@@ -645,6 +676,7 @@ let currentUser = null;
 let fleetData = {agents:[], findings:[], lateral:[], vertical:[], hostConns:[], incidents:[]};
 let refreshTimer = null;
 let _survPollInterval = null;
+let _lateralPollTimer = null;
 let _currentIncidentId = null;
 let _currentIncidentStatus = null;
 let _currentSrcChain = [];
@@ -768,6 +800,8 @@ document.getElementById('tabBar').addEventListener('click', e => {
 });
 
 function hideAllDetails() {
+  if (_lateralPollTimer) { clearTimeout(_lateralPollTimer); _lateralPollTimer = null; }
+  if (_survPollInterval) { clearInterval(_survPollInterval); _survPollInterval = null; }
   document.getElementById('fleetAgentDetail').classList.add('hidden');
   document.getElementById('fleetAgentList').classList.remove('hidden');
   document.getElementById('findingDetail').classList.add('hidden');
@@ -971,10 +1005,13 @@ function renderVerticalChain(steps) {
       const arrow = i > 0 ? '<div class="vtree-arrow">&darr;</div>' : '';
       const t = (s.entity_type||'').toLowerCase();
       const icon = t === 'user' ? '&#x1F464; ' : t === 'host' ? '&#x1F5A5; ' : '';
+      const cmdLine = s.cmd_line ? `<div class="step-cmd">${esc(s.cmd_line)}</div>` : '';
+      const userLabel = (t === 'process' && s.username) ? `<span class="step-user">${esc(s.username)}</span>` : '';
       return `${arrow}<div class="vtree-step type-${t}">
         <div class="step-type">${esc(s.entity_type)}</div>
-        <div class="step-name">${icon}${esc(s.entity_name || s.entity_id)}</div>
+        <div class="step-name">${icon}${esc(s.entity_name || s.entity_id)}${userLabel}</div>
         ${s.pid ? `<div class="step-pid">PID ${s.pid}</div>` : ''}
+        ${cmdLine}
       </div>`;
     }).join('')
   }</div>`;
@@ -1034,6 +1071,68 @@ function _updateChainTraces(srcLogs, dstLogs) {
       if (vtree) vtree.outerHTML = renderVerticalChainWithTrace(_currentTgtChain, dstLogs);
     }
   }
+}
+
+function renderFindingChainsGrouped(findingChains, incident) {
+  // Group finding chains by hostname into source-side vs target-side
+  const srcHost = incident.src_hostname || '';
+  const dstHost = incident.dst_hostname || '';
+  const srcChains = [];
+  const dstChains = [];
+  const otherChains = [];
+  for (const fc of findingChains) {
+    const h = fc.hostname || '';
+    if (h === srcHost) srcChains.push(fc);
+    else if (h === dstHost) dstChains.push(fc);
+    else otherChains.push(fc);
+  }
+  const hasBothSides = srcChains.length > 0 && dstChains.length > 0;
+
+  function renderChainCards(chains) {
+    return chains.map(fc => `
+      <div style="margin-bottom:10px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+        <div style="font-size:11px;margin-bottom:6px;color:var(--dim)">
+          <span style="font-weight:600;color:var(--text)">${esc(fc.title||'Finding')}</span>
+          <span class="mono" style="margin-left:6px;font-size:10px">${esc((fc.finding_id||'').substring(0,8))}</span>
+        </div>
+        ${renderVerticalChain(fc.chain)}
+      </div>
+    `).join('');
+  }
+
+  let html = `<div style="margin-top:8px">`;
+  html += `<h5 style="font-size:13px;margin-bottom:8px">Finding Attack Chains (${findingChains.length})</h5>`;
+
+  if (hasBothSides || incident.pivot_ip) {
+    // Stitched two-column layout
+    html += `<div class="stitch-container">
+      <div class="stitch-host" style="flex:1">
+        <h4>${esc(srcHost||'Source')} <span style="color:var(--dim);font-weight:normal">(source, ${srcChains.length})</span></h4>
+        ${srcChains.length > 0 ? renderChainCards(srcChains) : '<div style="color:var(--dim);font-size:12px">No source findings with chains</div>'}
+      </div>`;
+    if (incident.pivot_ip) {
+      html += `<div class="stitch-pivot-arrow">
+        <div>&rarr;</div>
+        <div class="stitch-pivot-ip">${esc(incident.pivot_ip)}</div>
+      </div>
+      <div class="stitch-host" style="flex:1">
+        <h4>${esc(dstHost||'Target')} <span style="color:var(--dim);font-weight:normal">(target, ${dstChains.length})</span></h4>
+        ${dstChains.length > 0 ? renderChainCards(dstChains) : '<div style="color:var(--dim);font-size:12px">No target findings with chains</div>'}
+      </div>`;
+    }
+    html += `</div>`;
+  } else {
+    // Single-column layout (vertical movement or no pivot)
+    html += renderChainCards([...srcChains, ...dstChains]);
+  }
+
+  if (otherChains.length > 0) {
+    html += `<h5 style="font-size:12px;margin-top:12px;color:var(--dim)">Other Hosts (${otherChains.length})</h5>`;
+    html += renderChainCards(otherChains);
+  }
+
+  html += `</div>`;
+  return html;
 }
 
 // ── Findings ──
@@ -1206,8 +1305,9 @@ async function showLateralDetail(findingId) {
       </div>
     `;
     // Auto-refresh when either side has a sweep pending
+    if (_lateralPollTimer) { clearTimeout(_lateralPollTimer); _lateralPollTimer = null; }
     if (d.source_chain_pending || d.target_chain_pending) {
-      setTimeout(() => showLateralDetail(findingId), 10000);
+      _lateralPollTimer = setTimeout(() => showLateralDetail(findingId), 10000);
     }
   } catch(e) {
     panel.innerHTML = `<a class="back-link" onclick="hideLateralDetail()">&larr; Back</a><div class="empty-state"><h3>Error</h3><p>${esc(e.message)}</p></div>`;
@@ -1215,6 +1315,7 @@ async function showLateralDetail(findingId) {
 }
 
 function hideLateralDetail() {
+  if (_lateralPollTimer) { clearTimeout(_lateralPollTimer); _lateralPollTimer = null; }
   document.getElementById('lateralDetail').classList.add('hidden');
   document.getElementById('lateralList').classList.remove('hidden');
 }
@@ -1256,77 +1357,132 @@ async function showIncidentDetail(incidentId) {
 
     const srcChain = (d.source_chain||[]).filter(s => s.entity_type);
     const tgtChain = (d.target_chain||[]).filter(s => s.entity_type);
+    const findingChains = (d.finding_chains||[]).filter(fc => fc.chain && fc.chain.length > 0);
     const followOns = d.follow_on_findings || [];
+    const sourceFindings = d.source_findings || [];
+    const involvedHosts = d.involved_hosts || [];
+    const da = d.diamond_assessment || null;
+    const hasIncidentChains = srcChain.length > 0 || tgtChain.length > 0;
+    const hasFindingChains = findingChains.length > 0;
+
+    const incType = d.incident_type || 'lateral_movement';
+    const incTitle = incType === 'campaign' ? 'Campaign'
+      : incType === 'vertical_movement' ? 'Privilege Escalation'
+      : 'Lateral Movement';
 
     panel.innerHTML = `
       <a class="back-link" onclick="hideIncidentDetail()">&larr; Back to incidents</a>
       <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
-        <h3 style="font-size:16px">Incident: ${esc(d.src_hostname)} &rarr; ${esc(d.dst_hostname)}</h3>
+        <h3 style="font-size:16px">${esc(incTitle)}: ${esc(d.src_hostname||'')} ${d.pivot_ip ? '&rarr; ' + esc(d.dst_hostname||'') : ''}</h3>
         ${incidentStatusBadge(d.status)}
         ${d.status !== 'closed' && currentUser && currentUser.role === 'admin'
-          ? `<button class="btn btn-danger" onclick="closeIncident('${esc(d.incident_id)}')">Close Incident</button>`
+          ? `<button class="btn btn-danger" onclick="closeIncident('${esc(d.incident_id)}')">Close</button>`
           : ''}
       </div>
 
-      <div class="stitch-container">
-        <div class="stitch-host" style="flex:1">
-          <h4>${esc(d.src_hostname)} <span style="color:var(--dim);font-weight:normal">(source)</span></h4>
-          ${srcChain.length > 0
-            ? renderVerticalChain(srcChain)
-            : '<div style="color:var(--dim);font-size:12px;margin-top:12px">No chain data</div>'}
-        </div>
-        <div class="stitch-pivot-arrow">
-          <div>&rarr;</div>
-          <div class="stitch-pivot-ip">${esc(d.pivot_ip)}</div>
-        </div>
-        <div class="stitch-host" style="flex:1">
-          <h4>${esc(d.dst_hostname)} <span style="color:var(--dim);font-weight:normal">(target)</span></h4>
-          ${tgtChain.length > 0
-            ? renderVerticalChain(tgtChain)
-            : '<div style="color:var(--dim);font-size:12px;margin-top:12px">No chain data</div>'}
-        </div>
+      <!-- Diamond Model Assessment Panel -->
+      <div class="diamond-panel" id="diamondPanel">
+        ${da ? renderDiamondAssessment(da, d.diamond_assessed_at, d.incident_id) : `
+          <div style="display:flex;align-items:center;gap:12px">
+            <span class="spinner"></span>
+            <span style="font-size:13px;color:var(--dim)">Diamond Model analysis pending...</span>
+            ${currentUser && currentUser.role === 'admin'
+              ? `<button class="btn" onclick="reassessIncident('${esc(d.incident_id)}')">Analyze Now</button>`
+              : ''}
+          </div>
+        `}
       </div>
 
+      <!-- Campaign Scope -->
       <div class="detail-section" style="margin-top:16px">
-        <h4>Details</h4>
+        <h4>Campaign Scope</h4>
         <div class="detail-grid">
           <dt>Incident ID</dt><dd class="mono" style="font-size:11px">${esc(d.incident_id)}</dd>
-          <dt>Source Finding</dt><dd>${esc(d.source_finding_title || d.source_finding_id || '-')}</dd>
-          <dt>Pivot IP</dt><dd class="mono">${esc(d.pivot_ip)}</dd>
+          <dt>Type</dt><dd>${esc(incType)}</dd>
+          <dt>Pivot IP</dt><dd class="mono">${esc(d.pivot_ip||'none')}</dd>
           <dt>Created</dt><dd>${fmtTime(d.created_at)}</dd>
           <dt>Last Activity</dt><dd>${fmtTime(d.updated_at)}</dd>
+          <dt>Involved Hosts</dt><dd>${involvedHosts.map(h => esc(h.hostname||h.agent_id)).join(', ') || '-'}</dd>
         </div>
+
+        ${sourceFindings.length > 0 ? `
+        <h5 style="margin-top:12px;font-size:13px">Source Findings (${sourceFindings.length})</h5>
+        <div class="campaign-timeline">
+          ${sourceFindings.map(sf => `
+            <div class="campaign-finding-row clickable" onclick="showFindingDetailById('${esc(sf.finding_id)}')">
+              <span style="width:60px">${sevBadge(sf.severity)}</span>
+              <span style="width:120px;color:var(--dim)">${esc(sf.hostname||'')}</span>
+              <span class="truncate" style="flex:1">${esc(sf.title)}</span>
+              <span style="width:140px;color:var(--dim)">${fmtTime(sf.timestamp)}</span>
+            </div>
+          `).join('')}
+        </div>` : ''}
+
+        ${followOns.length > 0 ? `
+        <h5 style="margin-top:12px;font-size:13px">Follow-On Findings (${followOns.length})</h5>
+        <div class="campaign-timeline">
+          ${followOns.map(fo => `
+            <div class="campaign-finding-row clickable" onclick="showFindingDetailById('${esc(fo.finding_id)}')">
+              <span style="width:60px">${sevBadge(fo.severity)}</span>
+              <span class="truncate" style="flex:1">${esc(fo.title)}</span>
+              <span style="width:140px;color:var(--dim)">${fmtTime(fo.timestamp)}</span>
+            </div>
+          `).join('')}
+        </div>` : ''}
       </div>
 
-      ${followOns.length > 0 ? `
-      <div class="detail-section" style="margin-top:16px">
-        <h4>Follow-On Findings (${followOns.length})</h4>
-        <table>
-          <thead><tr><th style="width:80px">Severity</th><th>Title</th><th style="width:160px">Time</th></tr></thead>
-          <tbody>
-            ${followOns.map(fo => `<tr>
-              <td>${sevBadge(fo.severity)}</td>
-              <td class="truncate">${esc(fo.title)}</td>
-              <td>${fmtTime(fo.timestamp)}</td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>` : ''}
+      <!-- Stitched Chain View (collapsible) -->
+      <details class="detail-section" style="margin-top:16px" ${hasIncidentChains || hasFindingChains ? 'open' : ''}>
+        <summary style="cursor:pointer;font-weight:600;font-size:14px">Attack Chain View</summary>
+        ${hasIncidentChains ? `
+        <div class="stitch-container" style="margin-top:8px">
+          <div class="stitch-host" style="flex:1">
+            <h4>${esc(d.src_hostname||'Source')} <span style="color:var(--dim);font-weight:normal">(source)</span></h4>
+            ${srcChain.length > 0
+              ? renderVerticalChain(srcChain)
+              : '<div style="color:var(--dim);font-size:12px;margin-top:12px">No chain data</div>'}
+          </div>
+          ${d.pivot_ip ? `
+          <div class="stitch-pivot-arrow">
+            <div>&rarr;</div>
+            <div class="stitch-pivot-ip">${esc(d.pivot_ip)}</div>
+          </div>
+          <div class="stitch-host" style="flex:1">
+            <h4>${esc(d.dst_hostname||'Target')} <span style="color:var(--dim);font-weight:normal">(target)</span></h4>
+            ${tgtChain.length > 0
+              ? renderVerticalChain(tgtChain)
+              : '<div style="color:var(--dim);font-size:12px;margin-top:12px">No chain data</div>'}
+          </div>` : ''}
+        </div>` : ''}
+        ${hasFindingChains ? renderFindingChainsGrouped(findingChains, d) : ''}
+        ${!hasIncidentChains && !hasFindingChains ? '<div style="color:var(--dim);font-size:12px;margin-top:8px">Chain data will appear once XDR traces complete.</div>' : ''}
+      </details>
 
+      <!-- OCSF Evidence -->
       <div class="detail-section" style="margin-top:16px">
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
-          <h4>Surveillance Logs</h4>
-          ${currentUser && currentUser.role === 'admin' && d.status !== 'active'
-            ? `<button class="btn" onclick="pullSurveillanceLogs('${esc(d.incident_id)}')">Pull Target Surveillance Logs</button>`
-            : ''}
+          <h4>OCSF Telemetry Evidence</h4>
           ${d.status === 'active'
             ? '<span style="font-size:11px;color:var(--low)">&#9679; Auto-collecting</span>'
             : ''}
         </div>
-        <div id="surveillanceLogs">
-          <div style="color:var(--dim);font-size:12px">Click "Pull" to request flight recorder data from agents.</div>
+        <div id="ocsfEvidence">
+          <div style="color:var(--dim);font-size:12px"><span class="spinner"></span> Loading evidence...</div>
         </div>
       </div>
+
+      <!-- Legacy Surveillance Logs (collapsed) -->
+      <details class="detail-section" style="margin-top:16px">
+        <summary style="cursor:pointer;font-weight:600;font-size:14px">
+          Surveillance Logs
+          ${currentUser && currentUser.role === 'admin' && d.status !== 'active'
+            ? `<button class="btn" style="margin-left:12px;font-size:11px" onclick="event.stopPropagation();pullSurveillanceLogs('${esc(d.incident_id)}')">Pull Logs</button>`
+            : ''}
+        </summary>
+        <div id="surveillanceLogs" style="margin-top:8px">
+          <div style="color:var(--dim);font-size:12px">Expand to view raw surveillance logs.</div>
+        </div>
+      </details>
     `;
 
     _currentIncidentId = d.incident_id;
@@ -1336,9 +1492,15 @@ async function showIncidentDetail(incidentId) {
 
     if (_survPollInterval) { clearInterval(_survPollInterval); _survPollInterval = null; }
 
+    // Load OCSF evidence
+    loadOcsfEvidence(d.incident_id);
+
     if (d.status === 'active') {
       loadSurveillanceLogs(d.incident_id);
-      _survPollInterval = setInterval(() => loadSurveillanceLogs(d.incident_id), 15000);
+      _survPollInterval = setInterval(() => {
+        loadSurveillanceLogs(d.incident_id);
+        loadOcsfEvidence(d.incident_id);
+      }, 15000);
     } else {
       loadSurveillanceLogs(d.incident_id);
     }
@@ -1347,12 +1509,168 @@ async function showIncidentDetail(incidentId) {
   }
 }
 
+function renderDiamondAssessment(da, assessedAt, incidentId) {
+  const verdictClass = 'diamond-verdict-' + (da.assessment_verdict||'inconclusive');
+  const adv = da.diamond_adversary || {};
+  const infra = da.diamond_infrastructure || {};
+  const cap = da.diamond_capability || {};
+  const victim = da.diamond_victim || {};
+  const reassessId = incidentId || _currentIncidentId || '';
+  function pillList(items) {
+    return (items||[]).map(i => `<span class="pill">${esc(String(i))}</span>`).join('');
+  }
+  return `
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:12px">
+      <span class="diamond-verdict ${verdictClass}">${esc(da.assessment_verdict||'?')}</span>
+      <span style="font-size:12px;color:var(--dim)">Confidence: ${((da.confidence||0)*100).toFixed(0)}%</span>
+      <span style="font-size:11px;color:var(--dim)">${assessedAt ? 'Assessed ' + fmtTime(assessedAt) : ''}</span>
+      ${currentUser && currentUser.role === 'admin'
+        ? `<button class="btn" style="margin-left:auto" onclick="reassessIncident('${esc(reassessId)}')">Re-assess</button>`
+        : ''}
+    </div>
+    <p style="font-size:13px;line-height:1.6;margin-bottom:12px">${esc(da.tactical_summary||'')}</p>
+    <div class="diamond-grid">
+      <div class="diamond-pillar-card">
+        <h5>Adversary</h5>
+        <p>${esc(adv.description||'Unknown')}</p>
+        ${(adv.ttps||[]).length ? '<div class="pill-list">' + pillList(adv.ttps) + '</div>' : ''}
+      </div>
+      <div class="diamond-pillar-card">
+        <h5>Infrastructure</h5>
+        <p>${esc(infra.description||'Unknown')}</p>
+        ${(infra.c2_indicators||[]).length ? '<div class="pill-list">' + pillList(infra.c2_indicators) + '</div>' : ''}
+      </div>
+      <div class="diamond-pillar-card">
+        <h5>Capability</h5>
+        <p>${esc(cap.description||'Unknown')}</p>
+        ${(cap.tools_observed||[]).length ? '<div class="pill-list">' + pillList(cap.tools_observed) + '</div>' : ''}
+        ${(cap.techniques||[]).length ? '<div class="pill-list" style="margin-top:4px">' + pillList(cap.techniques) + '</div>' : ''}
+      </div>
+      <div class="diamond-pillar-card">
+        <h5>Victim</h5>
+        <p>${esc(victim.description||'Unknown')}</p>
+        ${(victim.affected_hosts||[]).length ? '<div class="pill-list">' + pillList(victim.affected_hosts) + '</div>' : ''}
+      </div>
+    </div>
+    ${(da.recommended_actions||[]).length ? `
+      <div style="margin-top:12px">
+        <h5 style="font-size:12px;color:var(--dim);margin-bottom:4px">Recommended Actions</h5>
+        <ul style="font-size:12px;margin:0;padding-left:20px">${da.recommended_actions.map(a => `<li>${esc(a)}</li>`).join('')}</ul>
+      </div>
+    ` : ''}
+  `;
+}
+
+async function reassessIncident(incidentId) {
+  const panel = document.getElementById('diamondPanel');
+  if (panel) panel.innerHTML = '<div style="display:flex;align-items:center;gap:8px"><span class="spinner"></span><span style="font-size:13px">Running Diamond Model analysis...</span></div>';
+  try {
+    const result = await api(`/api/fleet/incidents/${incidentId}/reassess`, {method:'POST'});
+    if (result && result.assessment) {
+      panel.innerHTML = renderDiamondAssessment(result.assessment, Math.floor(Date.now()/1000));
+    } else {
+      panel.innerHTML = '<div style="color:var(--danger);font-size:13px">Assessment returned no results.</div>';
+    }
+  } catch(e) {
+    if (panel) panel.innerHTML = `<div style="color:var(--danger);font-size:13px">Assessment failed: ${esc(e.message)}</div>`;
+  }
+}
+
+// ── OCSF Evidence Viewer ──
+let _ocsfActiveTab = 'all';
+
+async function loadOcsfEvidence(incidentId) {
+  try {
+    const data = await api(`/api/fleet/incidents/${incidentId}/ocsf-evidence`);
+    const container = document.getElementById('ocsfEvidence');
+    if (!container) return;
+
+    const evidence = data.evidence || [];
+    if (evidence.length === 0) {
+      container.innerHTML = '<div style="color:var(--dim);font-size:12px">No OCSF evidence collected yet.</div>';
+      return;
+    }
+
+    // Group by event type
+    const byType = {};
+    evidence.forEach(e => {
+      const t = e.event_type || 'Other';
+      if (!byType[t]) byType[t] = [];
+      byType[t].push(e);
+    });
+
+    const types = Object.keys(byType).sort();
+    const tabTypes = ['all', ...types];
+
+    let html = '<div class="ocsf-tabs">';
+    tabTypes.forEach(t => {
+      const cnt = t === 'all' ? evidence.length : byType[t].length;
+      const active = t === _ocsfActiveTab ? 'active' : '';
+      html += `<div class="ocsf-tab ${active}" onclick="switchOcsfTab('${esc(t)}','${esc(incidentId)}')">${esc(t === 'all' ? 'All' : t)} <span class="tab-count">${cnt}</span></div>`;
+    });
+    html += '</div>';
+
+    const filtered = _ocsfActiveTab === 'all' ? evidence : (byType[_ocsfActiveTab] || []);
+    html += `<table style="font-size:12px"><thead><tr>
+      <th style="width:140px">Time</th><th>Event Type</th><th>Process</th><th>PID</th><th>User</th><th style="width:40px"></th>
+    </tr></thead><tbody>`;
+    filtered.slice(0, 200).forEach((ev, idx) => {
+      const ocsf = parseOcsfFields(ev.ocsf_json);
+      html += `<tr class="ocsf-event-row" onclick="toggleOcsfDetail(${idx})">
+        <td>${fmtTime(ev.timestamp)}</td>
+        <td>${esc(ev.event_type||'-')}</td>
+        <td>${esc(ocsf.process||'-')}</td>
+        <td>${ocsf.pid||'-'}</td>
+        <td>${esc(ocsf.user||'-')}</td>
+        <td style="color:var(--dim)">&#x25B6;</td>
+      </tr>
+      <tr><td colspan="6"><div class="ocsf-event-detail" id="ocsf-detail-${idx}">${formatOcsfJson(ev.ocsf_json)}</div></td></tr>`;
+    });
+    html += '</tbody></table>';
+    if (filtered.length > 200) html += `<div style="color:var(--dim);font-size:11px;margin-top:4px">Showing 200 of ${filtered.length} events</div>`;
+
+    container.innerHTML = html;
+  } catch(e) {
+    const container = document.getElementById('ocsfEvidence');
+    if (container) container.innerHTML = '<div style="color:var(--dim);font-size:12px">Failed to load evidence.</div>';
+  }
+}
+
+function switchOcsfTab(tab, incidentId) {
+  _ocsfActiveTab = tab;
+  loadOcsfEvidence(incidentId);
+}
+
+function toggleOcsfDetail(idx) {
+  const el = document.getElementById('ocsf-detail-' + idx);
+  if (el) el.style.display = el.style.display === 'block' ? 'none' : 'block';
+}
+
+function parseOcsfFields(jsonStr) {
+  try {
+    const o = JSON.parse(jsonStr);
+    const proc = o?.process?.name || o?.actor?.process?.name
+      || o?.process?.file?.name || o?.actor?.process?.file?.name || '';
+    const pid = o?.process?.pid || o?.actor?.process?.pid || '';
+    const user = o?.user?.name || o?.actor?.user?.name
+      || o?.user?.uid || o?.actor?.user?.uid || '';
+    return { process: proc, pid: pid, user: user };
+  } catch { return { process: '', pid: '', user: '' }; }
+}
+
+function formatOcsfJson(jsonStr) {
+  try {
+    return esc(JSON.stringify(JSON.parse(jsonStr), null, 2));
+  } catch { return esc(jsonStr || '{}'); }
+}
+
 function hideIncidentDetail() {
   if (_survPollInterval) { clearInterval(_survPollInterval); _survPollInterval = null; }
   _currentIncidentId = null;
   _currentIncidentStatus = null;
   _currentSrcChain = [];
   _currentTgtChain = [];
+  _ocsfActiveTab = 'all';
   document.getElementById('incidentDetail').classList.add('hidden');
   document.getElementById('incidentList').classList.remove('hidden');
 }
@@ -1371,7 +1689,6 @@ async function closeIncident(incidentId) {
 async function pullSurveillanceLogs(incidentId) {
   const container = document.getElementById('surveillanceLogs');
   if (_currentIncidentStatus === 'active') {
-    // Backend auto-collects for active incidents; just refresh the view
     await loadSurveillanceLogs(incidentId);
     return;
   }

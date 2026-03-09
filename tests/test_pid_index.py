@@ -191,6 +191,7 @@ class TestSelfHealing:
                     None,
                     True,
                     "Apple",
+                    None,  # start_time
                 ]
             else:
                 # Stale

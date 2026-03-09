@@ -158,6 +158,33 @@ CREATE TABLE IF NOT EXISTS disabled_sigma_rules (
     disabled_at INTEGER NOT NULL,
     disabled_by TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS incident_ocsf_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    original_ledger_id INTEGER NOT NULL,
+    timestamp REAL NOT NULL,
+    event_type TEXT NOT NULL,
+    ocsf_json TEXT NOT NULL,
+    ingested_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ocsf_evidence_dedup
+    ON incident_ocsf_evidence (incident_id, agent_id, original_ledger_id);
+CREATE INDEX IF NOT EXISTS idx_ocsf_evidence_incident
+    ON incident_ocsf_evidence (incident_id);
+
+CREATE TABLE IF NOT EXISTS incident_diamond_assessments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id TEXT NOT NULL,
+    assessment_json TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    assessed_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_diamond_incident
+    ON incident_diamond_assessments (incident_id);
 """
 
 _DEFAULT_SETTINGS: dict[str, str] = {
@@ -864,6 +891,85 @@ class SettingsDB:
             ),
         )
         conn.commit()
+
+    # ── OCSF Evidence Storage ──
+
+    def upsert_ocsf_evidence(self, incident_id: str, agent_id: str, records: list[dict]) -> int:
+        """Insert OCSF evidence records, deduplicating via original_ledger_id.
+
+        Returns count of newly inserted rows.
+        """
+        conn = self._conn()
+        now = int(time.time())
+        rows_before = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM incident_ocsf_evidence WHERE incident_id = ?",
+            (incident_id,),
+        ).fetchone()["cnt"]
+        conn.executemany(
+            "INSERT OR IGNORE INTO incident_ocsf_evidence "
+            "(incident_id, agent_id, original_ledger_id, timestamp, event_type, ocsf_json, ingested_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    incident_id, agent_id,
+                    r.get("id", 0),
+                    r.get("timestamp", 0),
+                    r.get("event_type", ""),
+                    r.get("ocsf_json", "{}"),
+                    now,
+                )
+                for r in records
+            ],
+        )
+        conn.commit()
+        rows_after = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM incident_ocsf_evidence WHERE incident_id = ?",
+            (incident_id,),
+        ).fetchone()["cnt"]
+        return rows_after - rows_before
+
+    def get_ocsf_evidence(self, incident_id: str, limit: int = 500) -> list[dict]:
+        """Get OCSF evidence for an incident, ordered by timestamp DESC."""
+        rows = self._conn().execute(
+            "SELECT id, incident_id, agent_id, original_ledger_id, timestamp, "
+            "event_type, ocsf_json, ingested_at "
+            "FROM incident_ocsf_evidence WHERE incident_id = ? "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (incident_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Diamond Assessment Storage ──
+
+    def save_diamond_assessment(
+        self,
+        incident_id: str,
+        assessment_json: str,
+        model_name: str,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+    ) -> None:
+        """Store a Diamond Model assessment for an incident."""
+        conn = self._conn()
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO incident_diamond_assessments "
+            "(incident_id, assessment_json, model_name, prompt_tokens, completion_tokens, assessed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (incident_id, assessment_json, model_name, prompt_tokens, completion_tokens, now),
+        )
+        conn.commit()
+
+    def get_latest_diamond_assessment(self, incident_id: str) -> dict | None:
+        """Get the most recent Diamond assessment for an incident."""
+        row = self._conn().execute(
+            "SELECT id, incident_id, assessment_json, model_name, "
+            "prompt_tokens, completion_tokens, assessed_at "
+            "FROM incident_diamond_assessments WHERE incident_id = ? "
+            "ORDER BY assessed_at DESC LIMIT 1",
+            (incident_id,),
+        ).fetchone()
+        return dict(row) if row else None
 
     def has_pending_xdr_query(self, finding_id: str, query_type: str) -> bool:
         """Check if there's a pending XDR query for this finding_id and query_type."""

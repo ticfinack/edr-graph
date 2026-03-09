@@ -56,3 +56,8 @@ class ServerSettings(BaseModel):
     intel_refresh_hours: float = Field(
         default_factory=lambda: float(os.environ.get("INTEL_REFRESH_HOURS", "4"))
     )
+
+    # DeepInfra LLM (Diamond Model analysis)
+    deepinfra_api_key: str = Field(default_factory=lambda: os.environ.get("DEEPINFRA_API_KEY", ""))
+    deepinfra_base_url: str = Field(default_factory=lambda: os.environ.get("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai"))
+    deepinfra_model: str = Field(default_factory=lambda: os.environ.get("DEEPINFRA_MODEL", "google/gemma-3-27b-it"))

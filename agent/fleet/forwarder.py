@@ -345,8 +345,14 @@ class FleetForwarder:
                         "query_id": q["query_id"],
                         "result": result,
                     })
+                    logger.info(
+                        "Federated query %s (%s) completed, %d records",
+                        q.get("query_id", "?")[:8],
+                        q.get("query_type", "?"),
+                        len(result.get("records", [])) if isinstance(result, dict) else 0,
+                    )
                 except Exception:
-                    logger.debug("Federated query %s failed", q.get("query_id"), exc_info=True)
+                    logger.warning("Federated query %s (%s) failed", q.get("query_id", "?")[:8], q.get("query_type", "?"), exc_info=True)
 
         # Extract and distribute suppressions to IOC database
         suppressions = overrides.pop("suppressions", [])
@@ -378,6 +384,7 @@ class FleetForwarder:
         # Collect completed federated query results
         query_results_json = ""
         if self._pending_results:
+            logger.info("Sending %d federated query results to fleet", len(self._pending_results))
             query_results_json = json.dumps(self._pending_results)
             self._pending_results.clear()
 

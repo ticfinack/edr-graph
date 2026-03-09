@@ -20,39 +20,280 @@ def _build_chain_from_xdr_records(
 ) -> list[dict]:
     """Build a chain from federated XDR query results.
 
-    Natural order (reverse=False): USER → PROCESS → IP
+    Natural order (reverse=False): USER → PROCESS(es) → IP
         Used for source chains (outbound — shows who initiated).
-    Reversed order (reverse=True): IP → PROCESS → USER
+    Reversed order (reverse=True): IP → PROCESS(es) → USER
         Used for target chains (inbound — flow enters from pivot IP).
+
+    Processes are deduplicated by PID and always in causal order
+    (timestamp ASC — parent processes before child processes).
     """
-    steps: list[dict] = []
-    # User
+    # ── Extract user ──
+    username = ""
     for rec in records:
-        if rec.get("username"):
-            steps.append({"entity_type": "user", "entity_id": rec["username"],
-                          "entity_name": rec["username"], "pid": 0, "timestamp": 0})
+        if rec.get("username") and rec["username"] != "None":
+            username = rec["username"]
             break
-    # Unique processes
-    seen: set[str] = set()
+    user_step = {"entity_type": "user", "entity_id": username or "unknown",
+                 "entity_name": username or "unknown", "pid": 0,
+                 "username": username, "timestamp": 0}
+
+    # ── Extract unique processes, dedup by PID ──
+    seen_pids: set[int] = set()
+    proc_steps: list[dict] = []
     for rec in records:
         p = rec.get("process_name")
-        if p and p not in seen:
-            steps.append({"entity_type": "process", "entity_id": p,
-                          "entity_name": p, "pid": rec.get("pid", 0), "timestamp": 0})
-            seen.add(p)
-    # Remote IP
+        pid = rec.get("pid")
+        if p and pid and pid not in seen_pids:
+            seen_pids.add(pid)
+            ts = rec.get("timestamp") or 0
+            try:
+                ts = float(ts)
+            except (ValueError, TypeError):
+                ts = 0
+            proc_steps.append({
+                "entity_type": "process", "entity_id": p,
+                "entity_name": p, "pid": pid,
+                "cmd_line": rec.get("cmd_line", ""),
+                "username": rec.get("username", ""),
+                "timestamp": ts,
+            })
+    # Always sort processes in causal order (oldest/parent first)
+    proc_steps.sort(key=lambda s: s["timestamp"])
+
+    # ── Extract remote IP ──
+    ip_step = None
     for rec in records:
         if rec.get("from_ip"):
-            steps.append({"entity_type": "ip", "entity_id": rec["from_ip"],
-                          "entity_name": rec["from_ip"], "pid": 0, "timestamp": 0})
+            ip_step = {"entity_type": "ip", "entity_id": rec["from_ip"],
+                       "entity_name": rec["from_ip"], "pid": 0, "timestamp": 0}
             break
 
+    # ── Assemble chain ──
     if reverse:
-        steps.reverse()
+        # Target chain: IP → authenticating_process → USER → child processes
+        # The USER step goes after the first process that established the
+        # identity (e.g. sshd authenticates as root BEFORE spawning bash).
+        steps = []
+        if ip_step:
+            steps.append(ip_step)
+        inserted_user = False
+        for ps in proc_steps:
+            steps.append(ps)
+            if not inserted_user and ps.get("username") == username and username:
+                steps.append(user_step)
+                inserted_user = True
+        if not inserted_user:
+            steps.append(user_step)
+    else:
+        # Source chain: USER → processes (causal order) → IP
+        steps = [user_step]
+        steps.extend(proc_steps)
+        if ip_step:
+            steps.append(ip_step)
 
-    # Assign step_index after ordering
+    # Assign step_index
     for i, step in enumerate(steps):
         step["step_index"] = i
+    return steps
+
+
+def _build_chain_from_ocsf_evidence(
+    ocsf_rows: list[dict],
+    target_agent_id: str,
+    pivot_ips: list[str],
+) -> list[dict] | None:
+    """Build a target chain from OCSF ledger evidence.
+
+    Fallback when lateral_victim_trace returns empty — reconstructs
+    the target-side process chain from raw Authentication, NetworkActivity,
+    and ProcessActivity events stored in incident_ocsf_evidence.
+
+    Temporal guardrails prevent PID-reuse collisions:
+    - Events are processed in chronological order (timestamp ASC)
+    - Anchor events set a time floor; child processes must occur after
+    - Parent-child relationships are validated temporally (child >= parent)
+
+    Returns chain in target order: IP → PROCESS(es) → USER, or None.
+    """
+    if not ocsf_rows or not pivot_ips:
+        return None
+
+    pivot_set = set(pivot_ips)
+
+    # ── 1. Filter to target agent, parse JSON, sort chronologically ──
+    target_events: list[dict] = []
+    for row in ocsf_rows:
+        if row.get("agent_id") != target_agent_id:
+            continue
+        try:
+            evt = json.loads(row["ocsf_json"])
+            evt["_event_type"] = row.get("event_type", "")
+            evt["_timestamp"] = float(row.get("timestamp", 0) or 0)
+            target_events.append(evt)
+        except (json.JSONDecodeError, KeyError, ValueError):
+            continue
+
+    if not target_events:
+        return None
+
+    # TEMPORAL GUARDRAIL #1: chronological sort (oldest first)
+    target_events.sort(key=lambda e: e["_timestamp"])
+
+    # ── 2. Find anchor events: Auth/Net with src_endpoint.ip matching pivot ──
+    anchor_pids: dict[int, float] = {}   # pid → timestamp
+    anchor_pid_users: dict[int, str] = {}  # pid → username (from auth events)
+    anchor_user = ""
+    anchor_ip = ""
+    anchor_ts: float = 0.0               # time floor for children
+
+    for evt in target_events:
+        etype = evt.get("_event_type", "")
+        src_ip = ""
+        try:
+            src_ip = evt.get("src_endpoint", {}).get("ip", "")
+        except AttributeError:
+            pass
+
+        if src_ip not in pivot_set:
+            continue
+
+        if not anchor_ip:
+            anchor_ip = src_ip
+
+        auth_username = ""
+        if etype in ("Authentication", "authentication"):
+            try:
+                auth_username = evt.get("user", {}).get("name", "")
+            except AttributeError:
+                pass
+            if auth_username and not anchor_user:
+                anchor_user = auth_username
+
+        if etype in ("Authentication", "authentication",
+                     "NetworkActivity", "network_activity"):
+            proc = evt.get("process") or {}
+            pid = proc.get("pid")
+            evt_ts = evt["_timestamp"]
+            if pid and isinstance(pid, int) and pid > 0:
+                anchor_pids[pid] = evt_ts
+                if auth_username:
+                    anchor_pid_users[pid] = auth_username
+                # Record earliest anchor time
+                if anchor_ts == 0.0 or evt_ts < anchor_ts:
+                    anchor_ts = evt_ts
+
+    if not anchor_pids and not anchor_user:
+        return None
+
+    # ── 3. Walk ProcessActivity for child processes (temporally bounded) ──
+    # proc_map: pid → {pid, name, cmd_line, timestamp, username}
+    proc_map: dict[int, dict] = {}
+
+    # Seed with anchor processes
+    for evt in target_events:
+        proc = evt.get("process") or {}
+        pid = proc.get("pid")
+        if pid and isinstance(pid, int) and pid in anchor_pids:
+            if pid not in proc_map:
+                proc_map[pid] = {
+                    "pid": pid,
+                    "name": proc.get("name", ""),
+                    "cmd_line": proc.get("cmd_line", ""),
+                    "timestamp": anchor_pids[pid],
+                    "username": anchor_pid_users.get(pid, ""),
+                }
+
+    # known_pids maps pid → timestamp (for temporal parent-child validation)
+    known_pids: dict[int, float] = dict(anchor_pids)
+
+    # Iterate chronologically-sorted events; single pass suffices because
+    # events are already in time order — a parent always appears before
+    # its children.
+    for evt in target_events:
+        etype = evt.get("_event_type", "")
+        if etype not in ("ProcessActivity", "process_activity"):
+            continue
+        proc = evt.get("process") or {}
+        pid = proc.get("pid")
+        ppid = proc.get("parent_pid")
+        evt_ts = evt["_timestamp"]
+
+        if not (pid and isinstance(pid, int) and pid > 0):
+            continue
+        if ppid not in known_pids:
+            continue
+        if pid in known_pids:
+            continue
+
+        parent_ts = known_pids[ppid]
+
+        # TEMPORAL GUARDRAIL #2: child must occur at or after anchor
+        if evt_ts < anchor_ts:
+            continue
+        # TEMPORAL GUARDRAIL #3: child must occur at or after parent
+        if evt_ts < parent_ts:
+            continue
+
+        known_pids[pid] = evt_ts
+        proc_map[pid] = {
+            "pid": pid,
+            "name": proc.get("name", ""),
+            "cmd_line": proc.get("cmd_line", ""),
+            "timestamp": evt_ts,
+            "username": "",
+        }
+        try:
+            uname = evt.get("actor", {}).get("user", {}).get("name", "")
+            if uname:
+                proc_map[pid]["username"] = uname
+                if not anchor_user:
+                    anchor_user = uname
+        except AttributeError:
+            pass
+
+    # ── 4. Build chain: IP → processes (causal order) → USER ──
+    steps: list[dict] = []
+
+    # IP step
+    ip_addr = anchor_ip or (pivot_ips[0] if pivot_ips else "")
+    if ip_addr:
+        steps.append({
+            "entity_type": "ip", "entity_id": ip_addr,
+            "entity_name": ip_addr, "pid": 0, "timestamp": 0,
+        })
+
+    # Process steps sorted by timestamp (parent before child)
+    proc_steps = sorted(proc_map.values(), key=lambda p: p["timestamp"])
+    inserted_user = False
+    for ps in proc_steps:
+        steps.append({
+            "entity_type": "process",
+            "entity_id": ps.get("name", ""),
+            "entity_name": ps.get("name", ""),
+            "pid": ps["pid"],
+            "cmd_line": ps.get("cmd_line", ""),
+            "timestamp": ps["timestamp"],
+        })
+        if not inserted_user and anchor_user and ps.get("username") == anchor_user:
+            steps.append({
+                "entity_type": "user", "entity_id": anchor_user,
+                "entity_name": anchor_user, "pid": 0, "timestamp": 0,
+            })
+            inserted_user = True
+
+    if not inserted_user and anchor_user:
+        steps.append({
+            "entity_type": "user", "entity_id": anchor_user,
+            "entity_name": anchor_user, "pid": 0, "timestamp": 0,
+        })
+
+    if len(steps) <= 1:
+        return None
+
+    for i, step in enumerate(steps):
+        step["step_index"] = i
+
     return steps
 
 
@@ -413,40 +654,58 @@ class Neo4jClient:
         """
         with self._driver.session() as session:
             # ── Phase 0: Check for persisted Incident chains ──
+            # Use the FINDING's own chain as source_chain (per-finding),
+            # fall back to incident-level HAS_SOURCE_CHAIN only if finding has none.
+            # Always use the incident's HAS_TARGET_CHAIN for the target side.
             phase0_query = """
             MATCH (inc:Incident)-[:SOURCE_FINDING]->(f:Finding {finding_id: $finding_id})
+            // Per-finding chain (specific to this finding)
+            OPTIONAL MATCH (f)-[:HAS_CHAIN]->(fc:ChainNode)
+            WITH inc, f, fc ORDER BY fc.step_index
+            WITH inc, f, collect(CASE WHEN fc IS NOT NULL THEN {
+                entity_type: fc.entity_type, entity_id: fc.entity_id,
+                entity_name: fc.entity_name, pid: fc.pid,
+                timestamp: fc.timestamp, step_index: fc.step_index
+            } END) AS finding_chain_raw
+            // Incident-level source chain (fallback)
             OPTIONAL MATCH (inc)-[:HAS_SOURCE_CHAIN]->(sc:ChainNode)
-            WITH inc, sc ORDER BY sc.step_index
-            WITH inc, collect(CASE WHEN sc IS NOT NULL THEN {
+            WITH inc, f, finding_chain_raw, sc ORDER BY sc.step_index
+            WITH inc, f, finding_chain_raw, collect(CASE WHEN sc IS NOT NULL THEN {
                 entity_type: sc.entity_type, entity_id: sc.entity_id,
                 entity_name: sc.entity_name, pid: sc.pid,
                 timestamp: sc.timestamp, step_index: sc.step_index
-            } END) AS source_chain_raw
+            } END) AS incident_source_raw
+            // Incident-level target chain
             OPTIONAL MATCH (inc)-[:HAS_TARGET_CHAIN]->(tc:ChainNode)
-            WITH inc, source_chain_raw, tc ORDER BY tc.step_index
-            WITH inc, source_chain_raw, collect(CASE WHEN tc IS NOT NULL THEN {
+            WITH inc, f, finding_chain_raw, incident_source_raw, tc ORDER BY tc.step_index
+            WITH inc, f, finding_chain_raw, incident_source_raw, collect(CASE WHEN tc IS NOT NULL THEN {
                 entity_type: tc.entity_type, entity_id: tc.entity_id,
                 entity_name: tc.entity_name, pid: tc.pid,
                 timestamp: tc.timestamp, step_index: tc.step_index
             } END) AS target_chain_raw
-            WHERE size([s IN source_chain_raw WHERE s IS NOT NULL]) > 0
-               OR size([t IN target_chain_raw WHERE t IS NOT NULL]) > 0
+            WITH inc, f,
+                 [s IN finding_chain_raw WHERE s IS NOT NULL] AS finding_chain,
+                 [s IN incident_source_raw WHERE s IS NOT NULL] AS incident_source,
+                 [t IN target_chain_raw WHERE t IS NOT NULL] AS target_chain
+            WHERE size(finding_chain) > 0 OR size(incident_source) > 0 OR size(target_chain) > 0
             OPTIONAL MATCH (src:Host {agent_id: inc.src_agent_id})
             OPTIONAL MATCH (dst:Host {agent_id: inc.dst_agent_id})
-            OPTIONAL MATCH (inc)-[:SOURCE_FINDING]->(sf:Finding)
+            OPTIONAL MATCH (h:Host)-[:GENERATED]->(f)
             RETURN inc.incident_id AS incident_id,
                    inc.src_agent_id AS src_agent_id,
-                   src.hostname AS src_hostname,
+                   COALESCE(src.hostname, h.hostname) AS src_hostname,
                    inc.dst_agent_id AS dst_agent_id,
                    dst.hostname AS dst_hostname,
                    inc.pivot_ip AS pivot_ip,
-                   sf.finding_id AS finding_id,
-                   sf.title AS title,
-                   sf.severity AS severity,
-                   sf.timestamp AS timestamp,
-                   sf.description AS description,
-                   [s IN source_chain_raw WHERE s IS NOT NULL] AS source_chain,
-                   [t IN target_chain_raw WHERE t IS NOT NULL] AS target_chain
+                   f.finding_id AS finding_id,
+                   f.title AS title,
+                   f.severity AS severity,
+                   f.timestamp AS timestamp,
+                   f.description AS description,
+                   // Prefer finding's own chain; fall back to incident source chain
+                   CASE WHEN size(finding_chain) > 0 THEN finding_chain
+                        ELSE incident_source END AS source_chain,
+                   target_chain
             LIMIT 1
             """
             p0_result = session.run(phase0_query, {"finding_id": finding_id})
@@ -594,16 +853,39 @@ class Neo4jClient:
                 if xdr_chain:
                     target_chain = xdr_chain
                 elif "target_chain_pending" not in data:
-                    # Final fallback: just the pivot IP
-                    pivot_ip = data.get("pivot_ip") or ""
-                    target_chain = []
-                    if pivot_ip:
-                        target_chain.append(
-                            {"entity_type": "ip", "entity_id": pivot_ip,
-                             "entity_name": pivot_ip, "pid": 0,
-                             "timestamp": 0, "step_index": 0},
+                    # ── Phase 2B fallback: OCSF synthetic chain ──
+                    ocsf_chain = None
+                    incident_id = None
+                    if settings_db:
+                        incident_id = self._get_incident_id_for_finding(
+                            session, finding_id,
                         )
-                    data["target_chain_inferred"] = True
+                        if incident_id:
+                            ocsf_rows = settings_db.get_ocsf_evidence(incident_id)
+                            if ocsf_rows:
+                                ocsf_chain = _build_chain_from_ocsf_evidence(
+                                    ocsf_rows, dst_agent_id,
+                                    src_ip_addresses,
+                                )
+                    if ocsf_chain:
+                        target_chain = ocsf_chain
+                        data["target_chain_ocsf_synthetic"] = True
+                        # Persist so Phase 0 serves it instantly on next load
+                        if incident_id:
+                            self.persist_incident_chains(
+                                incident_id, [], target_chain,
+                            )
+                    else:
+                        # Final fallback: just the pivot IP
+                        pivot_ip = data.get("pivot_ip") or ""
+                        target_chain = []
+                        if pivot_ip:
+                            target_chain.append(
+                                {"entity_type": "ip", "entity_id": pivot_ip,
+                                 "entity_name": pivot_ip, "pid": 0,
+                                 "timestamp": 0, "step_index": 0},
+                            )
+                        data["target_chain_inferred"] = True
 
             # ── Phase 2C: Federated XDR query for source chain ──
             # If Phase 1 returned no chain for the source (chain data
@@ -1130,6 +1412,16 @@ class Neo4jClient:
         with self._driver.session() as session:
             return self._extract_finding_port(session, finding_id)
 
+    def _get_incident_id_for_finding(self, session, finding_id: str) -> str | None:
+        """Look up the incident_id that owns a given finding."""
+        result = session.run(
+            "MATCH (inc:Incident)-[:SOURCE_FINDING]->(f:Finding {finding_id: $fid}) "
+            "RETURN inc.incident_id AS incident_id LIMIT 1",
+            {"fid": finding_id},
+        )
+        record = result.single()
+        return record["incident_id"] if record else None
+
     # ── Incident management ──
 
     def check_finding_for_lateral_movement(self, agent_id: str, finding_id: str) -> list[dict]:
@@ -1161,6 +1453,8 @@ class Neo4jClient:
     def check_finding_for_follow_on(self, agent_id: str, finding_id: str) -> list[str]:
         """Link finding to active incidents where this agent is the target.
 
+        Only links medium+ severity findings to avoid polluting incidents
+        with noise (info/low findings).
         Creates FOLLOW_ON relationships and bumps updated_at.
         Returns list of incident_ids that were linked.
         """
@@ -1168,6 +1462,7 @@ class Neo4jClient:
         MATCH (inc:Incident {dst_agent_id: $agent_id})
         WHERE inc.status = 'active'
         MATCH (f:Finding {finding_id: $finding_id})
+        WHERE f.severity IN ['medium', 'high', 'critical']
         MERGE (inc)-[:FOLLOW_ON]->(f)
         SET inc.updated_at = $now
         RETURN inc.incident_id AS incident_id
@@ -1179,6 +1474,159 @@ class Neo4jClient:
                 "now": int(time.time()),
             })
             return [record["incident_id"] for record in result]
+
+    def find_active_campaign(
+        self,
+        agent_ids: list[str],
+        ips: list[str],
+        window_hours: int = 12,
+    ) -> str | None:
+        """Find an active incident/campaign that overlaps with the given agents or IPs.
+
+        Returns the incident_id if found, None otherwise.
+        """
+        cutoff = int(time.time()) - (window_hours * 3600)
+        query = """
+        MATCH (inc:Incident)
+        WHERE inc.status IN ['detected', 'sweeping', 'active']
+          AND inc.created_at > $cutoff
+          AND (inc.src_agent_id IN $agent_ids
+               OR inc.dst_agent_id IN $agent_ids
+               OR inc.pivot_ip IN $ips)
+        RETURN inc.incident_id AS incident_id
+        ORDER BY inc.created_at DESC
+        LIMIT 1
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {
+                "cutoff": cutoff,
+                "agent_ids": agent_ids,
+                "ips": ips,
+            })
+            record = result.single()
+            return record["incident_id"] if record else None
+
+    def append_finding_to_incident(
+        self,
+        incident_id: str,
+        finding_id: str,
+        src_agent_id: str,
+        dst_agent_id: str,
+        pivot_ip: str,
+    ) -> None:
+        """Append a finding to an existing incident/campaign.
+
+        Creates SOURCE_FINDING rel, INVOLVES_HOST for new hosts,
+        PIVOT_VIA for new IPs, and bumps updated_at.
+        """
+        now = int(time.time())
+        with self._driver.session() as session:
+            # Link finding
+            session.run(
+                """
+                MATCH (inc:Incident {incident_id: $incident_id})
+                MATCH (f:Finding {finding_id: $finding_id})
+                MERGE (inc)-[:SOURCE_FINDING]->(f)
+                SET inc.updated_at = $now
+                """,
+                {"incident_id": incident_id, "finding_id": finding_id, "now": now},
+            )
+            # INVOLVES_HOST for src
+            session.run(
+                """
+                MATCH (inc:Incident {incident_id: $incident_id})
+                OPTIONAL MATCH (h:Host {agent_id: $agent_id})
+                FOREACH (_ IN CASE WHEN h IS NOT NULL THEN [1] ELSE [] END |
+                    MERGE (inc)-[:INVOLVES_HOST]->(h)
+                )
+                """,
+                {"incident_id": incident_id, "agent_id": src_agent_id},
+            )
+            # INVOLVES_HOST for dst (if different)
+            if dst_agent_id and dst_agent_id != src_agent_id:
+                session.run(
+                    """
+                    MATCH (inc:Incident {incident_id: $incident_id})
+                    OPTIONAL MATCH (h:Host {agent_id: $agent_id})
+                    FOREACH (_ IN CASE WHEN h IS NOT NULL THEN [1] ELSE [] END |
+                        MERGE (inc)-[:INVOLVES_HOST]->(h)
+                    )
+                    """,
+                    {"incident_id": incident_id, "agent_id": dst_agent_id},
+                )
+            # PIVOT_VIA for new IP (skip if empty — vertical movement)
+            if pivot_ip:
+                session.run(
+                    """
+                    MATCH (inc:Incident {incident_id: $incident_id})
+                    MERGE (ip:IP {address: $pivot_ip})
+                    MERGE (inc)-[:PIVOT_VIA]->(ip)
+                    """,
+                    {"incident_id": incident_id, "pivot_ip": pivot_ip},
+                )
+            # Upgrade to campaign if incident now has both lateral and vertical findings
+            session.run(
+                """
+                MATCH (inc:Incident {incident_id: $incident_id})
+                WHERE inc.incident_type <> 'campaign'
+                WITH inc
+                OPTIONAL MATCH (inc)-[:SOURCE_FINDING]->(f:Finding)-[:INVOLVES_IP]->(ip:IP)
+                MATCH (inc)-[:INVOLVES_HOST]->(h:Host)
+                WITH inc, count(DISTINCT h) AS host_count
+                WHERE host_count > 2
+                SET inc.incident_type = 'campaign'
+                """,
+                {"incident_id": incident_id},
+            )
+        logger.info("Appended finding %s to incident %s", finding_id, incident_id)
+
+    def check_finding_for_vertical_movement(self, agent_id: str, finding_id: str) -> list[dict]:
+        """Check if a finding contains privilege escalation (user context change).
+
+        Returns list of {agent_id, hostname, original_user, escalated_user}.
+        """
+        query = """
+        MATCH (h:Host {agent_id: $agent_id})-[:GENERATED]->(f:Finding {finding_id: $finding_id})
+              -[:HAS_CHAIN]->(c1:ChainNode)
+        WHERE c1.entity_type = 'user'
+        MATCH (f)-[:HAS_CHAIN]->(c2:ChainNode)
+        WHERE c2.entity_type = 'user'
+          AND c2.step_index > c1.step_index
+          AND c2.entity_id <> c1.entity_id
+          AND (c2.entity_name = 'root' OR c2.entity_id = '0')
+        RETURN h.agent_id AS agent_id,
+               h.hostname AS hostname,
+               c1.entity_name AS original_user,
+               c2.entity_name AS escalated_user
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"agent_id": agent_id, "finding_id": finding_id})
+            return [dict(record) for record in result]
+
+    def store_incident_diamond_assessment(self, incident_id: str, assessment: dict) -> None:
+        """Store Diamond assessment JSON on the Incident node."""
+        now = int(time.time())
+        query = """
+        MATCH (inc:Incident {incident_id: $incident_id})
+        SET inc.diamond_assessment_json = $assessment_json,
+            inc.diamond_assessed_at = $now
+        """
+        with self._driver.session() as session:
+            session.run(query, {
+                "incident_id": incident_id,
+                "assessment_json": json.dumps(assessment),
+                "now": now,
+            })
+
+    def get_incident_involved_agents(self, incident_id: str) -> list[str]:
+        """Get agent IDs for all hosts involved in an incident."""
+        query = """
+        MATCH (inc:Incident {incident_id: $incident_id})-[:INVOLVES_HOST]->(h:Host)
+        RETURN h.agent_id AS agent_id
+        """
+        with self._driver.session() as session:
+            result = session.run(query, {"incident_id": incident_id})
+            return [record["agent_id"] for record in result]
 
     def has_incident_for_finding(self, finding_id: str, pivot_ip: str) -> bool:
         """Check if an incident already exists for this finding+pivot_ip combo."""
@@ -1382,12 +1830,11 @@ class Neo4jClient:
             return [dict(record) for record in result]
 
     def get_incident_detail(self, incident_id: str) -> dict | None:
-        """Full incident detail with chains and follow-on findings."""
+        """Full incident detail with chains, findings, involved hosts, and Diamond assessment."""
         with self._driver.session() as session:
             # Base info
             base_query = """
             MATCH (inc:Incident {incident_id: $incident_id})
-            OPTIONAL MATCH (inc)-[:SOURCE_FINDING]->(sf:Finding)
             OPTIONAL MATCH (src:Host {agent_id: inc.src_agent_id})
             OPTIONAL MATCH (dst:Host {agent_id: inc.dst_agent_id})
             RETURN inc.incident_id AS incident_id,
@@ -1400,15 +1847,45 @@ class Neo4jClient:
                    inc.pivot_ip AS pivot_ip,
                    inc.created_at AS created_at,
                    inc.updated_at AS updated_at,
-                   sf.finding_id AS source_finding_id,
-                   sf.title AS source_finding_title,
-                   sf.severity AS source_finding_severity
+                   inc.diamond_assessment_json AS diamond_assessment_json,
+                   inc.diamond_assessed_at AS diamond_assessed_at
             """
             result = session.run(base_query, {"incident_id": incident_id})
             record = result.single()
             if not record:
                 return None
             data = dict(record)
+
+            # All source findings (campaign may have multiple)
+            sf_query = """
+            MATCH (inc:Incident {incident_id: $incident_id})-[:SOURCE_FINDING]->(sf:Finding)
+            OPTIONAL MATCH (h:Host)-[:GENERATED]->(sf)
+            RETURN sf.finding_id AS finding_id, sf.title AS title,
+                   sf.severity AS severity, sf.timestamp AS timestamp,
+                   h.hostname AS hostname, h.agent_id AS agent_id
+            ORDER BY sf.timestamp ASC
+            """
+            sf_result = session.run(sf_query, {"incident_id": incident_id})
+            source_findings = [dict(r) for r in sf_result]
+            data["source_findings"] = source_findings
+            # Back-compat: expose first finding as source_finding_*
+            if source_findings:
+                data["source_finding_id"] = source_findings[0]["finding_id"]
+                data["source_finding_title"] = source_findings[0]["title"]
+                data["source_finding_severity"] = source_findings[0]["severity"]
+            else:
+                data["source_finding_id"] = None
+                data["source_finding_title"] = None
+                data["source_finding_severity"] = None
+
+            # All involved hosts
+            ih_query = """
+            MATCH (inc:Incident {incident_id: $incident_id})-[:INVOLVES_HOST]->(h:Host)
+            RETURN h.agent_id AS agent_id, h.hostname AS hostname,
+                   h.ip_addresses AS ip_addresses
+            """
+            ih_result = session.run(ih_query, {"incident_id": incident_id})
+            data["involved_hosts"] = [dict(r) for r in ih_result]
 
             # Source chain
             sc_query = """
@@ -1431,6 +1908,40 @@ class Neo4jClient:
             """
             tc_result = session.run(tc_query, {"incident_id": incident_id})
             data["target_chain"] = [dict(r) for r in tc_result]
+
+            # Per-finding chains (from Finding -[:HAS_CHAIN]-> ChainNode)
+            fc_query = """
+            MATCH (inc:Incident {incident_id: $incident_id})-[:SOURCE_FINDING]->(sf:Finding)
+            OPTIONAL MATCH (sf)-[:HAS_CHAIN]->(c:ChainNode)
+            OPTIONAL MATCH (h:Host)-[:GENERATED]->(sf)
+            RETURN sf.finding_id AS finding_id, sf.title AS title,
+                   h.hostname AS hostname,
+                   c.entity_type AS entity_type, c.entity_id AS entity_id,
+                   c.entity_name AS entity_name, c.pid AS pid,
+                   c.timestamp AS timestamp, c.step_index AS step_index
+            ORDER BY sf.timestamp ASC, c.step_index ASC
+            """
+            fc_result = session.run(fc_query, {"incident_id": incident_id})
+            finding_chains: dict[str, dict] = {}
+            for r in fc_result:
+                fid = r["finding_id"]
+                if fid not in finding_chains:
+                    finding_chains[fid] = {
+                        "finding_id": fid,
+                        "title": r["title"],
+                        "hostname": r["hostname"],
+                        "chain": [],
+                    }
+                if r["entity_type"]:
+                    finding_chains[fid]["chain"].append({
+                        "entity_type": r["entity_type"],
+                        "entity_id": r["entity_id"],
+                        "entity_name": r["entity_name"],
+                        "pid": r["pid"],
+                        "timestamp": r["timestamp"],
+                        "step_index": r["step_index"],
+                    })
+            data["finding_chains"] = list(finding_chains.values())
 
             # Follow-on findings
             fo_query = """

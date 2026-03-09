@@ -195,11 +195,12 @@ class TestXdrOrchestrator:
         orch = self._make_orchestrator(neo4j=neo4j, settings_db=sdb)
         orch._process_detected()
 
-        # Should enqueue 2 XDR queries (victim + source)
-        assert sdb.enqueue_xdr_query.call_count == 2
+        # Should enqueue 4 XDR queries (victim + source + 2 OCSF pulls)
+        assert sdb.enqueue_xdr_query.call_count == 4
         qtypes = [c[0][3] for c in sdb.enqueue_xdr_query.call_args_list]
         assert "lateral_victim_trace" in qtypes
         assert "lateral_source_trace" in qtypes
+        assert qtypes.count("pull_ocsf_ledger") == 2
 
         # Victim trace on TARGET agent
         victim_call = [c for c in sdb.enqueue_xdr_query.call_args_list if c[0][3] == "lateral_victim_trace"][0]
@@ -244,12 +245,9 @@ class TestXdrOrchestrator:
         orch = self._make_orchestrator(neo4j=neo4j, settings_db=sdb)
         orch._process_sweeping()
 
-        neo4j.persist_incident_chains.assert_called_once()
-        args = neo4j.persist_incident_chains.call_args[0]
-        assert args[0] == "inc-002"
-        # source_chain and target_chain should have steps
-        assert len(args[1]) > 0  # source chain
-        assert len(args[2]) > 0  # target chain
+        # Incident-level chains are NOT synthesized from flat XDR records
+        # (per-finding chains are the authoritative chain data)
+        neo4j.persist_incident_chains.assert_not_called()
         neo4j.update_incident_status.assert_called_with("inc-002", "active")
 
     def test_sweeping_to_active_on_timeout(self):
@@ -352,7 +350,8 @@ class TestPortCorrelation:
         orch = self._make_orchestrator(neo4j=neo4j, settings_db=sdb)
         orch._process_detected()
 
-        assert sdb.enqueue_xdr_query.call_count == 2
+        # 4 queries: victim + source + 2 OCSF pulls
+        assert sdb.enqueue_xdr_query.call_count == 4
 
         # Check victim trace params include target_port
         victim_call = [c for c in sdb.enqueue_xdr_query.call_args_list
@@ -461,6 +460,7 @@ class TestPortCorrelation:
         neo4j.check_finding_for_lateral_movement.return_value = [
             {"dst_agent_id": "agent-target", "dst_hostname": "target-host", "pivot_ip": "10.0.0.20"},
         ]
+        neo4j.find_active_campaign.return_value = None
         neo4j.has_incident_for_finding.return_value = False
         neo4j.check_finding_for_follow_on.return_value = []
         neo4j.extract_finding_port.return_value = 22
@@ -469,6 +469,7 @@ class TestPortCorrelation:
 
         proto_finding = MagicMock()
         proto_finding.id = "f-port-7"
+        proto_finding.severity = "high"
         request = MagicMock()
         request.agent_id = "agent-source"
         request.findings = [proto_finding]
@@ -659,12 +660,14 @@ class TestSendFindingsInlineDetection:
             {"dst_agent_id": "agent-target", "dst_hostname": "target-host", "pivot_ip": "10.0.0.20"},
         ]
         neo4j.has_incident_for_finding.return_value = False
+        neo4j.find_active_campaign.return_value = None
         neo4j.check_finding_for_follow_on.return_value = []
 
         servicer = FleetServicer(neo4j, settings_db=sdb)
 
         proto_finding = MagicMock()
         proto_finding.id = "f-001"
+        proto_finding.severity = "high"
         request = MagicMock()
         request.agent_id = "agent-source"
         request.findings = [proto_finding]
@@ -696,6 +699,7 @@ class TestSendFindingsInlineDetection:
 
         proto_finding = MagicMock()
         proto_finding.id = "f-001"
+        proto_finding.severity = "high"
         request = MagicMock()
         request.agent_id = "agent-source"
         request.findings = [proto_finding]
@@ -719,6 +723,7 @@ class TestSendFindingsInlineDetection:
 
         proto_finding = MagicMock()
         proto_finding.id = "f-010"
+        proto_finding.severity = "medium"
         request = MagicMock()
         request.agent_id = "agent-target"
         request.findings = [proto_finding]
@@ -873,6 +878,7 @@ class TestAutonomousSurveillance:
         sdb = MagicMock()
 
         neo4j.get_incidents_by_status.return_value = [self._active_incident()]
+        neo4j.get_incident_chain_pids.return_value = ([500], [800])
         # Last enqueue 30s ago — too recent
         sdb.get_surveillance_pull_state.return_value = {
             "last_enqueue_at": int(time.time()) - 30, "last_record_ts": 0.0,
@@ -937,3 +943,19 @@ class TestAutonomousSurveillance:
 
         neo4j.update_incident_status.assert_called_with("inc-surv-1", "closed")
         sdb.enqueue_xdr_query.assert_not_called()
+
+    def test_active_does_not_synthesize_incident_chains(self):
+        """Active processing does not create incident-level chains (per-finding chains are authoritative)."""
+        neo4j = MagicMock()
+        sdb = MagicMock()
+
+        neo4j.get_incidents_by_status.return_value = [self._active_incident()]
+        neo4j.get_incident_chain_pids.return_value = ([], [])
+        sdb.get_surveillance_pull_state.return_value = {
+            "last_enqueue_at": int(time.time()) - 30, "last_record_ts": 0.0,
+        }
+
+        orch = self._make_orchestrator(neo4j=neo4j, settings_db=sdb)
+        orch._process_active()
+
+        neo4j.persist_incident_chains.assert_not_called()

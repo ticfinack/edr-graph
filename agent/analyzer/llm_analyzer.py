@@ -36,6 +36,20 @@ from .tools import ToolExecutor, get_active_tools
 
 logger = logging.getLogger(__name__)
 
+# Gemma-3-27B context: 131072 tokens.  Budget:
+#   completion:  4 096 tokens
+#   tool defs:  ~5 000 tokens (11 tools)
+#   system:     ~6 000 tokens (~20 K chars)
+#   safety:      2 000 tokens
+#   ─────────────────────────
+#   user budget: ~70 000 tokens (leaving room for system prompt, tool
+#   definitions, tool call responses, and completion output).
+# Technical content (JSON, IPs, paths) tokenizes at ~2.5 chars/token,
+# so cap the **user message** at 150 K chars (~60 K tokens).
+_MAX_USER_CONTENT_CHARS = 150_000
+_MAX_COMPLETION_TOKENS = 4096
+_MAX_BATCH_EVENTS = 200
+
 
 class LlmAnalyzer:
     """Performs batch security analysis using Gemma3-27B via DeepInfra."""
@@ -85,21 +99,47 @@ class LlmAnalyzer:
             logger.warning("No DeepInfra API key configured, skipping LLM analysis")
             return []
 
+        # --- Pre-cap: limit events before the expensive context build ---
+        # On busy hosts (mp1001 w/ Docker) 1000 events can blow past 131K
+        # tokens.  Cap at 400 events to stay well within budget.
+        if len(events) > _MAX_BATCH_EVENTS:
+            logger.info(
+                "Capping batch from %d to %d events (pre-build limit)",
+                len(events),
+                _MAX_BATCH_EVENTS,
+            )
+            events = events[:_MAX_BATCH_EVENTS]
+
         # Build context and pre-enrich with tool lookups
         batch_context = self._build_batch_context(events)
         if not batch_context:
             return []
 
+        enrichment = ""
         if self._tools:
             enrichment = self._pre_enrich(events)
-            if enrichment:
-                batch_context += "\n\n" + enrichment
+
+        user_content = batch_context
+        if enrichment:
+            user_content += "\n\n" + enrichment
+
+        # --- Context window guard (safety net) ---
+        # If still over budget after pre-cap, hard-truncate the text rather
+        # than rebuilding (which is expensive due to TransientGraph queries).
+        if len(user_content) > _MAX_USER_CONTENT_CHARS:
+            logger.warning(
+                "User content too large (%d chars, ~%dk tokens), truncating to %d chars",
+                len(user_content),
+                len(user_content) // 2500,
+                _MAX_USER_CONTENT_CHARS,
+            )
+            user_content = user_content[:_MAX_USER_CONTENT_CHARS] + "\n\n[... truncated to fit context window ...]"
 
         try:
             if self._tools:
-                return self._analyze_with_tools(batch_context, events)
+                return self._analyze_with_tools(user_content, events)
             else:
-                return self._analyze_single_shot(batch_context, events)
+                return self._analyze_single_shot(user_content, events)
         except Exception:
             logger.exception("LLM analysis failed")
             return []
@@ -114,6 +154,7 @@ class LlmAnalyzer:
                 {"role": "user", "content": batch_context},
             ],
             temperature=0.1,
+            max_tokens=_MAX_COMPLETION_TOKENS,
         )
         metrics.llm_call_latency.observe(time.monotonic() - t0)
         content = response.choices[0].message.content
@@ -140,6 +181,7 @@ class LlmAnalyzer:
                 messages=messages,
                 tools=self._tools,
                 temperature=0.1,
+                max_tokens=_MAX_COMPLETION_TOKENS,
             )
             metrics.llm_call_latency.observe(time.monotonic() - t0)
             choice = response.choices[0]
@@ -209,6 +251,7 @@ class LlmAnalyzer:
             model=self._settings.deepinfra_model,
             messages=messages,
             temperature=0.1,
+            max_tokens=_MAX_COMPLETION_TOKENS,
         )
         metrics.llm_call_latency.observe(time.monotonic() - t0)
         findings = self._parse_findings(response.choices[0].message.content, events)
@@ -851,8 +894,31 @@ class LlmAnalyzer:
                         if step.pid is not None:
                             finding_pids.add(step.pid)
 
+                # ── Deterministic trigger extraction from OCSF events ──
+                trigger_pid = None
+                trigger_ts = None
+                evidence_ids = set(raw.get("evidence_event_ids") or [])
+
+                # Priority 1: Use LLM-indicated evidence events
+                if evidence_ids:
+                    for eid, event in events:
+                        if eid in evidence_ids and hasattr(event, "process") and event.process and event.process.pid:
+                            trigger_pid = event.process.pid
+                            trigger_ts = event.time
+                            break
+
+                # Priority 2: Fall back to first event with a process
+                if trigger_pid is None:
+                    for _, event in events:
+                        if hasattr(event, "process") and event.process and event.process.pid:
+                            trigger_pid = event.process.pid
+                            trigger_ts = event.time
+                            break
+
                 # Enrich chain with deep Kuzu ancestry
-                chain = self._enrich_chain_with_ancestry(chain)
+                chain = self._enrich_chain_with_ancestry(
+                    chain, trigger_pid=trigger_pid, trigger_ts=trigger_ts
+                )
 
                 # Build affected_pids: prefer LLM-provided, then chain-extracted.
                 # Filter to real ints >= 0 (PID 0 is valid on macOS).
@@ -894,6 +960,8 @@ class LlmAnalyzer:
                     chain=chain,
                     affected_pids=affected_pids,
                     iocs=iocs,
+                    trigger_pid=trigger_pid,
+                    trigger_timestamp=trigger_ts,
                 )
                 findings.append(finding)
             except Exception:
@@ -996,32 +1064,86 @@ class LlmAnalyzer:
                     )
         return chain
 
-    def _enrich_chain_with_ancestry(self, chain: list[ChainStep]) -> list[ChainStep]:
-        """Replace shallow process steps with full Kuzu parent ancestry + User."""
-        # Find the last process step with a valid PID (deepest process)
-        target_pid = None
-        for step in reversed(chain):
-            if step.entity_type == "process" and step.pid and step.pid > 0:
-                target_pid = step.pid
-                break
+    def _enrich_chain_with_ancestry(
+        self,
+        chain: list[ChainStep],
+        trigger_pid: int | None = None,
+        trigger_ts: datetime | None = None,
+    ) -> list[ChainStep]:
+        """Replace shallow process steps with full Kuzu parent ancestry + User.
+
+        Uses persistent Kuzu when available, otherwise builds a transient
+        graph from the forensic ledger for the ancestry walk.
+
+        When *trigger_pid* and *trigger_ts* are provided, they are used as the
+        deterministic anchor instead of walking the chain for the deepest PID.
+        """
+        # Use deterministic trigger_pid if provided; fall back to chain walking
+        target_pid = trigger_pid
+        if not target_pid or target_pid <= 0:
+            # Legacy fallback: walk chain for deepest process
+            for step in reversed(chain):
+                if step.entity_type == "process" and step.pid and step.pid > 0:
+                    target_pid = step.pid
+                    break
 
         if not target_pid:
             return chain
 
-        try:
-            conn = self._get_graph_conn()
-            graph_chain = get_process_chain(conn, target_pid)
-            if not graph_chain:
-                return chain
-        except Exception:
+        # Convert trigger_ts to epoch float for temporal bounding
+        event_ts = None
+        if trigger_ts is not None:
+            event_ts = trigger_ts.timestamp() if isinstance(trigger_ts, datetime) else float(trigger_ts)
+
+        graph_chain = None
+
+        # Try persistent Kuzu first
+        if self._settings.kuzu_persistent_enabled:
+            try:
+                conn = self._get_graph_conn()
+                graph_chain = get_process_chain(conn, target_pid, event_ts=event_ts)
+            except Exception:
+                pass
+
+        # Fallback: transient graph from ledger
+        if not graph_chain and self._ledger_reader is not None:
+            try:
+                import time as _time
+
+                from agent.ledger.slicer import TransientGraph
+                now = _time.time()
+                start = now - 900  # 15-min window
+                with TransientGraph(self._ledger_reader, start, now) as conn:
+                    graph_chain = get_process_chain(conn, target_pid, event_ts=event_ts)
+            except Exception:
+                pass
+
+        if not graph_chain:
             return chain
 
         enriched = graph_chain_to_chainsteps(graph_chain)
 
-        # Append non-process, non-user steps (IPs, domains, files) from original chain
+        # Build the set of PIDs present in the enriched ancestry tree.
+        # Only IOC steps whose PID belongs to this tree may be appended —
+        # anything from a disjoint process is a false causal link.
+        tree_pids: set[int] = set()
+        for step in enriched:
+            if step.pid is not None and step.pid > 0:
+                tree_pids.add(step.pid)
+
         for step in chain:
-            if step.entity_type not in ("process", "user"):
-                enriched.append(step)
+            if step.entity_type in ("process", "user"):
+                continue
+            # IOC step (ip, domain, file, etc.) — must belong to a PID in the tree
+            if step.pid is not None and step.pid > 0 and step.pid not in tree_pids:
+                logger.debug(
+                    "Discarding IOC step %s (PID %d) — not in enriched ancestry tree (tree PIDs: %s)",
+                    step.entity_name,
+                    step.pid,
+                    tree_pids,
+                )
+                continue
+            enriched.append(step)
 
         return enriched
 

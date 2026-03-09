@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 from agent.collectors.base import RawEvent
 from agent.collectors.ebpf_collector import (
-    EbpfCollector,
     _WATCHED_PREFIXES,
+    EbpfCollector,
     _parse_dns_qname,
     _resolve_username,
 )
