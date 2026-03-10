@@ -21,49 +21,109 @@ from datetime import datetime
 from agent.graph.pid_index import get_pid_index
 from agent.processor.entity_extractor import (
     ExtractedEntities,
+    _cmdline_cache,
     _name_cache,
     _ppid_cache,
     _username_cache,
+    get_container_id,
 )
-from agent.response.baseline import ResponseBlocklist, _match_chain_pattern, _match_rule
+from agent.response.baseline import ChainEntry, ResponseBlocklist, _match_chain_pattern, _match_rule
 from agent.schema.graph_types import ChainStep, SecurityFinding
 
 logger = logging.getLogger(__name__)
 
 
-def _build_chain_from_caches(pid: int, process_name: str) -> list[str]:
-    """Walk PidIndex (preferred) or entity_extractor caches to reconstruct chain names."""
+def _resolve_via_psutil(target_pid: int) -> tuple[int | None, str, str]:
+    """One-shot psutil lookup for a PID's parent, name, and cmd_line.
+
+    Updates caches on success.  Returns ``(ppid, name, cmd_line)``.
+    """
+    try:
+        import psutil
+
+        p = psutil.Process(target_pid)
+        ppid = p.ppid()
+        name = p.name() or ""
+        cmd_line = ""
+        try:
+            parts = p.cmdline()
+            if parts:
+                cmd_line = " ".join(parts)
+        except (psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+        if ppid and ppid > 0:
+            _ppid_cache[target_pid] = ppid  # overwrite stale zeros
+        if name:
+            _name_cache[target_pid] = name
+        if cmd_line:
+            _cmdline_cache[target_pid] = cmd_line
+        return (ppid if ppid and ppid > 0 else None), name, cmd_line
+    except Exception:
+        return None, "", ""
+
+
+
+
+def _build_chain_from_caches(pid: int, process_name: str) -> list[ChainEntry]:
+    """Walk PidIndex, entity_extractor caches, and psutil to build a complete chain.
+
+    Returns a list of ``ChainEntry`` objects carrying name, cmd_line, and
+    container_id for rich pattern matching (regex, cmd_line globs, etc.).
+    """
     idx = get_pid_index()
     use_index = idx.is_built
 
     seen: set[int] = set()
     current = pid
-    ancestors: list[str] = []
+    # Collect (name, cmd_line, container_id) tuples for ancestors
+    ancestors: list[tuple[str, str, str]] = []
     while current and current > 0 and current not in seen:
         seen.add(current)
-        # Try PidIndex first, fall back to entity_extractor cache
+        # Resolve parent PID: PidIndex → _ppid_cache → psutil
         parent = None
         if use_index:
             parent = idx.get_parent_pid(current)
         if parent is None:
-            parent = _ppid_cache.get(current)
-        if parent and parent > 0:
-            # Try PidIndex for name first, fall back to entity_extractor cache
-            name = ""
-            if use_index:
-                name = idx.get_name(parent)
-            if not name:
-                name = _name_cache.get(parent, "")
-            if name:
-                ancestors.append(name)
+            cached_ppid = _ppid_cache.get(current)
+            if cached_ppid is not None and cached_ppid > 0:
+                parent = cached_ppid
+            else:
+                # Cache miss OR stale zero (transient failure) — try psutil
+                parent, _, _ = _resolve_via_psutil(current)
+        if not parent or parent <= 0:
+            break
+        # Resolve parent name: PidIndex → _name_cache → psutil
+        name = ""
+        if use_index:
+            name = idx.get_name(parent)
+        if not name:
+            name = _name_cache.get(parent, "")
+        if not name:
+            _, name, _ = _resolve_via_psutil(parent)
+        # Resolve cmd_line: _cmdline_cache → psutil (already cached by _resolve_via_psutil)
+        cmd_line = _cmdline_cache.get(parent, "")
+        if not cmd_line:
+            _, _, cmd_line = _resolve_via_psutil(parent)
+        # Resolve container_id
+        container_id = get_container_id(parent)
+
+        if name:
+            ancestors.append((name, cmd_line, container_id))
+        else:
+            ancestors.append((f"pid:{parent}", cmd_line, container_id))
         current = parent
+
     # Build chain: user (if known) + reversed ancestors + current process
-    chain: list[str] = []
+    chain: list[ChainEntry] = []
     username = _username_cache.get(pid, "")
     if username:
-        chain.append(f"USER:{username}")
-    chain.extend(reversed(ancestors))
-    chain.append(process_name)
+        chain.append(ChainEntry(name=f"USER:{username}"))
+    for name, cmd, ctr in reversed(ancestors):
+        chain.append(ChainEntry(name=name, cmd_line=cmd, container_id=ctr))
+    # Current process entry
+    cur_cmd = _cmdline_cache.get(pid, "")
+    cur_ctr = get_container_id(pid)
+    chain.append(ChainEntry(name=process_name, cmd_line=cur_cmd, container_id=cur_ctr))
     return chain
 
 
@@ -127,9 +187,9 @@ class FastBlocklist:
             pat = rule["pattern"]
             desc = rule.get("description") or pat
 
-            # Rules with chain_filter are scoped — they need full chain context
-            # and must not go into the unscoped fast buckets (Gap 2 fix).
-            if rule.get("chain_filter"):
+            # Rules with chain_filter or chain_exclude are scoped — they need
+            # full chain context and must not go into the unscoped fast buckets.
+            if rule.get("chain_filter") or rule.get("chain_exclude"):
                 scoped_rules.append(rule)
                 continue
 
@@ -230,10 +290,10 @@ class FastBlocklist:
         # Chain pattern check
         if self._chain_patterns:
             for proc in entities.processes:
-                chain_names = _build_chain_from_caches(proc.pid, proc.name)
+                chain_entries = _build_chain_from_caches(proc.pid, proc.name)
                 for parts, desc in self._chain_patterns:
-                    if _match_chain_pattern(chain_names, parts):
-                        chain_str = " > ".join(chain_names)
+                    if _match_chain_pattern(chain_entries, parts):
+                        chain_str = " > ".join(e.name for e in chain_entries)
                         return self._synthesize(
                             entities,
                             ocsf,
@@ -251,9 +311,17 @@ class FastBlocklist:
             entity_files = [edge.get("file_id", "") for edge in entities.file_edges if edge.get("file_id")]
 
             for proc in entities.processes:
-                chain_names = _build_chain_from_caches(proc.pid, proc.name)
-                # Build ChainStep-compatible dicts for _match_rule's chain parameter
-                chain_for_match = [{"entity_type": "process", "entity_name": n} for n in chain_names]
+                chain_entries = _build_chain_from_caches(proc.pid, proc.name)
+                # Build ChainStep-compatible dicts for _match_rule with cmd_line/container_id
+                chain_for_match = [
+                    {
+                        "entity_type": "user" if e.name.startswith("USER:") else "process",
+                        "entity_name": e.name.removeprefix("USER:") if e.name.startswith("USER:") else e.name,
+                        "cmd_line": e.cmd_line,
+                        "container_id": e.container_id,
+                    }
+                    for e in chain_entries
+                ]
 
                 for rule in self._scoped_rules:
                     rt = rule["rule_type"]
@@ -278,7 +346,7 @@ class FastBlocklist:
                                 matched_value = fp
                                 break
                     elif rt == "chain_pattern" and _match_rule(rule, chain=chain_for_match):
-                        matched_value = " > ".join(chain_names)
+                        matched_value = " > ".join(e.name for e in chain_entries)
 
                     if matched_value:
                         desc = rule.get("description") or rule["pattern"]

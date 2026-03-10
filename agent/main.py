@@ -1106,8 +1106,8 @@ def main() -> None:
     # Initialize SQLite queue
     queue = SqliteQueue(settings.db_path)
 
-    # Start health/metrics server
-    start_health_server(
+    # Start health/metrics server (stored for clean shutdown)
+    _health_server = start_health_server(
         port=settings.metrics_port,
         queue_depth_fn=queue.count_unprocessed,
     )
@@ -1194,6 +1194,12 @@ def main() -> None:
         allowlist=allowlist,
         blocklist=blocklist,
     )
+    # Use fleet-persisted mode if available, otherwise fall back to config
+    from agent.fleet.forwarder import FleetForwarder
+    fleet_mode = FleetForwarder.load_fleet_mode(settings.data_dir)
+    if fleet_mode:
+        logger.info("Restoring fleet-pushed response mode: %s", fleet_mode)
+        settings.response_mode = fleet_mode
     response_engine.set_mode(settings.response_mode)
 
     # Initialize DNS sinkhole
@@ -1369,6 +1375,9 @@ def main() -> None:
             )
             _fleet_forwarder.register()
 
+            # Wire response engine so fleet config pushes update mode in real time
+            _fleet_forwarder.set_response_engine(response_engine)
+
             # Wire IOC database so heartbeats include feed stats
             if ioc_db is not None:
                 _fleet_forwarder.set_ioc_db(ioc_db)
@@ -1429,6 +1438,7 @@ def main() -> None:
     logger.info("All pipeline threads started")
 
     # Start FastAPI dashboard server (daemon thread)
+    _dash_uvicorn = None
     if not args.no_dashboard:
         try:
             from agent.dashboard.server import (
@@ -1462,7 +1472,7 @@ def main() -> None:
                 _ds["warm_graph"] = _warm_graph
             if _ledger_reader is not None:
                 _ds["ledger_reader"] = _ledger_reader
-            start_dashboard_server(port=settings.dashboard_port)
+            _dash_thread, _dash_uvicorn = start_dashboard_server(port=settings.dashboard_port)
             logger.info("Dashboard server started on http://127.0.0.1:%d", settings.dashboard_port)
 
             # Auto-open browser after a short delay
@@ -1513,7 +1523,18 @@ def main() -> None:
     else:
         _wait_for_shutdown()
 
-    # Shutdown sequence — signal the graph writer to drain and stop
+    # Shutdown sequence
+    logger.info("Shutting down...")
+
+    # 1. Stop HTTP servers first so ports are released before process exits
+    if _health_server is not None:
+        _health_server.shutdown()
+        logger.info("Health server stopped")
+    if _dash_uvicorn is not None:
+        _dash_uvicorn.should_exit = True
+        logger.info("Dashboard server stopping")
+
+    # 2. Signal the graph writer to drain and stop
     if settings.kuzu_persistent_enabled:
         from agent.graph.write_queue import WriteJob, WriteJobType
         from agent.graph.write_queue import submit as _submit_shutdown
@@ -1528,6 +1549,8 @@ def main() -> None:
         _ledger_writer.stop()
     if _flight_recorder:
         _flight_recorder.stop()
+
+    # 3. Wait for threads to finish
     logger.info("Waiting for threads to stop...")
     for t in threads:
         t.join(timeout=5.0)

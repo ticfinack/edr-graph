@@ -66,24 +66,42 @@ class _HealthHandler(BaseHTTPRequestHandler):
         pass
 
 
+class _ReuseHTTPServer(HTTPServer):
+    """HTTPServer that sets SO_REUSEADDR/SO_REUSEPORT before bind."""
+
+    allow_reuse_address = True
+
+    def server_bind(self):
+        if hasattr(socket, "SO_REUSEPORT"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        super().server_bind()
+
+
 def start_health_server(
     port: int = 9100,
     queue_depth_fn=None,
-) -> HTTPServer:
+) -> _ReuseHTTPServer | None:
     """Start the health/metrics HTTP server on a daemon thread.
 
-    Args:
-        port: TCP port to bind (localhost only).
-        queue_depth_fn: Callable returning current queue depth (int).
-
-    Returns:
-        The HTTPServer instance (for testing or shutdown).
+    Returns the HTTPServer instance (call .shutdown() to stop), or None
+    if the port could not be bound after retries.
     """
     _HealthHandler._start_time = time.monotonic()
     _HealthHandler._queue_getter = staticmethod(queue_depth_fn) if queue_depth_fn else None
 
-    server = HTTPServer(("127.0.0.1", port), _HealthHandler)
-    server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server = None
+    for attempt in range(6):
+        try:
+            server = _ReuseHTTPServer(("127.0.0.1", port), _HealthHandler)
+            break
+        except OSError as exc:
+            if attempt < 5:
+                logger.warning("Health server port %d busy, retrying (%d/6): %s", port, attempt + 1, exc)
+                time.sleep(2)
+            else:
+                logger.error("Health server could not bind port %d — continuing without it", port)
+                return None
+
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="health")
     thread.start()
     logger.info("Health/metrics server started on http://127.0.0.1:%d", port)

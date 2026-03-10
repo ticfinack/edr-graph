@@ -10,7 +10,12 @@ import pytest
 
 from agent.processor.entity_extractor import ExtractedEntities
 from agent.processor.synchronous_enforcer import FastBlocklist, _build_chain_from_caches
-from agent.response.baseline import ResponseBlocklist
+from agent.response.baseline import ChainEntry, ResponseBlocklist
+
+
+def _chain_names(chain: list[ChainEntry]) -> list[str]:
+    """Helper: extract just the name strings from a ChainEntry list."""
+    return [e.name for e in chain]
 from agent.schema.graph_types import (
     DomainNode,
     ProcessNode,
@@ -409,7 +414,7 @@ class TestBuildChainFromCaches:
 
         try:
             chain = _build_chain_from_caches(300, "ncat")
-            assert chain == ["USER:alice", "Terminal", "bash", "ncat"]
+            assert _chain_names(chain) == ["USER:alice", "Terminal", "bash", "ncat"]
         finally:
             for pid in (300, 200, 100):
                 entity_extractor._ppid_cache.pop(pid, None)
@@ -418,7 +423,7 @@ class TestBuildChainFromCaches:
 
     def test_build_chain_no_ancestry(self):
         chain = _build_chain_from_caches(99999, "solo_process")
-        assert chain == ["solo_process"]
+        assert _chain_names(chain) == ["solo_process"]
 
     def test_build_chain_no_username(self):
         from agent.processor import entity_extractor
@@ -427,7 +432,7 @@ class TestBuildChainFromCaches:
 
         try:
             chain = _build_chain_from_caches(400, "myproc")
-            assert chain == ["myproc"]
+            assert _chain_names(chain) == ["myproc"]
         finally:
             entity_extractor._ppid_cache.pop(400, None)
 
@@ -475,7 +480,7 @@ class TestBuildChainFromPidIndex:
         with patch("agent.processor.synchronous_enforcer.get_pid_index", return_value=mock_idx):
             chain = _build_chain_from_caches(100, "perl")
 
-        assert chain == ["containerd-shim", "runc", "perl"]
+        assert _chain_names(chain) == ["containerd-shim", "runc", "perl"]
 
     def test_fallback_to_extractor_caches(self):
         """When PidIndex is not built, fall back to entity_extractor caches."""
@@ -492,7 +497,7 @@ class TestBuildChainFromPidIndex:
         try:
             with patch("agent.processor.synchronous_enforcer.get_pid_index", return_value=mock_idx):
                 chain = _build_chain_from_caches(100, "perl")
-            assert chain == ["bash", "perl"]
+            assert _chain_names(chain) == ["bash", "perl"]
         finally:
             entity_extractor._ppid_cache.pop(100, None)
             entity_extractor._ppid_cache.pop(50, None)
@@ -515,9 +520,89 @@ class TestBuildChainFromPidIndex:
         try:
             with patch("agent.processor.synchronous_enforcer.get_pid_index", return_value=mock_idx):
                 chain = _build_chain_from_caches(100, "perl")
-            assert chain == ["bash", "perl"]
+            assert _chain_names(chain) == ["bash", "perl"]
         finally:
             entity_extractor._name_cache.pop(50, None)
+
+
+# ── Regex and cmd_line matching ──
+
+
+class TestRegexAndCmdLineMatching:
+    def test_regex_name_match(self):
+        """re: prefix matches against process name via regex."""
+        from agent.response.baseline import ChainEntry, _match_chain_pattern
+
+        chain = [
+            ChainEntry(name="USER:root"),
+            ChainEntry(name="systemd"),
+            ChainEntry(name="containerd-shim-runc-v2", cmd_line="containerd-shim -namespace moby"),
+            ChainEntry(name="java", cmd_line="/opt/java/openjdk/bin/java -classpath /var/lib/neo4j"),
+        ]
+        # Regex against name
+        assert _match_chain_pattern(chain, ["re:containerd-shim.*", "re:java"])
+        assert not _match_chain_pattern(chain, ["re:python"])
+
+    def test_cmd_fnmatch(self):
+        """cmd: prefix matches against cmd_line via fnmatch."""
+        from agent.response.baseline import ChainEntry, _match_chain_pattern
+
+        chain = [
+            ChainEntry(name="USER:root"),
+            ChainEntry(name="systemd"),
+            ChainEntry(name="java", cmd_line="/opt/java/openjdk/bin/java -classpath /var/lib/neo4j"),
+        ]
+        assert _match_chain_pattern(chain, ["cmd:*neo4j*"])
+        assert not _match_chain_pattern(chain, ["cmd:*postgres*"])
+
+    def test_cmd_re_regex(self):
+        """cmd_re: prefix matches against cmd_line via regex."""
+        from agent.response.baseline import ChainEntry, _match_chain_pattern
+
+        chain = [
+            ChainEntry(name="USER:root"),
+            ChainEntry(name="systemd"),
+            ChainEntry(name="java", cmd_line="/opt/java/openjdk/bin/java -classpath /var/lib/neo4j/lib"),
+        ]
+        assert _match_chain_pattern(chain, ["cmd_re:neo4j.*lib"])
+        assert not _match_chain_pattern(chain, ["cmd_re:postgres"])
+
+    def test_container_id_match(self):
+        """ctr: prefix matches against container_id."""
+        from agent.response.baseline import ChainEntry, _match_chain_pattern
+
+        chain = [
+            ChainEntry(name="USER:root"),
+            ChainEntry(name="systemd"),
+            ChainEntry(name="containerd-shim", container_id="abc123def456"),
+            ChainEntry(name="java", container_id="abc123def456"),
+        ]
+        assert _match_chain_pattern(chain, ["ctr:abc123*", "java"])
+        assert not _match_chain_pattern(chain, ["ctr:xyz*", "java"])
+
+    def test_mixed_prefixes(self):
+        """Different prefix types can be combined in one pattern."""
+        from agent.response.baseline import ChainEntry, _match_chain_pattern
+
+        chain = [
+            ChainEntry(name="USER:root"),
+            ChainEntry(name="systemd"),
+            ChainEntry(name="containerd-shim", container_id="abc123def456"),
+            ChainEntry(name="java", cmd_line="/opt/java/openjdk/bin/java -cp /neo4j"),
+        ]
+        # Mix glob name + container + cmd_re
+        assert _match_chain_pattern(
+            chain, ["USER:root", "systemd", "ctr:abc123*", "cmd_re:neo4j"]
+        )
+
+    def test_backward_compat_plain_strings(self):
+        """Plain string chains still work (backward compatibility)."""
+        from agent.response.baseline import _match_chain_pattern
+
+        chain = ["USER:root", "systemd", "bash", "curl"]
+        assert _match_chain_pattern(chain, ["bash", "curl"])
+        assert _match_chain_pattern(chain, ["re:ba.h", "curl"])
+        assert not _match_chain_pattern(chain, ["cmd:*something*"])  # no cmd_line on strings
 
 
 # ── Scoped rules (Gap 2 fix) ──

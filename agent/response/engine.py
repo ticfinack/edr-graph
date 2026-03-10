@@ -146,6 +146,8 @@ class ResponseEngine:
     """
 
     VALID_MODES = {"learning", "active", "passive"}
+    # Fleet dashboard uses "enforcing" for "active" mode
+    _MODE_ALIASES = {"enforcing": "active"}
 
     def __init__(
         self,
@@ -169,6 +171,7 @@ class ResponseEngine:
 
     def set_mode(self, mode: str) -> None:
         """Set the response mode. Validates input."""
+        mode = self._MODE_ALIASES.get(mode, mode)
         if mode not in self.VALID_MODES:
             raise ValueError(f"Invalid mode: {mode!r}. Must be one of {self.VALID_MODES}")
         self._response_mode = mode

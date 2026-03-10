@@ -362,9 +362,9 @@ class TestProcessChainWalk:
 
             chain = get_process_chain(conn, 3)
             names = [p.get("name") for p in chain if p.get("name")]
-            # Chain stops at PPID=1 (init/systemd) — bash (ppid=1) is
-            # the root, init is excluded.
-            assert names == ["bash", "curl"]
+            # Chain includes init/systemd (PID 1) as a real ancestor,
+            # but stops there (PID 1's parent is PID 0 / kernel).
+            assert names == ["init", "bash", "curl"]
         finally:
             shutil.rmtree(tmp_dir)
 

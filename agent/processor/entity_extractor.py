@@ -51,7 +51,42 @@ _UID_NAME_MAP: dict[str, str] = {
     "65534": "nobody",
 }
 _name_cache: dict[int, str] = {}  # pid -> process_name, for fast-path enforcer chain building
+_cmdline_cache: dict[int, str] = {}  # pid -> cmd_line, for fast-path chain matching
+_container_cache: dict[int, str] = {}  # pid -> container_id (short 12-char hex)
 _sshd_cache: dict[str, tuple[str | None, float]] = {}  # hostname -> (proc_id, cache_time)
+
+
+def get_container_id(pid: int) -> str:
+    """Extract container ID from /proc/{pid}/cgroup (Linux only).
+
+    Returns a 12-char short container ID, or empty string if not containerized.
+    Results are cached per PID.
+    """
+    cached = _container_cache.get(pid)
+    if cached is not None:
+        return cached
+    ctr_id = ""
+    try:
+        with open(f"/proc/{pid}/cgroup") as f:
+            for line in f:
+                parts = line.strip().split("/")
+                for part in parts:
+                    if part.startswith("docker-") and part.endswith(".scope"):
+                        ctr_id = part[7:-6][:12]
+                        break
+                    if part.startswith("cri-containerd-") and part.endswith(".scope"):
+                        ctr_id = part[15:-6][:12]
+                        break
+                    stripped = part.removesuffix(".scope")
+                    if len(stripped) == 64 and all(c in "0123456789abcdef" for c in stripped):
+                        ctr_id = stripped[:12]
+                        break
+                if ctr_id:
+                    break
+    except OSError:
+        pass
+    _container_cache[pid] = ctr_id
+    return ctr_id
 
 
 def _resolve_start_time(pid: int, fallback: datetime) -> datetime:
@@ -130,6 +165,9 @@ def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
                             proc_node.cmd_line = " ".join(cmdline)
                     except (psutil.AccessDenied, psutil.ZombieProcess):
                         pass
+                # Cache cmd_line for fast-path chain matching
+                if proc_node.cmd_line and pid not in _cmdline_cache:
+                    _cmdline_cache[pid] = proc_node.cmd_line
                 if not proc_node.exe_path:
                     with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
                         proc_node.exe_path = p.exe()
@@ -145,6 +183,8 @@ def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
             _ppid_cache[pid] = proc_node.parent_pid
         if proc_node.name and pid not in _name_cache:
             _name_cache[pid] = proc_node.name
+        if proc_node.cmd_line and pid not in _cmdline_cache:
+            _cmdline_cache[pid] = proc_node.cmd_line
 
     _ensure_identity_import()
     if not _get_process_identity or not proc_node.exe_path:

@@ -67,7 +67,7 @@ class TestConfigPushVerification:
         sig = _sign(config, "test-reg-key-abc123", _TEST_AGENT_ID)
 
         fwd._apply_config_overrides(config, sig)
-        assert settings.response_mode == "enforcing"
+        assert settings.response_mode == "active"  # "enforcing" normalized to "active"
 
     def test_invalid_signature_rejected(self, settings, queue):
         from agent.fleet.forwarder import FleetForwarder
@@ -139,7 +139,7 @@ class TestConfigOverrideApplication:
         sig = _sign(config, "test-reg-key-abc123", _TEST_AGENT_ID)
         fwd._apply_config_overrides(config, sig)
 
-        assert settings.response_mode == "enforcing"
+        assert settings.response_mode == "active"  # "enforcing" normalized to "active"
         assert settings.analyzer_interval == 30.0
         assert settings.collector_poll_interval == 2.5
         assert settings.novel_edge_threshold == 10
@@ -164,7 +164,7 @@ class TestConfigOverrideApplication:
         sig = _sign(config, "test-reg-key-abc123", _TEST_AGENT_ID)
         fwd._apply_config_overrides(config, sig)
 
-        assert settings.response_mode == "enforcing"
+        assert settings.response_mode == "active"  # "enforcing" normalized to "active"
         assert not hasattr(settings, "evil_setting")
         assert str(settings.data_dir) != "/etc/shadow"
 
@@ -238,7 +238,7 @@ class TestRulesDistribution:
         sig = _sign(config, "test-reg-key-abc123", _TEST_AGENT_ID)
         fwd._apply_config_overrides(config, sig)
 
-        assert settings.response_mode == "enforcing"
+        assert settings.response_mode == "active"  # "enforcing" normalized to "active"
         # Allowlist gets pre_graph allow rules
         assert len(allowlist.get_network_rules()) == 1
         assert allowlist.get_network_rules()[0]["pattern"] == "10.0.0.1"
@@ -306,7 +306,7 @@ class TestRulesDistribution:
         })
         sig = _sign(config, "test-reg-key-abc123", _TEST_AGENT_ID)
         fwd._apply_config_overrides(config, sig)
-        assert settings.response_mode == "enforcing"
+        assert settings.response_mode == "active"  # "enforcing" normalized to "active"
 
 
 class TestServerSideConfigSigning:

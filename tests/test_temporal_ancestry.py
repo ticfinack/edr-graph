@@ -179,8 +179,8 @@ class TestQueryProcessFieldsTemporal:
 
 
 class TestProcessChainPpid1Stop:
-    def test_chain_stops_at_ppid1(self):
-        """Chain walk stops when a process has parent_pid=1."""
+    def test_chain_includes_pid1(self):
+        """Chain walk includes PID 1 (systemd/init) but stops there."""
         db, conn, tmp_dir = _make_db()
         try:
             conn.execute(
@@ -201,10 +201,8 @@ class TestProcessChainPpid1Stop:
 
             chain = get_process_chain(conn, 200)
             names = [p.get("name") for p in chain if p.get("name")]
-            # sshd (ppid=1) is the root — systemd is excluded
-            assert "systemd" not in names
-            assert "sshd" in names
-            assert "bash" in names
+            # PID 1 (systemd) is included as a real ancestor
+            assert names == ["systemd", "sshd", "bash"]
 
         finally:
             shutil.rmtree(tmp_dir)
