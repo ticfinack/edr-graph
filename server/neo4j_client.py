@@ -468,7 +468,9 @@ class Neo4jClient:
                         c.entity_name = $entity_name,
                         c.pid = $pid,
                         c.timestamp = $timestamp,
-                        c.host_agent_id = $host_agent_id
+                        c.host_agent_id = $host_agent_id,
+                        c.cmd_line = $cmd_line,
+                        c.container_id = $container_id
                     WITH c
                     MATCH (f:Finding {finding_id: $finding_id})
                     MERGE (f)-[:HAS_CHAIN {step_index: $step_index}]->(c)
@@ -483,6 +485,8 @@ class Neo4jClient:
                         "pid": step.get("pid", 0),
                         "timestamp": step.get("timestamp", 0),
                         "host_agent_id": agent_id,
+                        "cmd_line": step.get("cmd_line", ""),
+                        "container_id": step.get("container_id", ""),
                     },
                 )
 
@@ -657,7 +661,8 @@ class Neo4jClient:
             WITH inc, f, collect(CASE WHEN fc IS NOT NULL THEN {
                 entity_type: fc.entity_type, entity_id: fc.entity_id,
                 entity_name: fc.entity_name, pid: fc.pid,
-                timestamp: fc.timestamp, step_index: fc.step_index
+                timestamp: fc.timestamp, step_index: fc.step_index,
+                cmd_line: fc.cmd_line, container_id: fc.container_id
             } END) AS finding_chain_raw
             // Incident-level source chain (fallback)
             OPTIONAL MATCH (inc)-[:HAS_SOURCE_CHAIN]->(sc:ChainNode)
@@ -665,7 +670,8 @@ class Neo4jClient:
             WITH inc, f, finding_chain_raw, collect(CASE WHEN sc IS NOT NULL THEN {
                 entity_type: sc.entity_type, entity_id: sc.entity_id,
                 entity_name: sc.entity_name, pid: sc.pid,
-                timestamp: sc.timestamp, step_index: sc.step_index
+                timestamp: sc.timestamp, step_index: sc.step_index,
+                cmd_line: sc.cmd_line, container_id: sc.container_id
             } END) AS incident_source_raw
             // Incident-level target chain
             OPTIONAL MATCH (inc)-[:HAS_TARGET_CHAIN]->(tc:ChainNode)
@@ -673,7 +679,8 @@ class Neo4jClient:
             WITH inc, f, finding_chain_raw, incident_source_raw, collect(CASE WHEN tc IS NOT NULL THEN {
                 entity_type: tc.entity_type, entity_id: tc.entity_id,
                 entity_name: tc.entity_name, pid: tc.pid,
-                timestamp: tc.timestamp, step_index: tc.step_index
+                timestamp: tc.timestamp, step_index: tc.step_index,
+                cmd_line: tc.cmd_line, container_id: tc.container_id
             } END) AS target_chain_raw
             WITH inc, f,
                  [s IN finding_chain_raw WHERE s IS NOT NULL] AS finding_chain,
@@ -1071,7 +1078,9 @@ class Neo4jClient:
                c.entity_id AS entity_id,
                c.entity_name AS entity_name,
                c.pid AS pid,
-               c.timestamp AS timestamp
+               c.timestamp AS timestamp,
+               c.cmd_line AS cmd_line,
+               c.container_id AS container_id
         ORDER BY c.finding_id, c.step_index
         LIMIT $limit
         """

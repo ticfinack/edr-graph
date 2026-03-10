@@ -83,6 +83,8 @@ class ChainStep(BaseModel):
     entity_name: str
     pid: int | None = None
     timestamp: datetime | None = None
+    cmd_line: str | None = None
+    container_id: str | None = None
 
 
 class SecurityFinding(BaseModel):

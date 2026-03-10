@@ -12,37 +12,98 @@ from __future__ import annotations
 import fnmatch
 import ipaddress
 import logging
+import re
 import sqlite3
 import threading
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
 
 
-def _match_chain_pattern(chain_names: list[str], pattern_parts: list[str]) -> bool:
-    """Match a list of process names against a chain pattern.
+class ChainEntry(NamedTuple):
+    """A single element in a chain for pattern matching.
+
+    Carries process name, command line, and container ID so that rules
+    can match against any combination.
+    """
+
+    name: str
+    cmd_line: str = ""
+    container_id: str = ""
+
+
+def _match_chain_pattern(chain: list[str | ChainEntry], pattern_parts: list[str]) -> bool:
+    """Match a chain against a pattern.
 
     Pattern parts are separated by '>' (already split and stripped).
-    Named steps match via fnmatch (case-insensitive).
-    '*' matches exactly one process in the chain.
-    '**' matches zero or more processes in the chain.
 
-    The pattern is anchored at the END of the chain (must consume through the
-    last chain element) but un-anchored at the start — it can begin matching
-    at any position.  E.g. ``bash > caffeinate`` matches the tail of
-    ``launchd > Terminal > … > bash > caffeinate``.
+    Matching modes per pattern part:
+      - ``name`` or ``name*``   — fnmatch against process name (default)
+      - ``re:pattern``          — regex search against process name
+      - ``cmd:glob``            — fnmatch against cmd_line
+      - ``cmd_re:pattern``      — regex search against cmd_line
+      - ``ctr:pattern``         — fnmatch against container_id
+      - ``*``                   — matches exactly one chain step
+      - ``**``                  — matches zero or more chain steps
+
+    The pattern is anchored at the END of the chain but un-anchored at the
+    start — it can begin matching at any position.
     """
-    for start in range(len(chain_names)):
-        if _match_chain_recursive(chain_names, start, pattern_parts, 0):
+    for start in range(len(chain)):
+        if _match_chain_recursive(chain, start, pattern_parts, 0):
             return True
     # Edge case: empty chain can match an all-** pattern
-    if not chain_names:
-        return _match_chain_recursive(chain_names, 0, pattern_parts, 0)
+    if not chain:
+        return _match_chain_recursive(chain, 0, pattern_parts, 0)
     return False
 
 
-def _match_chain_recursive(chain: list[str], ci: int, pattern: list[str], pi: int) -> bool:
+def _entry_name(entry: str | ChainEntry) -> str:
+    """Extract the display name from a chain entry."""
+    return entry.name if isinstance(entry, ChainEntry) else entry
+
+
+def _entry_cmdline(entry: str | ChainEntry) -> str:
+    """Extract cmd_line from a chain entry (empty string for plain strings)."""
+    return entry.cmd_line if isinstance(entry, ChainEntry) else ""
+
+
+def _entry_container(entry: str | ChainEntry) -> str:
+    """Extract container_id from a chain entry."""
+    return entry.container_id if isinstance(entry, ChainEntry) else ""
+
+
+# Cache compiled regex patterns to avoid recompilation on every match.
+_regex_cache: dict[str, re.Pattern] = {}
+
+
+def _get_regex(pattern: str) -> re.Pattern:
+    compiled = _regex_cache.get(pattern)
+    if compiled is None:
+        compiled = re.compile(pattern, re.IGNORECASE)
+        _regex_cache[pattern] = compiled
+    return compiled
+
+
+def _match_step(entry: str | ChainEntry, part: str) -> bool:
+    """Match a single chain entry against a single pattern part."""
+    if part.startswith("cmd_re:"):
+        return bool(_get_regex(part[7:]).search(_entry_cmdline(entry)))
+    if part.startswith("cmd:"):
+        return fnmatch.fnmatch(_entry_cmdline(entry).lower(), part[4:].lower())
+    if part.startswith("ctr:"):
+        return fnmatch.fnmatch(_entry_container(entry).lower(), part[4:].lower())
+    if part.startswith("re:"):
+        return bool(_get_regex(part[3:]).search(_entry_name(entry)))
+    # Default: fnmatch against name (case-insensitive)
+    return fnmatch.fnmatch(_entry_name(entry).lower(), part.lower())
+
+
+def _match_chain_recursive(
+    chain: list[str | ChainEntry], ci: int, pattern: list[str], pi: int,
+) -> bool:
     # Base case: pattern exhausted
     if pi == len(pattern):
         return ci == len(chain)
@@ -51,8 +112,10 @@ def _match_chain_recursive(chain: list[str], ci: int, pattern: list[str], pi: in
 
     if part == "**":
         # '**' matches zero or more chain steps
-        # Try consuming 0, 1, 2, ... chain steps
-        return any(_match_chain_recursive(chain, skip, pattern, pi + 1) for skip in range(ci, len(chain) + 1))
+        return any(
+            _match_chain_recursive(chain, skip, pattern, pi + 1)
+            for skip in range(ci, len(chain) + 1)
+        )
 
     # Need at least one chain element to match
     if ci >= len(chain):
@@ -62,35 +125,48 @@ def _match_chain_recursive(chain: list[str], ci: int, pattern: list[str], pi: in
         # '*' matches exactly one chain step
         return _match_chain_recursive(chain, ci + 1, pattern, pi + 1)
 
-    # Named step: match via fnmatch (case-insensitive)
-    if fnmatch.fnmatch(chain[ci].lower(), part.lower()):
+    if _match_step(chain[ci], part):
         return _match_chain_recursive(chain, ci + 1, pattern, pi + 1)
 
     return False
 
 
-def _extract_chain_names(chain: list) -> list[str]:
-    """Extract process and user names from a chain (list of objects or dicts).
+def _extract_chain_entries(chain: list) -> list[ChainEntry]:
+    """Extract chain entries from a chain (list of ChainStep objects or dicts).
 
-    User entries are prefixed with ``USER:`` so that rules can target specific
-    users without colliding with identically-named processes.
+    User entries have names prefixed with ``USER:`` so that rules can target
+    specific users without colliding with identically-named processes.
+    Process entries carry cmd_line and container_id when available.
     """
     if not chain:
         return []
-    names = []
+    entries: list[ChainEntry] = []
     if hasattr(chain[0], "entity_type"):
         for s in chain:
             if s.entity_type == "user":
-                names.append(f"USER:{s.entity_name}")
+                entries.append(ChainEntry(name=f"USER:{s.entity_name}"))
             elif s.entity_type == "process":
-                names.append(s.entity_name)
+                entries.append(ChainEntry(
+                    name=s.entity_name,
+                    cmd_line=getattr(s, "cmd_line", "") or "",
+                    container_id=getattr(s, "container_id", "") or "",
+                ))
     else:
         for s in chain:
             if s.get("entity_type") == "user":
-                names.append("USER:" + s["entity_name"])
+                entries.append(ChainEntry(name="USER:" + s["entity_name"]))
             elif s.get("entity_type") == "process":
-                names.append(s["entity_name"])
-    return names
+                entries.append(ChainEntry(
+                    name=s["entity_name"],
+                    cmd_line=s.get("cmd_line", ""),
+                    container_id=s.get("container_id", ""),
+                ))
+    return entries
+
+
+def _extract_chain_names(chain: list) -> list[str]:
+    """Legacy wrapper: extract just names as plain strings."""
+    return [e.name for e in _extract_chain_entries(chain)]
 
 
 def _match_rule(
@@ -118,15 +194,23 @@ def _match_rule(
     if chain_filter:
         if chain is None:
             return False
-        chain_names = _extract_chain_names(chain)
+        chain_entries = _extract_chain_entries(chain)
         filter_parts = [p.strip() for p in chain_filter.split(">")]
-        if not _match_chain_pattern(chain_names, filter_parts):
+        if not _match_chain_pattern(chain_entries, filter_parts):
+            return False
+
+    # Check chain_exclude — if present and chain matches, rule does NOT fire
+    chain_exclude = rule.get("chain_exclude", "")
+    if chain_exclude and chain is not None:
+        chain_entries = _extract_chain_entries(chain)
+        exclude_parts = [p.strip() for p in chain_exclude.split(">")]
+        if _match_chain_pattern(chain_entries, exclude_parts):
             return False
 
     if rt == "chain_pattern" and chain is not None:
-        chain_names = _extract_chain_names(chain)
+        chain_entries = _extract_chain_entries(chain)
         pattern_parts = [p.strip() for p in pat.split(">")]
-        return _match_chain_pattern(chain_names, pattern_parts)
+        return _match_chain_pattern(chain_entries, pattern_parts)
 
     if rt == "process_name" and process_name:
         return fnmatch.fnmatch(process_name.lower(), pat.lower())
@@ -336,34 +420,42 @@ class ResponseAllowlist:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         if not self._migrated:
-            try:
-                conn.execute("ALTER TABLE response_allowlist ADD COLUMN chain_filter TEXT NOT NULL DEFAULT ''")
-                conn.commit()
-            except Exception:
-                pass  # Column already exists
+            for col in ("chain_filter", "chain_exclude"):
+                try:
+                    conn.execute(f"ALTER TABLE response_allowlist ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+                    conn.commit()
+                except Exception:
+                    pass  # Column already exists
             self._migrated = True
         return conn
 
     MAX_PATTERN_LENGTH = 500
 
-    def add_rule(self, rule_type: str, pattern: str, description: str = "", chain_filter: str = "") -> int:
+    def add_rule(
+        self, rule_type: str, pattern: str, description: str = "",
+        chain_filter: str = "", chain_exclude: str = "",
+    ) -> int:
         """Add an allowlist rule. Returns rule ID.
 
-        rule_type: "process_name", "dst_ip", "dst_cidr", "domain", "file_path", "finding_title"
+        rule_type: "process_name", "dst_ip", "dst_cidr", "domain", "file_path",
+                   "finding_title", "chain_pattern"
         pattern: glob for process/file/title, CIDR for dst_cidr, exact for domain/dst_ip
         chain_filter: optional chain pattern that must also match for the rule to apply
+        chain_exclude: optional chain pattern — if matched, the rule does NOT apply
         """
         if rule_type not in self.VALID_RULE_TYPES:
             raise ValueError(f"Invalid rule_type: {rule_type}")
         if len(pattern) > self.MAX_PATTERN_LENGTH:
             raise ValueError(f"Pattern too long (max {self.MAX_PATTERN_LENGTH} chars)")
-        if chain_filter and len(chain_filter) > self.MAX_PATTERN_LENGTH:
-            raise ValueError(f"Chain filter too long (max {self.MAX_PATTERN_LENGTH} chars)")
+        for field_name, field_val in [("chain_filter", chain_filter), ("chain_exclude", chain_exclude)]:
+            if field_val and len(field_val) > self.MAX_PATTERN_LENGTH:
+                raise ValueError(f"{field_name} too long (max {self.MAX_PATTERN_LENGTH} chars)")
         conn = self._conn()
         try:
             cur = conn.execute(
-                "INSERT INTO response_allowlist (rule_type, pattern, description, chain_filter) VALUES (?, ?, ?, ?)",
-                (rule_type, pattern, description, chain_filter),
+                "INSERT INTO response_allowlist (rule_type, pattern, description, chain_filter, chain_exclude)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (rule_type, pattern, description, chain_filter, chain_exclude),
             )
             conn.commit()
             return cur.lastrowid
@@ -529,23 +621,28 @@ class ResponseBlocklist:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         if not self._migrated:
-            try:
-                conn.execute("ALTER TABLE response_blocklist ADD COLUMN chain_filter TEXT NOT NULL DEFAULT ''")
-                conn.commit()
-            except Exception:
-                pass  # Column already exists
+            for col in ("chain_filter", "chain_exclude"):
+                try:
+                    conn.execute(f"ALTER TABLE response_blocklist ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+                    conn.commit()
+                except Exception:
+                    pass  # Column already exists
             self._migrated = True
         return conn
 
-    def add_rule(self, rule_type: str, pattern: str, description: str = "", chain_filter: str = "") -> int:
+    def add_rule(
+        self, rule_type: str, pattern: str, description: str = "",
+        chain_filter: str = "", chain_exclude: str = "",
+    ) -> int:
         """Add a blocklist rule. Returns rule ID."""
         if rule_type not in self.VALID_RULE_TYPES:
             raise ValueError(f"Invalid rule_type: {rule_type}")
         conn = self._conn()
         try:
             cur = conn.execute(
-                "INSERT INTO response_blocklist (rule_type, pattern, description, chain_filter) VALUES (?, ?, ?, ?)",
-                (rule_type, pattern, description, chain_filter),
+                "INSERT INTO response_blocklist (rule_type, pattern, description, chain_filter, chain_exclude)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (rule_type, pattern, description, chain_filter, chain_exclude),
             )
             conn.commit()
             return cur.lastrowid

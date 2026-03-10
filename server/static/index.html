@@ -127,6 +127,7 @@ td.truncate{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:n
 .vtree-step .step-name{font-weight:500;font-size:13px;word-break:break-all}
 .vtree-step .step-pid{color:var(--dim);font-size:11px;margin-top:2px}
 .vtree-step .step-cmd{color:var(--dim);font-size:11px;margin-top:2px;font-family:var(--mono);word-break:break-all}
+.step-ctr{color:#34d399;font-size:10px;margin-top:2px;font-family:"SF Mono",Menlo,Monaco,monospace;opacity:0.85}
 .vtree-step .step-user{color:var(--medium);font-size:11px;margin-left:6px;font-weight:normal}
 .vtree-step.type-ip{border-color:var(--accent)}
 .vtree-step.type-process{border-color:#818cf8}
@@ -993,6 +994,7 @@ function renderChainFlow(steps) {
         <div class="step-type">${esc(s.entity_type)}</div>
         <div class="step-name">${esc(s.entity_name || s.entity_id)}</div>
         ${s.pid ? `<div class="step-pid">PID ${s.pid}</div>` : ''}
+        ${s.container_id ? `<div class="step-ctr">&#x1F4E6; ${esc(s.container_id)}</div>` : ''}
       </div>`;
     }).join('')
   }</div></div>`;
@@ -1006,11 +1008,13 @@ function renderVerticalChain(steps) {
       const t = (s.entity_type||'').toLowerCase();
       const icon = t === 'user' ? '&#x1F464; ' : t === 'host' ? '&#x1F5A5; ' : '';
       const cmdLine = s.cmd_line ? `<div class="step-cmd">${esc(s.cmd_line)}</div>` : '';
+      const ctrId = s.container_id ? `<div class="step-ctr">&#x1F4E6; ${esc(s.container_id)}</div>` : '';
       const userLabel = (t === 'process' && s.username) ? `<span class="step-user">${esc(s.username)}</span>` : '';
       return `${arrow}<div class="vtree-step type-${t}">
         <div class="step-type">${esc(s.entity_type)}</div>
         <div class="step-name">${icon}${esc(s.entity_name || s.entity_id)}${userLabel}</div>
         ${s.pid ? `<div class="step-pid">PID ${s.pid}</div>` : ''}
+        ${ctrId}
         ${cmdLine}
       </div>`;
     }).join('')
@@ -1029,6 +1033,7 @@ function renderVerticalChainWithTrace(steps, logs) {
         <div class="step-type">${esc(s.entity_type)}</div>
         <div class="step-name">${icon}${esc(s.entity_name || s.entity_id)}</div>
         ${s.pid ? `<div class="step-pid">PID ${s.pid}</div>` : ''}
+        ${s.container_id ? `<div class="step-ctr">&#x1F4E6; ${esc(s.container_id)}</div>` : ''}
       </div>`;
       if (t === 'process') {
         const pName = (s.entity_name||'').toLowerCase();

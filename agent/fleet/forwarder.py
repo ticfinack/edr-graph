@@ -80,6 +80,28 @@ class FleetForwarder:
             logger.warning("Could not persist agent_id to %s", id_file)
         return new_id
 
+    def _persist_fleet_mode(self, mode: str) -> None:
+        """Persist fleet-pushed response mode so it survives agent restarts."""
+        mode_file = self._settings.data_dir / "fleet_response_mode"
+        try:
+            mode_file.write_text(mode)
+            logger.info("Persisted fleet response mode: %s", mode)
+        except OSError:
+            logger.warning("Could not persist fleet response mode to %s", mode_file)
+
+    @staticmethod
+    def load_fleet_mode(data_dir: Path) -> str | None:
+        """Load persisted fleet response mode, or return None if not set."""
+        _aliases = {"enforcing": "active"}
+        mode_file = data_dir / "fleet_response_mode"
+        try:
+            mode = mode_file.read_text().strip()
+            if mode:
+                return _aliases.get(mode, mode)
+        except FileNotFoundError:
+            pass
+        return None
+
     def _connect(self) -> None:
         """Establish the gRPC channel (mTLS or insecure for dev)."""
         target = self._settings.fleet_url
@@ -247,6 +269,10 @@ class FleetForwarder:
         """Store reference to IocDatabase for heartbeat stats + suppression delivery."""
         self._ioc_db = ioc_db
 
+    def set_response_engine(self, engine) -> None:
+        """Store reference to ResponseEngine so fleet config pushes can update mode."""
+        self._response_engine = engine
+
     def set_query_executor(self, executor: callable) -> None:
         """Set callback for executing federated queries against local graph DB."""
         self._query_executor = executor
@@ -364,14 +390,27 @@ class FleetForwarder:
         if isinstance(rules, list):
             self._apply_rules(rules)
 
+        # Normalize fleet "enforcing" → agent "active"
+        _MODE_ALIASES = {"enforcing": "active"}
+
         for key, converter in self._CONFIG_WHITELIST.items():
             if key not in overrides:
                 continue
             raw = overrides[key]
             try:
                 value = str(raw).lower() in ("true", "1", "yes") if converter is bool else converter(raw)
+                # Normalize mode aliases before comparison/storage
+                if key == "response_mode" and isinstance(value, str):
+                    value = _MODE_ALIASES.get(value, value)
                 if hasattr(self._settings, key):
+                    old_value = getattr(self._settings, key)
                     setattr(self._settings, key, value)
+                    # Sync response engine mode when fleet pushes a change
+                    if key == "response_mode" and value != old_value:
+                        engine = getattr(self, "_response_engine", None)
+                        if engine is not None:
+                            engine.set_mode(value)
+                        self._persist_fleet_mode(value)
             except (ValueError, TypeError):
                 logger.debug("Cannot convert config override %s=%r", key, raw)
 

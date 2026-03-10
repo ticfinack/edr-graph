@@ -940,10 +940,14 @@ def add_allowlist_rule(body: dict):
     pattern = body.get("pattern", "")
     description = body.get("description", "")
     chain_filter = body.get("chain_filter", "")
+    chain_exclude = body.get("chain_exclude", "")
     if not rule_type or not pattern:
         raise HTTPException(400, "rule_type and pattern are required")
     try:
-        rule_id = allowlist.add_rule(rule_type, pattern, description, chain_filter=chain_filter)
+        rule_id = allowlist.add_rule(
+            rule_type, pattern, description,
+            chain_filter=chain_filter, chain_exclude=chain_exclude,
+        )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     except Exception:
@@ -1004,10 +1008,14 @@ def add_blocklist_rule(body: dict):
     pattern = body.get("pattern", "")
     description = body.get("description", "")
     chain_filter = body.get("chain_filter", "")
+    chain_exclude = body.get("chain_exclude", "")
     if not rule_type or not pattern:
         raise HTTPException(400, "rule_type and pattern are required")
     try:
-        rule_id = blocklist.add_rule(rule_type, pattern, description, chain_filter=chain_filter)
+        rule_id = blocklist.add_rule(
+            rule_type, pattern, description,
+            chain_filter=chain_filter, chain_exclude=chain_exclude,
+        )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     except Exception:
@@ -1225,8 +1233,12 @@ def init_dashboard(
     _state["baseline_gate"] = baseline_gate
 
 
-def start_dashboard_server(port: int = 9200) -> threading.Thread:
-    """Start uvicorn in a daemon thread. Returns the thread."""
+def start_dashboard_server(port: int = 9200) -> tuple[threading.Thread, object]:
+    """Start uvicorn in a daemon thread.
+
+    Returns (thread, uvicorn_server) so the caller can call
+    ``uvicorn_server.should_exit = True`` for a clean shutdown.
+    """
     import uvicorn
 
     config = uvicorn.Config(
@@ -1245,4 +1257,4 @@ def start_dashboard_server(port: int = 9200) -> threading.Thread:
     )
     thread.start()
     logger.info("Dashboard server started on http://127.0.0.1:%d", port)
-    return thread
+    return thread, server
