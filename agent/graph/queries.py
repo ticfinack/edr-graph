@@ -91,6 +91,8 @@ def _query_process_from_os(pid: int, event_ts: float | None = None) -> dict | No
         if event_ts is not None and create_time > event_ts:
             return None
         hostname = socket.gethostname()
+        from agent.processor.entity_extractor import get_container_id
+        ctr_id = get_container_id(pid)
         return {
             "id": f"{hostname}:{pid}:{create_time}",
             "name": name,
@@ -102,6 +104,7 @@ def _query_process_from_os(pid: int, event_ts: float | None = None) -> dict | No
             "bundle_id": "",
             "code_signed": None,
             "signing_authority": "",
+            "container_id": ctr_id or "",
             "_fallback": "os",
             "_username": username,
             "_uid": uid,
@@ -246,10 +249,12 @@ def get_process_chain(conn: kuzu.Connection, pid: int, event_ts: float | None = 
         chain = [current]
         visited = {pid}
 
-        # Walk upward via parent_pid, with ledger + OS fallbacks
+        # Walk upward via parent_pid, with ledger + OS fallbacks.
+        # Include PID 1 (init/systemd) when reached — it's a real ancestor —
+        # but stop walking after it (its parent is PID 0 / kernel).
         for _ in range(20):
             ppid = current.get("parent_pid")
-            if not ppid or ppid in (0, 1) or ppid in visited:
+            if not ppid or ppid == 0 or ppid in visited:
                 break
             visited.add(ppid)
             parent = _query_process_fields(conn, ppid, event_ts)
@@ -291,13 +296,26 @@ def get_process_chain(conn: kuzu.Connection, pid: int, event_ts: float | None = 
                     found_user = True
                     break
         if not found_user:
-            try:
-                import psutil
-                uname = psutil.Process(pid).username()
-                if uname:
-                    chain.insert(0, {"type": "user", "id": uname, "name": uname})
-            except Exception:
-                pass
+            import psutil
+            # Walk bottom-up: the leaf PID may be dead (short-lived workers),
+            # but a parent (or PID 1) will still be alive.
+            for proc_dict in reversed(chain):
+                try:
+                    uname = psutil.Process(proc_dict.get("pid", 0)).username()
+                    if uname:
+                        chain.insert(0, {"type": "user", "id": uname, "name": uname})
+                        break
+                except Exception:
+                    continue
+
+        # Enrich process entries with container_id from /proc cgroup
+        from agent.processor.entity_extractor import get_container_id
+        for entry in chain:
+            if entry.get("type") == "user":
+                continue
+            entry_pid = entry.get("pid", 0)
+            if entry_pid and entry_pid > 0 and "container_id" not in entry:
+                entry["container_id"] = get_container_id(entry_pid)
 
         return chain
     except Exception:
@@ -325,13 +343,20 @@ def graph_chain_to_chainsteps(graph_chain: list[dict]) -> list:
                 )
             )
         else:
+            ctr_id = ""
+            pid_val = entry.get("pid")
+            if pid_val and pid_val > 0:
+                from agent.processor.entity_extractor import get_container_id
+                ctr_id = get_container_id(pid_val)
             steps.append(
                 ChainStep(
                     entity_type="process",
                     entity_id=entry.get("id", ""),
                     entity_name=entry.get("name", ""),
-                    pid=entry.get("pid"),
+                    pid=pid_val,
                     timestamp=entry.get("start_time"),
+                    cmd_line=entry.get("cmd_line", ""),
+                    container_id=ctr_id or None,
                 )
             )
     return steps
@@ -881,25 +906,31 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
         process_chain = []
         if target_info.get("user"):
             process_chain.append({"type": "user", "name": target_info["user"]})
+        from agent.processor.entity_extractor import get_container_id
+
         for anc in ancestors:
+            anc_pid = anc["pid"]
             process_chain.append(
                 {
                     "name": anc["name"],
-                    "pid": anc["pid"],
+                    "pid": anc_pid,
                     "cmd_line": anc.get("cmd_line"),
                     "parent_pid": anc.get("parent_pid"),
                     "code_signed": anc.get("code_signed"),
                     "signing_authority": anc.get("signing_authority"),
+                    "container_id": get_container_id(anc_pid) if anc_pid and anc_pid > 0 else "",
                 }
             )
+        target_pid = target["pid"]
         process_chain.append(
             {
                 "name": target["name"],
-                "pid": target["pid"],
+                "pid": target_pid,
                 "cmd_line": target.get("cmd_line"),
                 "parent_pid": target.get("parent_pid"),
                 "code_signed": target.get("code_signed"),
                 "signing_authority": target.get("signing_authority"),
+                "container_id": get_container_id(target_pid) if target_pid and target_pid > 0 else "",
             }
         )
 
