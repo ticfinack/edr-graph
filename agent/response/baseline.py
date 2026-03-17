@@ -88,7 +88,19 @@ def _get_regex(pattern: str) -> re.Pattern:
 
 
 def _match_step(entry: str | ChainEntry, part: str) -> bool:
-    """Match a single chain entry against a single pattern part."""
+    """Match a single chain entry against a single pattern part.
+
+    Compound patterns joined with ``+`` require ALL sub-parts to match the
+    same entry, e.g. ``ctr:abc*+cmd:/bin/bash*`` matches a process that is
+    both in container abc… AND has cmd_line starting with /bin/bash.
+    """
+    if "+" in part:
+        return all(_match_single(entry, sub) for sub in part.split("+"))
+    return _match_single(entry, part)
+
+
+def _match_single(entry: str | ChainEntry, part: str) -> bool:
+    """Match a single qualifier against a chain entry."""
     if part.startswith("cmd_re:"):
         return bool(_get_regex(part[7:]).search(_entry_cmdline(entry)))
     if part.startswith("cmd:"):

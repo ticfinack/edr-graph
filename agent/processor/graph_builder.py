@@ -176,11 +176,13 @@ class GraphBuilder:
                 f"p.hostname = $hostname, p.start_time = timestamp('{ts}'), "
                 f"p.parent_pid = $parent_pid, "
                 f"p.bundle_id = $bundle_id, p.code_signed = $code_signed, "
-                f"p.signing_authority = $signing_authority "
+                f"p.signing_authority = $signing_authority, "
+                f"p.container_id = $container_id "
                 f"ON MATCH SET p.bundle_id = CASE WHEN $bundle_id <> '' THEN $bundle_id ELSE p.bundle_id END, "
                 f"p.code_signed = CASE WHEN $code_signed IS NOT NULL THEN $code_signed ELSE p.code_signed END, "
                 f"p.signing_authority = CASE WHEN $signing_authority <> '' THEN $signing_authority ELSE p.signing_authority END, "
-                f"p.parent_pid = CASE WHEN $parent_pid <> 0 THEN $parent_pid ELSE p.parent_pid END",
+                f"p.parent_pid = CASE WHEN $parent_pid <> 0 THEN $parent_pid ELSE p.parent_pid END, "
+                f"p.container_id = CASE WHEN $container_id <> '' THEN $container_id ELSE p.container_id END",
                 {
                     "id": proc.id,
                     "name": proc.name,
@@ -192,6 +194,7 @@ class GraphBuilder:
                     "bundle_id": proc.bundle_id or "",
                     "code_signed": proc.code_signed,
                     "signing_authority": proc.signing_authority or "",
+                    "container_id": proc.container_id or "",
                 },
             )
             # Update in-memory PID index for fast dashboard queries

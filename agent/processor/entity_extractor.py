@@ -56,6 +56,19 @@ _container_cache: dict[int, str] = {}  # pid -> container_id (short 12-char hex)
 _sshd_cache: dict[str, tuple[str | None, float]] = {}  # hostname -> (proc_id, cache_time)
 
 
+def _read_ppid_from_proc(pid: int) -> int:
+    """Read PPid from /proc/{pid}/status (Linux only). Returns 0 on failure."""
+    try:
+        safe_pid = int(pid)  # Sanitize for CodeQL path-injection check
+        with open(f"/proc/{safe_pid}/status") as f:
+            for line in f:
+                if line.startswith("PPid:"):
+                    return int(line.split(":")[1].strip())
+    except OSError:
+        pass
+    return 0
+
+
 def get_container_id(pid: int) -> str:
     """Extract container ID from /proc/{pid}/cgroup (Linux only).
 
@@ -67,7 +80,8 @@ def get_container_id(pid: int) -> str:
         return cached
     ctr_id = ""
     try:
-        with open(f"/proc/{pid}/cgroup") as f:
+        safe_pid = int(pid)  # Sanitize for CodeQL path-injection check
+        with open(f"/proc/{safe_pid}/cgroup") as f:
             for line in f:
                 parts = line.strip().split("/")
                 for part in parts:
@@ -139,6 +153,10 @@ def _resolve_start_time(pid: int, fallback: datetime) -> datetime:
 
 def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
     """Enrich a ProcessNode with identity and parent_pid via psutil if available."""
+    # Fill in container_id from /proc cgroup when not already set
+    if pid > 0 and not proc_node.container_id:
+        proc_node.container_id = get_container_id(pid) or None
+
     # Fill in parent_pid from psutil when not already set
     if pid > 0 and not proc_node.parent_pid:
         if pid in _ppid_cache:
@@ -152,6 +170,8 @@ def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
 
                 p = psutil.Process(pid)
                 ppid = p.ppid()
+                if not ppid or ppid <= 0:
+                    ppid = _read_ppid_from_proc(pid)  # /proc fallback
                 if ppid and ppid > 0:
                     proc_node.parent_pid = ppid
                     _ppid_cache[pid] = ppid
@@ -172,7 +192,12 @@ def _enrich_process_node(proc_node: ProcessNode, pid: int) -> None:
                     with contextlib.suppress(psutil.AccessDenied, psutil.ZombieProcess):
                         proc_node.exe_path = p.exe()
             except Exception:
-                _ppid_cache[pid] = 0  # Don't retry for dead processes
+                ppid = _read_ppid_from_proc(pid)
+                if ppid and ppid > 0:
+                    proc_node.parent_pid = ppid
+                    _ppid_cache[pid] = ppid
+                else:
+                    _ppid_cache[pid] = 0  # Only cache 0 if /proc also failed
                 if proc_node.name:
                     _name_cache[pid] = proc_node.name
 

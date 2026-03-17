@@ -369,7 +369,7 @@ class LedgerReader:
                 w = csv.writer(f, **_csv_kw)
                 w.writerow(["id", "name", "pid", "cmd_line", "exe_path", "hostname",
                             "start_time", "parent_pid", "bundle_id", "code_signed",
-                            "signing_authority"])
+                            "signing_authority", "container_id"])
                 for p in processes.values():
                     w.writerow([
                         _san(p["id"]), _san(p.get("name", "")), p.get("pid", 0),
@@ -379,6 +379,7 @@ class LedgerReader:
                         _san(p.get("bundle_id", "")),
                         str(p.get("code_signed", False)).lower() if p.get("code_signed") is not None else "false",
                         _san(p.get("signing_authority", "")),
+                        _san(p.get("container_id", "")),
                     ])
             result["Process"] = path
 

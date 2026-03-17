@@ -26,6 +26,7 @@ NODE_TABLES = [
         bundle_id STRING,
         code_signed BOOLEAN,
         signing_authority STRING,
+        container_id STRING,
         PRIMARY KEY (id)
     )
     """,
@@ -187,6 +188,7 @@ MIGRATIONS = [
     "ALTER TABLE Process ADD code_signed BOOLEAN DEFAULT false",
     "ALTER TABLE Process ADD signing_authority STRING DEFAULT ''",
     "ALTER TABLE Process ADD parent_pid INT64 DEFAULT 0",
+    "ALTER TABLE Process ADD container_id STRING DEFAULT ''",
     # IP enrichment columns
     "ALTER TABLE IP ADD country STRING DEFAULT ''",
     "ALTER TABLE IP ADD city STRING DEFAULT ''",

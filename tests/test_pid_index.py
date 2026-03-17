@@ -192,6 +192,7 @@ class TestSelfHealing:
                     True,
                     "Apple",
                     None,  # start_time
+                    "",  # container_id
                 ]
             else:
                 # Stale

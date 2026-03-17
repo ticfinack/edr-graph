@@ -749,7 +749,7 @@ function renderChain(area, data) {
       return '<span style="padding:2px 8px;background:var(--bg);border-radius:4px;margin:2px;display:inline-flex;align-items:center;gap:4px">' + esc(name) + '<span class="mono" style="color:var(--dim);font-size:11px">' + pid + '</span>' + signBadge(p) + ctr + cmd + '</span>';
     }).join(' &rarr; ');
     const chainPattern = buildFullChainPattern(data.process_chain);
-    const allowBtn = '<div style="margin-top:8px"><button class="btn" style="font-size:11px;padding:3px 10px;background:rgba(34,197,94,0.15);color:var(--low);border-color:var(--low)" onclick="showAllowChainForm()">Allow Chain</button></div>';
+    const allowBtn = '<div style="margin-top:8px;display:flex;gap:8px"><button class="btn" style="font-size:11px;padding:3px 10px;background:rgba(34,197,94,0.15);color:var(--low);border-color:var(--low)" onclick="showAllowChainForm()">Allow Chain</button><button class="btn" style="font-size:11px;padding:3px 10px;background:rgba(245,158,11,0.15);color:rgb(245,158,11);border-color:rgb(245,158,11)" onclick="showRestrictChainForm()">Restrict to Chain</button></div>';
     parts.push({title:'Process Chain', content: chainHtml + allowBtn + '<div id="chain-allow-slot"></div>'});
   }
   // Child processes
@@ -1349,7 +1349,18 @@ async function panicRestore() {
 function buildFullChainPattern(chain) {
   if (!chain || chain.length === 0) return '';
   return chain
-    .map(p => p.type === 'user' ? 'USER:' + p.name : (p.name || '?'))
+    .map(p => {
+      if (p.type === 'user') return 'USER:' + p.name;
+      const parts = [];
+      // Container qualifier
+      if (p.container_id) parts.push('ctr:' + p.container_id + '*');
+      // Command line is most specific; fall back to process name
+      if (p.cmd_line) parts.push('cmd:' + p.cmd_line);
+      else if (p.name) parts.push(p.name);
+      else return '?';
+      // Join with + for compound match on same process step
+      return parts.join('+');
+    })
     .filter(n => n && n !== '?')
     .join(' > ');
 }
@@ -1360,7 +1371,7 @@ function buildSuggestedChainPattern(chain) {
   const graphChain = window._graphProcessChain || [];
   let names = [];
   if (graphChain.length > 0) {
-    names = graphChain.map(p => p.type === 'user' ? 'USER:' + p.name : (p.name || '?')).filter(n => n && n !== '?');
+    return buildFullChainPattern(graphChain);
   }
   if (names.length === 0) {
     // Fallback: use the finding's chain steps
@@ -1536,6 +1547,61 @@ async function submitAllowChain() {
     const form = document.getElementById('chain-allow-form');
     if (resp.ok) {
       form.innerHTML = '<div style="color:var(--low);padding:8px">Chain pattern allowlisted.</div>';
+    } else {
+      const err = await resp.json().catch(() => ({}));
+      form.innerHTML = '<div style="color:var(--high);padding:8px">Failed: ' + esc(err.detail || 'Unknown error') + '</div>';
+    }
+  } catch(e) {
+    alert('Network error: ' + e.message);
+  }
+}
+
+// ── Restrict to Chain (creates blocklist rule with chain_exclude) ───
+function showRestrictChainForm() {
+  const slot = document.getElementById('chain-allow-slot');
+  if (!slot) return;
+  const existing = document.getElementById('chain-restrict-form');
+  if (existing) { existing.remove(); return; }
+  // Also dismiss the allow form if open
+  const allowForm = document.getElementById('chain-allow-form');
+  if (allowForm) allowForm.remove();
+
+  const chain = window._graphProcessChain || [];
+  const fullPattern = buildFullChainPattern(chain);
+  // Extract the target process name (last non-user entry)
+  let targetName = '';
+  for (let i = chain.length - 1; i >= 0; i--) {
+    if (chain[i].type !== 'user' && chain[i].name) { targetName = chain[i].name; break; }
+  }
+
+  let html = '<div id="chain-restrict-form" class="card" style="margin-top:10px;padding:14px;border-color:rgb(245,158,11)">';
+  html += '<h4 style="margin-bottom:4px;color:rgb(245,158,11)">Restrict to Chain</h4>';
+  html += '<div style="font-size:12px;color:var(--dim);margin-bottom:8px">Block <strong>' + esc(targetName) + '</strong> everywhere <em>except</em> when launched via this exact chain. Creates a blocklist rule with a chain exclusion.</div>';
+  html += '<label style="font-size:12px;color:var(--dim);display:block;margin-bottom:4px">Process to block <span style="font-size:11px">(glob pattern)</span></label>';
+  html += '<input type="text" id="restrict-target" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 10px;color:var(--text);font-family:monospace;font-size:13px" value="' + esc(targetName) + '">';
+  html += '<label style="font-size:12px;color:var(--dim);display:block;margin-top:8px;margin-bottom:4px">Allowed chain <span style="font-size:11px">(this chain will be excluded from the block — edit to adjust)</span></label>';
+  html += '<input type="text" id="restrict-chain-exclude" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 10px;color:var(--text);font-family:monospace;font-size:13px" value="' + esc(fullPattern) + '">';
+  html += '<div style="margin-top:8px;display:flex;gap:8px;align-items:center">';
+  html += '<input type="text" id="restrict-desc" placeholder="Description..." style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 10px;color:var(--text);font-size:13px" value="Restrict ' + esc(targetName) + ' to specific chain">';
+  html += '<button class="btn" style="background:rgba(245,158,11,0.2);color:rgb(245,158,11);border-color:rgb(245,158,11)" onclick="submitRestrictChain()">Restrict</button>';
+  html += '<button class="btn" onclick="document.getElementById(\'chain-restrict-form\').remove()">Cancel</button>';
+  html += '</div></div>';
+  slot.innerHTML = html;
+  document.getElementById('chain-restrict-form').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+async function submitRestrictChain() {
+  const target = (document.getElementById('restrict-target') || {}).value || '';
+  const chainExclude = (document.getElementById('restrict-chain-exclude') || {}).value || '';
+  const desc = (document.getElementById('restrict-desc') || {}).value || '';
+  if (!target.trim()) { alert('Process name cannot be empty.'); return; }
+  if (!chainExclude.trim()) { alert('Allowed chain cannot be empty.'); return; }
+  const body = {rule_type: 'process_name', pattern: target.trim(), description: desc, chain_exclude: chainExclude.trim()};
+  try {
+    const resp = await fetch(API + '/api/response/blocklist', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const form = document.getElementById('chain-restrict-form');
+    if (resp.ok) {
+      form.innerHTML = '<div style="color:rgb(245,158,11);padding:8px">Blocklist rule created — <strong>' + esc(target) + '</strong> will be killed unless it matches the allowed chain.</div>';
     } else {
       const err = await resp.json().catch(() => ({}));
       form.innerHTML = '<div style="color:var(--high);padding:8px">Failed: ' + esc(err.detail || 'Unknown error') + '</div>';

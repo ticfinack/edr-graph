@@ -27,6 +27,7 @@ class ProcessNode(BaseModel):
     bundle_id: str | None = None
     code_signed: bool | None = None
     signing_authority: str | None = None
+    container_id: str | None = None
 
 
 class IpNode(BaseModel):

@@ -157,7 +157,8 @@ def _query_process_fields(conn: kuzu.Connection, pid: int, event_ts: float | Non
     """
     _FIELDS = (
         "p.id, p.name, p.pid, p.cmd_line, p.exe_path, p.hostname, "
-        "p.parent_pid, p.bundle_id, p.code_signed, p.signing_authority, p.start_time"
+        "p.parent_pid, p.bundle_id, p.code_signed, p.signing_authority, p.start_time, "
+        "p.container_id"
     )
 
     def _row_to_dict(row):
@@ -173,6 +174,7 @@ def _query_process_fields(conn: kuzu.Connection, pid: int, event_ts: float | Non
             "code_signed": row[8],
             "signing_authority": row[9],
             "start_time": row[10],
+            "container_id": row[11] or "",
         }
 
     index = get_pid_index()
@@ -343,9 +345,9 @@ def graph_chain_to_chainsteps(graph_chain: list[dict]) -> list:
                 )
             )
         else:
-            ctr_id = ""
+            ctr_id = entry.get("container_id", "")
             pid_val = entry.get("pid")
-            if pid_val and pid_val > 0:
+            if not ctr_id and pid_val and pid_val > 0:
                 from agent.processor.entity_extractor import get_container_id
                 ctr_id = get_container_id(pid_val)
             steps.append(
@@ -370,7 +372,8 @@ def get_process_children(conn: kuzu.Connection, pid: int, limit: int = 50) -> li
     """
     _FIELDS = (
         "p.id, p.name, p.pid, p.cmd_line, p.exe_path, p.hostname, "
-        "p.parent_pid, p.bundle_id, p.code_signed, p.signing_authority"
+        "p.parent_pid, p.bundle_id, p.code_signed, p.signing_authority, "
+        "p.container_id"
     )
     try:
         index = get_pid_index()
@@ -400,6 +403,7 @@ def get_process_children(conn: kuzu.Connection, pid: int, limit: int = 50) -> li
                             "bundle_id": row[7],
                             "code_signed": row[8],
                             "signing_authority": row[9],
+                            "container_id": row[10] or "",
                         }
                     )
                 else:
@@ -428,6 +432,7 @@ def get_process_children(conn: kuzu.Connection, pid: int, limit: int = 50) -> li
                     "bundle_id": row[7],
                     "code_signed": row[8],
                     "signing_authority": row[9],
+                    "container_id": row[10] or "",
                 }
             )
         return children
@@ -910,6 +915,9 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
 
         for anc in ancestors:
             anc_pid = anc["pid"]
+            ctr = anc.get("container_id", "")
+            if not ctr and anc_pid and anc_pid > 0:
+                ctr = get_container_id(anc_pid)
             process_chain.append(
                 {
                     "name": anc["name"],
@@ -918,10 +926,13 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
                     "parent_pid": anc.get("parent_pid"),
                     "code_signed": anc.get("code_signed"),
                     "signing_authority": anc.get("signing_authority"),
-                    "container_id": get_container_id(anc_pid) if anc_pid and anc_pid > 0 else "",
+                    "container_id": ctr,
                 }
             )
         target_pid = target["pid"]
+        target_ctr = target.get("container_id", "")
+        if not target_ctr and target_pid and target_pid > 0:
+            target_ctr = get_container_id(target_pid)
         process_chain.append(
             {
                 "name": target["name"],
@@ -930,7 +941,7 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
                 "parent_pid": target.get("parent_pid"),
                 "code_signed": target.get("code_signed"),
                 "signing_authority": target.get("signing_authority"),
-                "container_id": get_container_id(target_pid) if target_pid and target_pid > 0 else "",
+                "container_id": target_ctr,
             }
         )
 
@@ -945,6 +956,7 @@ def build_attack_chain(conn: kuzu.Connection, pid: int) -> dict:
                         "cmd_line": child.get("cmd_line"),
                         "code_signed": child.get("code_signed"),
                         "signing_authority": child.get("signing_authority"),
+                        "container_id": child.get("container_id", ""),
                         "network": child.get("network", []),
                         "files": child.get("files", []),
                         "children": _serialize_children(child.get("children", [])),
