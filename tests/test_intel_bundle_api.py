@@ -24,7 +24,7 @@ def settings_db(tmp_path):
 @pytest.fixture
 def mock_settings():
     class FakeSettings:
-        jwt_secret = "test-secret-key-for-jwt"
+        jwt_secret = "test-secret-key-for-jwt-at-least-32-bytes-long"
         jwt_ttl_hours = 8
 
     return FakeSettings()

@@ -46,9 +46,36 @@ def decode_token(token: str, secret: str) -> dict[str, Any]:
 # Set by app.py at startup
 _jwt_secret: str = ""
 
+# HS256 derives its security directly from the secret's entropy. RFC 7518
+# section 3.2 requires a key at least as long as the hash output (32 bytes for
+# SHA-256); anything shorter is brute-forceable, and a forged token here is a
+# full authentication bypass for the SOC dashboard. PyJWT >= 2.13 emits
+# InsecureKeyLengthWarning below this threshold.
+MIN_JWT_SECRET_BYTES = 32
+
 
 def set_jwt_secret(secret: str) -> None:
+    """Install the process-wide JWT signing secret.
+
+    Raises:
+        ValueError: if the secret is missing or shorter than
+            ``MIN_JWT_SECRET_BYTES``. This fails closed on purpose -- starting
+            with a weak signing key would let an attacker forge admin tokens,
+            which is worse than refusing to start.
+    """
     global _jwt_secret
+    if not secret:
+        raise ValueError(
+            "JWT signing secret is empty. Set the JWT_SECRET environment "
+            "variable, or leave it unset to have one generated at startup."
+        )
+    if len(secret.encode()) < MIN_JWT_SECRET_BYTES:
+        raise ValueError(
+            f"JWT_SECRET is too short ({len(secret.encode())} bytes); "
+            f"HS256 requires at least {MIN_JWT_SECRET_BYTES} bytes. "
+            f"Generate a strong one with: python -c "
+            f'"import secrets; print(secrets.token_hex(32))"'
+        )
     _jwt_secret = secret
 
 
