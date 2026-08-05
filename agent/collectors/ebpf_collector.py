@@ -526,7 +526,16 @@ def _read_loginuid(pid: int) -> int | None:
 
     Returns the integer AUID, or ``None`` if the file cannot be read
     (process already exited, permission denied, etc.).
+
+    The PID is coerced to an ``int`` before interpolation so the path cannot
+    be steered outside ``/proc`` (CWE-22), matching ``get_container_id``.
     """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
     try:
         with open(f"/proc/{pid}/loginuid") as f:
             return int(f.read().strip())

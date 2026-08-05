@@ -10,7 +10,8 @@ Environment variables:
     TLS_CA_CERT     - CA certificate path for mTLS (optional)
     TLS_SERVER_CERT - Server certificate path for mTLS (optional)
     TLS_SERVER_KEY  - Server private key path for mTLS (optional)
-    JWT_SECRET      - Secret key for JWT signing (auto-generated if not set)
+    JWT_SECRET      - Secret key for JWT signing (auto-generated if not set).
+                      Must be at least 32 bytes; startup fails if it is shorter.
     ADMIN_USER      - Bootstrap admin username (default: admin)
     ADMIN_PASSWORD  - Bootstrap admin password (auto-generated if not set)
     NTP_SERVER      - NTP server for clock sync (default: pool.ntp.org)
