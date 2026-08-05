@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock
+from urllib.parse import urlparse
 
 import pytest
 
@@ -374,7 +375,12 @@ class TestServerConfig:
         assert hasattr(s, "deepinfra_api_key")
         assert hasattr(s, "deepinfra_base_url")
         assert hasattr(s, "deepinfra_model")
-        assert "deepinfra.com" in s.deepinfra_base_url
+        # Compare the parsed host rather than doing a substring match: a
+        # substring test would also accept hosts like "deepinfra.com.evil.tld"
+        # or "http://evil.tld/?x=deepinfra.com" (CodeQL py/incomplete-url-
+        # substring-sanitization).
+        host = urlparse(s.deepinfra_base_url).hostname or ""
+        assert host == "deepinfra.com" or host.endswith(".deepinfra.com")
         assert "gemma" in s.deepinfra_model
 
 
