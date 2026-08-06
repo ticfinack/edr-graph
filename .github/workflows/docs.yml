@@ -32,7 +32,7 @@ jobs:
       # in pyproject.toml. Installed directly rather than via '.[docs]' so
       # the docs build does not pull the full agent runtime.
       - name: Install MkDocs
-        run: pip install "mkdocs-material>=9.5.0"
+        run: pip install "mkdocs-material>=9.5.0,<10"
       - name: Build documentation
         run: mkdocs build --strict
       - name: Upload Pages artifact

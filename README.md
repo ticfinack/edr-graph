@@ -2,7 +2,8 @@
 
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![License](https://img.shields.io/badge/License-AGPLv3-blue.svg)
-![Tests](https://img.shields.io/badge/tests-1333%20passed-brightgreen.svg)
+[![CI](https://github.com/ticfinack/edr-graph/actions/workflows/ci.yml/badge.svg)](https://github.com/ticfinack/edr-graph/actions/workflows/ci.yml)
+[![Docs](https://github.com/ticfinack/edr-graph/actions/workflows/docs.yml/badge.svg)](https://ticfinack.github.io/edr-graph/)
 ![Patent Pending](https://img.shields.io/badge/Patent-Pending-red.svg)
 
 > **Disclaimer:** This software is provided for **educational and research purposes only**. It is not a certified or commercially supported security product. Use at your own risk. The authors assume no liability for any damage, data loss, or legal consequences resulting from the use or misuse of this software. By using this software, you agree that you are solely responsible for ensuring compliance with applicable laws and regulations in your jurisdiction. Always obtain proper authorization before deploying monitoring or response tools on any system.
