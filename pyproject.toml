@@ -38,7 +38,9 @@ dev = [
 server = [
     "neo4j>=5.15.0",
 ]
-docs = ["mkdocs-material>=9.5.0"]
+# Upper bound is deliberate: Material for MkDocs warns that MkDocs 2.0 removes
+# the plugin system and rewrites theming, with no migration path.
+docs = ["mkdocs-material>=9.5.0,<10"]
 windows = []
 linux = []
 

@@ -22,6 +22,10 @@ neo4j_data/
 config.local.yaml
 .claude/
 test-results/
-phase9-traffic-context-prompt.md
+# Build-phase prompt/plan scratch files (kept locally, not published)
+edr-agent-implementation-plan.md
+phase*-prompt.md
+phase7-macos-production-hardening.md
+phase8-system-tray-icon-dashboard.md
 scripts/test_lateral_movement.sh
 site/
