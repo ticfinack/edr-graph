@@ -21,7 +21,7 @@ def mock_settings():
     """Minimal mock of ServerSettings for dashboard endpoints."""
 
     class FakeSettings:
-        jwt_secret = "test-secret-key-for-jwt"
+        jwt_secret = "test-secret-key-for-jwt-at-least-32-bytes-long"
         jwt_ttl_hours = 8
         grpc_port = 50051
         http_port = 8080

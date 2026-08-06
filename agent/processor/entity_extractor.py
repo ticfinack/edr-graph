@@ -61,7 +61,18 @@ def get_container_id(pid: int) -> str:
 
     Returns a 12-char short container ID, or empty string if not containerized.
     Results are cached per PID.
+
+    The PID is coerced to an ``int`` before being interpolated into the path.
+    Callers reach this function with values sourced from graph records and
+    remotely-submitted events, so the coercion is what guarantees the path
+    stays inside ``/proc`` and cannot be steered elsewhere (CWE-22).
     """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return ""
+    if pid <= 0:
+        return ""
     cached = _container_cache.get(pid)
     if cached is not None:
         return cached
